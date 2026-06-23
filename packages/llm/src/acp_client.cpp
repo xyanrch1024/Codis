@@ -141,26 +141,53 @@ std::optional<std::string> AcpClient::create_session() {
     }
 }
 
+std::vector<SessionInfo> AcpClient::list_sessions() {
+    std::vector<SessionInfo> result;
+    auto res = http_->Get("/api/v1/sessions");
+    if (!res || res->status != 200) return result;
+    try {
+        auto arr = acp::json::parse(res->body);
+        for (auto& j : arr) {
+            SessionInfo s;
+            s.id = j.value("id", "");
+            s.title = j.value("title", "Untitled");
+            s.message_count = j.value("message_count", 0);
+            s.created_at = j.value("created_at", 0);
+            s.updated_at = j.value("updated_at", 0);
+            result.push_back(s);
+        }
+    } catch (...) {}
+    return result;
+}
+
 std::optional<SessionInfo> AcpClient::get_session(const std::string& id) {
     auto res = http_->Get(("/api/v1/sessions/" + id).c_str());
     if (!res || res->status != 200) return std::nullopt;
     try {
         auto j = acp::json::parse(res->body);
         SessionInfo info;
-        info.id       = j["id"].get<std::string>();
-        info.model    = j.value("model", "");
-        info.provider = j.value("provider", "");
+        info.id = j["id"].get<std::string>();
         if (j.contains("messages")) {
             for (auto& m : j["messages"])
-                info.messages.push_back({
-                    m["role"].get<std::string>(),
-                    m["content"].get<std::string>()
-                });
+                info.messages.push_back(Message::from_json(m));
         }
         return info;
-    } catch (...) {
-        return std::nullopt;
-    }
+    } catch (...) { return std::nullopt; }
+}
+
+bool AcpClient::delete_session(const std::string& id) {
+    auto res = http_->Delete(("/api/v1/sessions/" + id).c_str());
+    return res && res->status == 200;
+}
+
+std::string AcpClient::get_last_session() {
+    auto res = http_->Get("/api/v1/sessions");
+    if (!res || res->status != 200) return "";
+    try {
+        auto arr = acp::json::parse(res->body);
+        if (!arr.empty()) return arr[0].value("id", "");
+    } catch (...) {}
+    return "";
 }
 
 } // namespace opencode

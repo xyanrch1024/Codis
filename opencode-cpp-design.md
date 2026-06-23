@@ -1,4 +1,4 @@
-# 基于 C++20 的 OpenCode AI Coding Agent 架构设计
+# 基于 C++20 的 Codis AI Coding Agent 架构设计
 
 ## 项目状态
 
@@ -8,9 +8,10 @@
 | Phase 2 | v0.2.0 | C/S REST + Session | 完成 |
 | Phase 3 | v0.3.0 | ACP + SSE 实时流式 | 完成 |
 | Phase 4 | v0.3.1 | 多 Provider + 日志 + SSL | 完成 |
-| Phase 5 | v0.4.0 | Tool Registry + 6 工具 + ACP 多轮 loop | 完成 |
-| Phase 6 | v0.5.0 | **SQLite 持久化 + System Context (6 sources)** | 完成 |
-| Phase 7 | v0.6.0 | TUI (FTXUI) + Anthropic Provider | 规划中 |
+| Phase 5 | v0.4.0 | Tool Registry + 6 工具 | 完成 |
+| Phase 6 | v0.5.0 | SQLite 持久化 + System Context | 完成 |
+| Phase 7 | v0.6.0 | **Session 管理 (list/restore/delete) + CLI 命令** | 完成 |
+| Phase 8 | v0.7.0 | ReAct + RAG | 规划中 |
 
 ---
 
@@ -25,9 +26,6 @@
 | SSL/TLS | **OpenSSL** | 3.6.3 | vcpkg |
 | 异步 IO + 信号 | **standalone asio** | 1.32.0 | vcpkg |
 | 数据库 | **SQLite3** | 3.45.1 | 系统自带 |
-| 日志 | **std::format** + std::mutex | C++20 | 标准库 |
-| 子进程 | **fork/exec** + pipe | POSIX | 系统调用 |
-| 文件/正则 | **std::filesystem / std::regex** | C++17 | 标准库 |
 | C++ 标准 | **C++20** | | |
 | 构建系统 | **CMake** 3.20+ | | |
 | 包管理 | **vcpkg** manifest (6 包) | | |
@@ -35,125 +33,68 @@
 
 ---
 
+## 会话管理
+
+### 数据模型
+
+```
+sessions(id, created_at, updated_at, metadata JSON)
+  metadata.title — 首条用户消息前 40 字符自动生成
+
+messages(id, session_id FK, role, content, tool_call_id, tool_name, created_at)
+```
+
+### CLI 命令
+
+| 命令 | 功能 |
+|------|------|
+| `/sessions` | 表格列出所有 session (ID / Msgs / Title) |
+| `/session <id>` | 查看 session 详情 |
+| `/session <id> use` | 恢复 session 到当前对话 |
+| `/session <id> del` | 删除 session |
+| `/clear` | 清空当前对话上下文 |
+
+### 自动恢复
+
+启动时自动加载 `get_last_session()`，无缝接续未完成对话。
+
+---
+
 ## 项目目录
 
 ```
 opencode-cpp/
-├── CMakeLists.txt
-├── vcpkg.json                     # asio, httplib[openssl], nlohmann-json, CLI11, toml++, openssl
-├── ARCHITECTURE.md                # C/S 架构详解
-├── opencode-cpp-design.md         # 本文档
-│
+├── CMakeLists.txt / vcpkg.json
+├── ARCHITECTURE.md / opencode-cpp-design.md / plan.md
 ├── packages/
-│   ├── cli/src/main.cpp           # CLI
-│   ├── server/src/                # HTTP 守护进程
-│   │   ├── main.cpp               # -p port -c config + 信号
-│   │   ├── server.h               # OpenCodeServer + 所有子系统
-│   │   └── server.cpp             # 7 端点 + run_acp_loop()
+│   ├── cli/src/main.cpp             # CLI + /sessions /session /clear
+│   ├── server/src/                  # 8 REST 端点 (含 list/delete sessions)
 │   ├── llm/src/
-│   │   ├── types.h                # 共享类型
-│   │   ├── provider.h             # LLMProvider 抽象
-│   │   ├── openai_compatible_provider.h/cpp  # 通用兼容层
-│   │   ├── provider_registry.h    # 多 provider
-│   │   ├── tool.h / tool_registry.h / tools/  # Tool 系统
-│   │   ├── session_store.h/cpp    # SQLite CRUD
-│   │   ├── context_source.h/cpp   # SystemContext + 6 sources
-│   │   ├── client.h/cpp           # HTTPS + SSE
-│   │   ├── acp.h / acp_client.h/cpp  # ACP 协议
-│   │   └── log.h                  # 日志
-│   └── util/src/config.h/cpp      # 配置
-│
+│   │   ├── session_store.h/cpp      # SQLite CRUD + list_info / search
+│   │   ├── context_source.h/cpp     # SystemContext
+│   │   ├── acp_client.h/cpp         # ACP + list/delete sessions
+│   │   ├── tools/                   # 6 tools
+│   │   └── log.h / types.h / ...
+│   └── util/src/config.h/cpp
 ├── config/config.toml
-├── bin/
-└── scripts/build.sh
+├── bin/ / scripts/
+└── plan.md                          # ReAct + RAG 方案
 ```
 
 ---
 
-## SQLite 持久化
+## REST API
 
-### SessionStore
-
-```cpp
-class SessionStore {
-    // 会话: create / load / delete / list
-    // 消息: append_message / load_messages
-    // Context 快照: save_context_snapshot / load_context_snapshot
-};
-```
-
-数据库: `/tmp/codis_sessions.db`, WAL 模式, FOREIGN KEYS
-
-### 表
-
-```
-sessions(id PK, created_at, updated_at, metadata)
-messages(id PK, session_id FK, role, content, tool_call_id, tool_name)
-context_snapshots(session_id, source_key PK, value_json, rendered)
-```
-
----
-
-## System Context
-
-### ContextSource
-
-```cpp
-struct ContextSource {
-    std::string key;
-    Loader loader;        // → ContextValue (raw JSON + rendered text)
-    Renderer render;      // → baseline text
-    optional<Renderer> render_update;  // → incremental update text
-};
-```
-
-### 6 个内置源
-
-| key | 加载内容 | 增量 |
-|-----|----------|------|
-| `date` | 当前时间 | `The current date is now: ...` |
-| `platform` | OS + Shell | — |
-| `working_dir` | 工作目录 | — |
-| `git_status` | `git status --porcelain` | — |
-| `tools` | ToolRegistry schemas | — |
-| `project_instructions` | AGENTS.md / CONTEXT.md | — |
-
-### 工作流程
-
-```
-build_baseline(session_id, store):
-  for each source:
-    val = loader()
-    text = render(val)
-    store.save_context_snapshot(key, val.raw, text)
-  return combined text → first system message
-
-reconcile(session_id, store):
-  for each source:
-    val = loader()
-    old = store.load_context_snapshot(key)
-    if val.raw == old: continue
-    update = render_update(val) or render(val)
-    store.save_context_snapshot(key, val.raw, text)
-  return combined update → mid-conversation system message
-```
-
----
-
-## ACP Loop (含 System Context)
-
-```
-while turn < 10:
-    turn == 1 → build_baseline() → system message
-    turn >  1 → reconcile() → system message (if changed)
-
-    1. LLM stream (with tools) → assistant frames
-    2. extract_tool_calls(content)
-       ├─ empty → break
-       └─ has calls → execute each tool → tool_result frames
-    3. add tool results to message history
-    4. continue
-```
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/health` | 健康检查 |
+| `POST` | `/api/v1/acp` | ACP SSE 流式 |
+| `POST` | `/api/v1/chat` | 非流式聊天 |
+| `POST` | `/api/v1/sessions` | 创建会话 |
+| `GET` | `/api/v1/sessions` | **列出所有 (含 title/msg_count)** |
+| `GET` | `/api/v1/sessions/:id` | 获取会话 + 消息 |
+| `DELETE` | `/api/v1/sessions/:id` | **删除会话** |
+| `POST` | `/api/v1/sessions/:id/messages` | 添加消息 |
 
 ---
 
@@ -162,10 +103,11 @@ while turn < 10:
 | 阶段 | 版本 | 交付 |
 |------|------|------|
 | Phase 1 | v0.1.0 | CLI + 非流式 LLM + TOML |
-| Phase 2 | v0.2.0 | C/S 架构 + REST API + Session |
+| Phase 2 | v0.2.0 | C/S REST + Session |
 | Phase 3 | v0.3.0 | ACP + SSE 实时流式 |
-| Phase 3.1 | v0.3.1 | 多 Provider + 日志 + SSL 修复 |
-| Phase 4 | v0.4.0 | Tool Registry + 6 工具 + ACP 多轮 loop |
-| Phase 5 | v0.5.0 | **SQLite 持久化 + System Context** |
-| Phase 6 | v0.6.0 | TUI (FTXUI) + Anthropic |
-| Phase 7 | v0.7.0 | Plugin 系统 (C ABI) |
+| Phase 3.1 | v0.3.1 | 多 Provider + 日志 + SSL |
+| Phase 4 | v0.4.0 | Tool Registry + 6 工具 |
+| Phase 5 | v0.5.0 | SQLite + System Context |
+| Phase 6 | v0.6.0 | **Session 管理 + CLI 命令** |
+| Phase 7 | v0.7.0 | ReAct + RAG |
+| Phase 8 | v0.8.0 | Plugin 系统 (C ABI) |

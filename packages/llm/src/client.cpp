@@ -50,7 +50,7 @@ void LLMHttpClient::stream_post(const std::string& url,
 
     std::string req_body = body.dump();
 
-    LOG_DEBUG("POST {}://{}{} ({} bytes, stream={})", use_ssl ? "https" : "http", host, path, req_body.size(), !non_stream);
+    LOG_DEBUG("POST {}://{}{} ({} bytes, stream={}), body={}", use_ssl ? "https" : "http", host, path, req_body.size(), !non_stream, req_body);
 
     if (non_stream) {
         auto res = client.Post(path, headers, req_body, "application/json");

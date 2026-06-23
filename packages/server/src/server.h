@@ -82,7 +82,9 @@ private:
     void handle_chat(const httplib::Request& req, httplib::Response& res);
     void handle_acp(const httplib::Request& req, httplib::Response& res);
     void handle_session_create(const httplib::Request& req, httplib::Response& res);
+    void handle_session_list(const httplib::Request& req, httplib::Response& res);
     void handle_session_get(const httplib::Request& req, httplib::Response& res);
+    void handle_session_delete(const httplib::Request& req, httplib::Response& res);
     void handle_session_add_message(const httplib::Request& req, httplib::Response& res);
 
     std::string call_llm(const ChatRequest& req, const json& tools);

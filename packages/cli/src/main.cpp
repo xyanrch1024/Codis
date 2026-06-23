@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <vector>
+#include <sstream>
 
 #include "acp_client.h"
 #include "log.h"
@@ -57,7 +58,8 @@ bool ensure_server_running(int port, const std::string& server_binary) {
 int main(int argc, char** argv) {
     CLI::App app{"OpenCode C++ Client — ACP + SSE (v0.3.0)"};
 
-    std::string model         = "gpt-4o";
+    std::string model         = "glm-4.5-flash";
+    std::string provider      = "glm";
     std::string prompt_arg;
     std::string system_prompt = "You are a helpful AI coding assistant.";
     bool interactive = false;
@@ -104,6 +106,7 @@ int main(int argc, char** argv) {
     auto build_req = [&](const std::vector<Message>& msgs) {
         ChatRequest req;
         req.model       = model;
+        req.provider = provider;
         req.messages    = msgs;
         req.max_tokens  = max_tokens;
         req.temperature = temperature;
@@ -113,25 +116,141 @@ int main(int argc, char** argv) {
 
     // ---- 交互模式 ----
     if (interactive || prompt_arg.empty()) {
-        std::cout << "╔══════════════════════════════════════════╗\n";
-        std::cout << "║  OpenCode C++ Client  v0.3.0 (ACP)     ║\n";
-        std::cout << std::format("║  Server:  localhost:{:<20d} ║\n", server_port);
-        std::cout << std::format("║  Model:   {:<27s} ║\n", model);
-        std::cout << std::format("║  Proto:   ACP + SSE                    ║\n");
-        std::cout << "╚══════════════════════════════════════════╝\n";
-        std::cout << "Type your message (Ctrl+D or /exit to quit):\n\n";
+        // 自动恢复或创建 session
+        std::string current_session = acp.get_last_session();
+        bool loaded = false;
+        if (!current_session.empty()) {
+            auto info = acp.get_session(current_session);
+            if (info && !info->messages.empty()) {
+                LOG_INFO("restored session {} ({} msgs)", current_session, info->messages.size());
+            }
+        }
+        if (current_session.empty()) {
+            auto sid = acp.create_session();
+            if (sid) current_session = *sid;
+        }
 
         std::vector<Message> conversation;
         conversation.push_back({"system", system_prompt});
 
+        // 如果恢复了 session，加载历史消息
+        if (!current_session.empty()) {
+            auto info = acp.get_session(current_session);
+            if (info) {
+                conversation = info->messages;
+                loaded = !conversation.empty();
+            }
+        }
+
+        auto show_header = [&]() {
+            std::cout << "╔══════════════════════════════════════════╗\n";
+            std::cout << "║  Codis Client  v0.6.0                  ║\n";
+            std::cout << std::format("║  Server:   localhost:{:<20d} ║\n", server_port);
+            std::cout << std::format("║  Model:    {:<27s} ║\n", model);
+            if (!current_session.empty()) {
+                auto short_id = current_session.substr(0, 8) + "...";
+                std::cout << std::format("║  Session:  {:<27s} ║\n", short_id);
+            }
+            std::cout << "╚══════════════════════════════════════════╝\n";
+        };
+        show_header();
+
+        std::cout << "Commands: /exit /sessions /session <id> /clear\n\n";
+
         std::string line;
+        bool first_msg = !loaded;
         while (true) {
             std::cout << "> " << std::flush;
             if (!std::getline(std::cin, line)) break;
             if (line.empty()) continue;
+
+            // ---- 特殊命令 ----
             if (line == "/exit" || line == "/quit") break;
 
+            if (line == "/sessions") {
+                auto sessions = acp.list_sessions();
+                if (sessions.empty()) {
+                    std::cout << "No sessions found.\n\n";
+                } else {
+                    std::cout << std::format("{:<10} {:<5} {:<10} {}\n", "ID", "Msgs", "Active", "Title");
+                    std::cout << std::string(60, '-') << "\n";
+                    for (auto& s : sessions) {
+                        auto short_id = s.id.substr(0, 8);
+                        auto marker = (s.id == current_session) ? "*" : " ";
+                        auto msg_count_str = std::to_string(s.message_count);
+                        auto title = s.title.size() > 35 ? s.title.substr(0, 35) + "..." : s.title;
+                        std::cout << std::format("{}{:<9} {:<5} {:<10} {}\n",
+                            marker, short_id, msg_count_str, "", title);
+                    }
+                    std::cout << "  * = current session\n\n";
+                }
+                continue;
+            }
+
+            if (line.starts_with("/session ")) {
+                auto parts = [&]() {
+                    std::vector<std::string> v;
+                    std::istringstream iss(line);
+                    std::string w;
+                    while (iss >> w) v.push_back(w);
+                    return v;
+                }();
+                if (parts.size() < 2) { std::cout << "Usage: /session <id> [use|del]\n\n"; continue; }
+
+                auto sid = parts[1];
+                auto cmd = parts.size() > 2 ? parts[2] : "";
+
+                if (cmd == "del" || cmd == "delete") {
+                    if (acp.delete_session(sid)) {
+                        std::cout << "Session deleted: " << sid.substr(0, 8) << "...\n\n";
+                        if (sid == current_session) {
+                            current_session.clear();
+                            conversation.clear();
+                            conversation.push_back({"system", system_prompt});
+                        }
+                    } else {
+                        std::cout << "Failed to delete session.\n\n";
+                    }
+                    continue;
+                }
+
+                if (cmd == "use" || cmd == "switch" || cmd.empty()) {
+                    auto info = acp.get_session(sid);
+                    if (!info) {
+                        std::cout << "Session not found.\n\n";
+                        continue;
+                    }
+                    current_session = sid;
+                    conversation = info->messages;
+                    loaded = true;
+                    first_msg = false;
+                    show_header();
+                    std::cout << std::format("Restored session: {} messages loaded.\n\n",
+                        conversation.size());
+                    continue;
+                }
+
+                std::cout << "Usage: /session <id> [use|del]\n\n";
+                continue;
+            }
+
+            if (line == "/clear") {
+                conversation.clear();
+                conversation.push_back({"system", system_prompt});
+                if (!current_session.empty()) acp.create_session();
+                std::cout << "Context cleared.\n\n";
+                first_msg = true;
+                continue;
+            }
+
+            // ---- 普通消息 ----
             conversation.push_back({"user", line});
+
+            // 首次消息自动设置 session title
+            if (first_msg) {
+                first_msg = false;
+                // 通过 server 的 session store 设置 title（需要新增端点或复用）
+            }
 
             std::cout << "\n";
             std::string assistant_content;
@@ -147,8 +266,7 @@ int main(int argc, char** argv) {
                     std::cout << "\n[Tool: " << tc.name << "]\n";
                 },
                 .on_tool_result = [](const acp::ToolResultEvent& tr) {
-                    std::cout << "[Result: " << (tr.success ? "ok" : "fail")
-                              << "]\n";
+                    std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
                 },
                 .on_error = [](std::string_view msg) {
                     std::cerr << "\nError: " << msg << "\n";

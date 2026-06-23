@@ -18,8 +18,10 @@ namespace opencode {
 
 struct SessionInfo {
     std::string id;
-    std::string model;
-    std::string provider;
+    std::string title;
+    int message_count = 0;
+    int64_t created_at = 0;
+    int64_t updated_at = 0;
     std::vector<Message> messages;
 };
 
@@ -48,9 +50,12 @@ public:
     // 健康检查
     bool health_check();
 
-    // 会话管理（复用现有 REST 端点）
+    // 会话管理
     std::optional<std::string> create_session();
+    std::vector<SessionInfo> list_sessions();
     std::optional<SessionInfo> get_session(const std::string& id);
+    bool delete_session(const std::string& id);
+    std::string get_last_session();
 
 private:
     void parse_and_dispatch(const std::string& sse_data, Callbacks& cbs);

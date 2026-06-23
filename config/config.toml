@@ -1,7 +1,7 @@
 # OpenCode C++ 多 Provider 配置
 # 路径: ~/.config/opencode/config.toml 或通过 -c 指定
 
-default_provider = "deepseek"
+default_provider = "glm"
 
 [llm]
 max_tokens = 4096
@@ -16,7 +16,15 @@ base_url = "https://api.openai.com/v1"
 
 [[providers]]
 name = "deepseek"
-api_key = "sk-e7a81276a19f48798e31678fe408f57e"
+#api_key = "xsk-e7a81276a19f48798e31678fe408f57e"
+api_key = ""
 api_key_env = "DEEPSEEK_API_KEY"
-model = "deepseek-chat"
-base_url = "https://api.deepseek.com/v1"
+model = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com"
+
+[[providers]]
+name = "glm"
+api_key = "26cdbc74da8044fe809d63c8861c2b90.4PM5USSm65qXNGfu"
+api_key_env = "GLM_API_KEY"
+model = "glm-4.5-flash"
+base_url = "https://open.bigmodel.cn/api/paas/v4"

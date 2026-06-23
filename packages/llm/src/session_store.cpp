@@ -254,4 +254,87 @@ std::optional<nlohmann::json> SessionStore::load_context_snapshot(
     return result;
 }
 
+// =============================================================================
+// 增强会话
+// =============================================================================
+
+std::vector<SessionInfo> SessionStore::list_sessions_info() {
+    std::lock_guard lock(mutex_);
+    std::vector<SessionInfo> result;
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT s.id, s.metadata, s.created_at, s.updated_at, "
+        "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) "
+        "FROM sessions s ORDER BY s.updated_at DESC LIMIT 100",
+        -1, &stmt, nullptr);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        SessionInfo info;
+        info.id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        info.created_at = sqlite3_column_int64(stmt, 2);
+        info.updated_at = sqlite3_column_int64(stmt, 3);
+        info.message_count = sqlite3_column_int(stmt, 4);
+        auto meta = nlohmann::json::parse(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+        info.title = meta.value("title", "Untitled");
+        result.push_back(info);
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+void SessionStore::set_title(const std::string& session_id, const std::string& title) {
+    std::lock_guard lock(mutex_);
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "UPDATE sessions SET metadata = json_set(metadata, '$.title', ?) WHERE id = ?",
+        -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, title.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, session_id.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+std::string SessionStore::get_last_session() {
+    std::lock_guard lock(mutex_);
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1",
+        -1, &stmt, nullptr);
+    std::string id;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+int SessionStore::message_count(const std::string& session_id) {
+    std::lock_guard lock(mutex_);
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+        -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, session_id.c_str(), -1, SQLITE_STATIC);
+    int count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) count = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+std::vector<std::string> SessionStore::search_sessions(const std::string& query, int limit) {
+    std::lock_guard lock(mutex_);
+    std::vector<std::string> result;
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT DISTINCT m.session_id FROM messages m "
+        "WHERE m.content LIKE ? ORDER BY m.session_id DESC LIMIT ?",
+        -1, &stmt, nullptr);
+    auto like = "%" + query + "%";
+    sqlite3_bind_text(stmt, 1, like.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, limit);
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        result.push_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    sqlite3_finalize(stmt);
+    return result;
+}
+
 } // namespace opencode

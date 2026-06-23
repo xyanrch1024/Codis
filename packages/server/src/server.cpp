@@ -172,7 +172,9 @@ void OpenCodeServer::register_routes() {
     server_->Post("/api/v1/chat",        [this](auto& r, auto& s) { handle_chat(r, s); });
     server_->Post("/api/v1/acp",         [this](auto& r, auto& s) { handle_acp(r, s); });
     server_->Post("/api/v1/sessions",    [this](auto& r, auto& s) { handle_session_create(r, s); });
+    server_->Get("/api/v1/sessions",     [this](auto& r, auto& s) { handle_session_list(r, s); });
     server_->Get(R"(/api/v1/sessions/([a-f0-9\-]+))",     [this](auto& r, auto& s) { handle_session_get(r, s); });
+    server_->Delete(R"(/api/v1/sessions/([a-f0-9\-]+))",  [this](auto& r, auto& s) { handle_session_delete(r, s); });
     server_->Post(R"(/api/v1/sessions/([a-f0-9\-]+)/messages)", [this](auto& r, auto& s) { handle_session_add_message(r, s); });
 }
 
@@ -383,6 +385,23 @@ void OpenCodeServer::handle_session_create(const httplib::Request&, httplib::Res
     res.status = 201;
     res.set_content(json{{"session_id", id}}.dump(), "application/json");
 }
+
+void OpenCodeServer::handle_session_list(const httplib::Request&, httplib::Response& res) {
+    set_cors(res);
+    auto sessions = session_store_.list_sessions_info();
+    json arr = json::array();
+    for (auto& s : sessions) {
+        arr.push_back({
+            {"id", s.id},
+            {"title", s.title},
+            {"message_count", s.message_count},
+            {"created_at", s.created_at},
+            {"updated_at", s.updated_at}
+        });
+    }
+    res.set_content(arr.dump(), "application/json");
+}
+
 void OpenCodeServer::handle_session_get(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     auto session = session_store_.load_session(req.matches[1]);
@@ -394,6 +413,13 @@ void OpenCodeServer::handle_session_get(const httplib::Request& req, httplib::Re
     for (auto& m : msgs) j["messages"].push_back(m.to_json());
     res.set_content(j.dump(2), "application/json");
 }
+
+void OpenCodeServer::handle_session_delete(const httplib::Request& req, httplib::Response& res) {
+    set_cors(res);
+    session_store_.delete_session(req.matches[1]);
+    res.set_content(R"({"status":"ok"})", "application/json");
+}
+
 void OpenCodeServer::handle_session_add_message(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
