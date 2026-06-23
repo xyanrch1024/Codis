@@ -2,6 +2,7 @@ add_library(opencode_llm STATIC
     src/client.cpp
     src/openai_compatible_provider.cpp
     src/acp_client.cpp
+    src/tools/tools.cpp
 )
 
 target_include_directories(opencode_llm PUBLIC src)

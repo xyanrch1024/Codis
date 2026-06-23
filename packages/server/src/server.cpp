@@ -1,4 +1,5 @@
 #include "server.h"
+#include "tools/tools.h"
 
 #include <iostream>
 #include <thread>
@@ -72,23 +73,17 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
     : port_(port)
     , server_(std::make_unique<httplib::Server>())
 {
-    // 加载配置
     if (config_path && !config_path->empty()) {
         config_ = AppConfig::load(*config_path);
     }
 
-    // 从配置注册 providers
     for (auto& pc : config_.providers) {
         pc.resolve_api_key();
-        if (!pc.api_key.empty()) {
-            provider_registry_.register_provider(pc);
-        }
+        if (!pc.api_key.empty()) provider_registry_.register_provider(pc);
     }
-    if (!config_.default_provider.empty()) {
+    if (!config_.default_provider.empty())
         provider_registry_.set_default(config_.default_provider);
-    }
 
-    // 如果配置里没有，尝试环境变量注册默认 provider
     if (provider_registry_.list().empty()) {
         const char* key = std::getenv("OPENAI_API_KEY");
         if (key) {
@@ -102,6 +97,14 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
         }
     }
 
+    // 注册默认工具
+    tool_registry_.register_tool(std::make_unique<tools::ReadTool>());
+    tool_registry_.register_tool(std::make_unique<tools::WriteTool>());
+    tool_registry_.register_tool(std::make_unique<tools::EditTool>());
+    tool_registry_.register_tool(std::make_unique<tools::BashTool>());
+    tool_registry_.register_tool(std::make_unique<tools::GlobTool>());
+    tool_registry_.register_tool(std::make_unique<tools::GrepTool>());
+
     register_routes();
 }
 
@@ -111,9 +114,9 @@ void OpenCodeServer::start() {
     running_ = true;
     thread_ = std::make_unique<std::thread>([this] {
         LOG_INFO("Server listening on http://localhost:{}", port_);
-        auto providers = provider_registry_.list();
-        for (auto& p : providers) LOG_INFO("  provider: {}", p);
-        LOG_INFO("  default: {}", provider_registry_.default_name());
+        for (auto& p : provider_registry_.list()) LOG_INFO("  provider: {}", p);
+        for (auto& t : tool_registry_.list()) LOG_INFO("  tool: {}", t);
+        LOG_INFO("  default provider: {}", provider_registry_.default_name());
         server_->listen("127.0.0.1", port_);
     });
 }
@@ -154,46 +157,58 @@ void OpenCodeServer::register_routes() {
 
 void OpenCodeServer::handle_health(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
-    acp::json j;
+    json j;
     j["status"] = "ok";
-    j["version"] = "0.3.1";
+    j["version"] = "0.4.0";
     j["protocol"] = "acp";
     j["port"] = port_;
     j["default_provider"] = provider_registry_.default_name();
+    j["tools"] = tool_registry_.list();
     res.set_content(j.dump(2), "application/json");
 }
 
 void OpenCodeServer::handle_info(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
-    acp::json j;
+    json j;
     j["providers"] = provider_registry_.list();
     j["default_provider"] = provider_registry_.default_name();
-    j["features"] = {"acp", "chat", "stream", "sessions"};
+    j["tools"] = tool_registry_.list();
+    j["features"] = {"acp", "chat", "stream", "tools", "sessions"};
     res.set_content(j.dump(2), "application/json");
 }
 
 void OpenCodeServer::handle_chat(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
-        auto body = acp::json::parse(req.body);
+        auto body = json::parse(req.body);
         auto chat_req = ChatRequest::from_json(body);
-        std::string result = call_llm(chat_req);
 
-        acp::json resp;
+        json tools = json::array();
+        for (auto& s : tool_registry_.all_schemas()) {
+            tools.push_back({{"type", "function"}, {"function", {
+                {"name", s.name},
+                {"description", s.description},
+                {"parameters", s.parameters}
+            }}});
+        }
+
+        std::string result = call_llm(chat_req, tools);
+
+        json resp;
         resp["content"] = result;
         resp["model"] = chat_req.model;
         resp["success"] = true;
         res.set_content(resp.dump(), "application/json");
     } catch (const std::exception& e) {
         res.status = 500;
-        res.set_content(acp::json{{"error", e.what()}}.dump(), "application/json");
+        res.set_content(json{{"error", e.what()}}.dump(), "application/json");
     }
 }
 
 void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
-        auto body = acp::json::parse(req.body);
+        auto body = json::parse(req.body);
         auto chat_req = ChatRequest::from_json(body);
         chat_req.stream = true;
 
@@ -201,7 +216,7 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
 
         std::thread llm_thread([this, req = std::move(chat_req), frames]() mutable {
             try {
-                call_llm_stream(req, *frames);
+                run_acp_loop(*frames, std::move(req));
                 frames->push(acp::done_frame());
             } catch (const std::exception& e) {
                 frames->push(acp::error_frame(e.what()));
@@ -222,35 +237,129 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
 
     } catch (const std::exception& e) {
         res.status = 400;
-        res.set_content(acp::json{{"error", e.what()}}.dump(), "application/json");
+        res.set_content(json{{"error", e.what()}}.dump(), "application/json");
     }
 }
+
+// =============================================================================
+// ACP Loop — 多轮 tool call
+// =============================================================================
+
+void OpenCodeServer::run_acp_loop(SseFrameQueue& frames, ChatRequest req) {
+    static const int MAX_TURNS = 10;
+
+    json tools = json::array();
+    for (auto& s : tool_registry_.all_schemas()) {
+        tools.push_back({{"type", "function"}, {"function", {
+            {"name", s.name},
+            {"description", s.description},
+            {"parameters", s.parameters}
+        }}});
+    }
+
+    std::string assistant_content;
+    auto turn = std::make_shared<int>(0);
+
+    while (*turn < MAX_TURNS) {
+        (*turn)++;
+        LOG_DEBUG("ACP loop turn {}/{}", *turn, MAX_TURNS);
+
+        // 调用 LLM
+        assistant_content.clear();
+        call_llm_stream(req, frames, tools);
+
+        // 检查 tool calls
+        auto call_list = extract_tool_calls(assistant_content);
+        if (call_list.empty()) break;
+
+        // 执行工具
+        for (auto& call : call_list) {
+            auto perm = tool_registry_.check_permission(call.name);
+            if (perm == Permission::Denied) {
+                frames.push(acp::tool_result_frame(call.id, false, "Permission denied"));
+                continue;
+            }
+            auto result = tool_registry_.execute(call);
+            frames.push(acp::tool_result_frame(result.id, result.success, result.content));
+
+            Message asst_msg;
+            asst_msg.role = "assistant";
+            asst_msg.tool_call_id = call.id;
+            asst_msg.tool_name = call.name;
+            req.messages.push_back(asst_msg);
+
+            Message tool_msg;
+            tool_msg.role = "tool";
+            tool_msg.content = result.content;
+            tool_msg.tool_call_id = call.id;
+            req.messages.push_back(tool_msg);
+        }
+    }
+
+    if (*turn >= MAX_TURNS) {
+        frames.push(acp::error_frame("Max turns reached"));
+    }
+}
+
+// =============================================================================
+// Tool call 提取 — 从 token 流中解析
+// =============================================================================
+
+std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& content) {
+    // 简单解析: 查找 LLM 输出的 JSON tool_call 块
+    // 完整实现可匹配 ```json...``` 块或直接 JSON 数组
+    std::vector<ToolCall> calls;
+    auto pos = content.find("\"tool_calls\"");
+    if (pos == std::string::npos) return calls;
+
+    try {
+        // 尝试解析为完整 JSON
+        auto j = json::parse(content);
+        if (j.contains("tool_calls")) {
+            for (auto& tc : j["tool_calls"]) {
+                ToolCall call;
+                call.id = tc.value("id", "");
+                auto& func = tc["function"];
+                call.name = func.value("name", "");
+                call.arguments = func.value("arguments", json::object());
+                calls.push_back(call);
+            }
+        }
+    } catch (...) {
+        // 非 JSON 响应，无 tool calls
+    }
+    return calls;
+}
+
+// =============================================================================
+// 会话端点
+// =============================================================================
 
 void OpenCodeServer::handle_session_create(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
     auto id = session_mgr_.create_session();
     res.status = 201;
-    res.set_content(acp::json{{"session_id", id}}.dump(), "application/json");
+    res.set_content(json{{"session_id", id}}.dump(), "application/json");
 }
 void OpenCodeServer::handle_session_get(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     auto session = session_mgr_.get_session(req.matches[1]);
     if (!session) { res.status = 404; res.set_content(R"({"error":"not found"})", "application/json"); return; }
-    acp::json j;
+    json j;
     j["id"] = session->id; j["model"] = session->model; j["provider"] = session->provider;
-    j["messages"] = acp::json::array();
+    j["messages"] = json::array();
     for (auto& m : session->messages) j["messages"].push_back(m.to_json());
     res.set_content(j.dump(2), "application/json");
 }
 void OpenCodeServer::handle_session_add_message(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
-        auto msg = Message::from_json(acp::json::parse(req.body));
+        auto msg = Message::from_json(json::parse(req.body));
         session_mgr_.add_message(req.matches[1], msg);
         res.set_content(R"({"status":"ok"})", "application/json");
     } catch (const std::exception& e) {
         res.status = 400;
-        res.set_content(acp::json{{"error", e.what()}}.dump(), "application/json");
+        res.set_content(json{{"error", e.what()}}.dump(), "application/json");
     }
 }
 
@@ -260,20 +369,16 @@ void OpenCodeServer::handle_session_add_message(const httplib::Request& req, htt
 
 std::shared_ptr<LLMProvider> OpenCodeServer::resolve_provider(const ChatRequest& req) {
     std::string name = req.provider.empty() ? provider_registry_.default_name() : req.provider;
-    LOG_DEBUG("resolving provider '{}' (requested: '{}', default: '{}')",
-              name, req.provider, provider_registry_.default_name());
-
+    LOG_DEBUG("resolving provider '{}'", name);
     auto provider = provider_registry_.get(name);
     if (provider) return *provider;
-
-    LOG_WARN("provider '{}' not found, falling back to first available", name);
+    LOG_WARN("provider '{}' not found, fallback", name);
     auto list = provider_registry_.list();
     if (!list.empty()) return *provider_registry_.get(list[0]);
-
     throw std::runtime_error("No provider configured");
 }
 
-std::string OpenCodeServer::call_llm(const ChatRequest& req) {
+std::string OpenCodeServer::call_llm(const ChatRequest& req, const json& tools) {
     auto prov = resolve_provider(req);
     auto result = prov->chat(req);
     if (!result.success) {
@@ -283,9 +388,8 @@ std::string OpenCodeServer::call_llm(const ChatRequest& req) {
     return result.content;
 }
 
-void OpenCodeServer::call_llm_stream(const ChatRequest& req, SseFrameQueue& frames) {
+void OpenCodeServer::call_llm_stream(const ChatRequest& req, SseFrameQueue& frames, const json& tools) {
     auto prov = resolve_provider(req);
-    LOG_TRACE("starting LLM stream on provider '{}'", prov->name());
     prov->stream_chat(req, [&frames](std::string_view delta) {
         frames.push(acp::assistant_frame(delta));
     });

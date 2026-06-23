@@ -5,6 +5,7 @@
 #include "provider.h"
 #include "config.h"
 #include "provider_registry.h"
+#include "tool_registry.h"
 
 #include <httplib.h>
 
@@ -94,10 +95,12 @@ private:
     void handle_session_get(const httplib::Request& req, httplib::Response& res);
     void handle_session_add_message(const httplib::Request& req, httplib::Response& res);
 
-    std::string call_llm(const ChatRequest& req);
-    void call_llm_stream(const ChatRequest& req, SseFrameQueue& frames);
+    std::string call_llm(const ChatRequest& req, const json& tools);
+    void call_llm_stream(const ChatRequest& req, SseFrameQueue& frames, const json& tools);
 
     std::shared_ptr<LLMProvider> resolve_provider(const ChatRequest& req);
+    std::vector<ToolCall> extract_tool_calls(const std::string& content);
+    void run_acp_loop(SseFrameQueue& frames, ChatRequest req);
 
     int port_;
     std::unique_ptr<httplib::Server> server_;
@@ -106,6 +109,7 @@ private:
 
     SessionManager session_mgr_;
     ProviderRegistry provider_registry_;
+    ToolRegistry tool_registry_;
     AppConfig config_;
 };
 

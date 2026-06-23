@@ -16,10 +16,24 @@ using json = nlohmann::json;
 struct Message {
     std::string role;
     std::string content;
+    std::optional<std::string> tool_call_id;
+    std::optional<std::string> tool_name;
+    std::optional<json> tool_arguments;
 
-    json to_json() const { return {{"role", role}, {"content", content}}; }
+    json to_json() const {
+        json j{{"role", role}, {"content", content}};
+        if (tool_call_id) j["tool_call_id"] = *tool_call_id;
+        if (tool_name) j["name"] = *tool_name;
+        if (tool_arguments) j["arguments"] = *tool_arguments;
+        return j;
+    }
     static Message from_json(const json& j) {
-        return {j["role"].get<std::string>(), j["content"].get<std::string>()};
+        Message m;
+        m.role = j["role"].get<std::string>();
+        m.content = j.value("content", "");
+        if (j.contains("tool_call_id")) m.tool_call_id = j["tool_call_id"].get<std::string>();
+        if (j.contains("name")) m.tool_name = j["name"].get<std::string>();
+        return m;
     }
 };
 

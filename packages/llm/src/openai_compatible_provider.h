@@ -82,10 +82,18 @@ private:
         body["model"] = model_;
         body["messages"] = json::array();
         for (auto& m : req.messages) {
-            body["messages"].push_back({
-                {"role", m.role},
-                {"content", m.content}
-            });
+            json msg{{"role", m.role}, {"content", m.content}};
+            if (m.tool_call_id) {
+                msg["tool_call_id"] = *m.tool_call_id;
+                if (m.tool_name) {
+                    msg["tool_calls"] = json::array({{
+                        {"id", *m.tool_call_id},
+                        {"type", "function"},
+                        {"function", {{"name", *m.tool_name}, {"arguments", "{}"}}}
+                    }});
+                }
+            }
+            body["messages"].push_back(msg);
         }
         if (req.max_tokens)   body["max_tokens"]  = *req.max_tokens;
         if (req.temperature)  body["temperature"] = *req.temperature;
