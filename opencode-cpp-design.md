@@ -6,10 +6,11 @@
 |------|------|----------|------|
 | Phase 1 | v0.1.0 | 单体 CLI + 非流式 LLM + TOML | 完成 |
 | Phase 2 | v0.2.0 | C/S REST + Session | 完成 |
-| Phase 3 | v0.3.0 | ACP + SSE 实时流式 + 事件回调 | 完成 |
-| Phase 4 | v0.3.1 | 多 Provider + 日志系统 + SSL 修复 | 完成 |
-| Phase 5 | v0.4.0 | **Tool Registry + 6 工具 + ACP 多轮 loop** | 完成 |
-| Phase 6 | v0.5.0 | TUI (FTXUI) + Anthropic Provider | 规划中 |
+| Phase 3 | v0.3.0 | ACP + SSE 实时流式 | 完成 |
+| Phase 4 | v0.3.1 | 多 Provider + 日志 + SSL | 完成 |
+| Phase 5 | v0.4.0 | Tool Registry + 6 工具 + ACP 多轮 loop | 完成 |
+| Phase 6 | v0.5.0 | **SQLite 持久化 + System Context (6 sources)** | 完成 |
+| Phase 7 | v0.6.0 | TUI (FTXUI) + Anthropic Provider | 规划中 |
 
 ---
 
@@ -23,6 +24,7 @@
 | 配置 (TOML) | **toml++** | 3.4.0 | vcpkg |
 | SSL/TLS | **OpenSSL** | 3.6.3 | vcpkg |
 | 异步 IO + 信号 | **standalone asio** | 1.32.0 | vcpkg |
+| 数据库 | **SQLite3** | 3.45.1 | 系统自带 |
 | 日志 | **std::format** + std::mutex | C++20 | 标准库 |
 | 子进程 | **fork/exec** + pipe | POSIX | 系统调用 |
 | 文件/正则 | **std::filesystem / std::regex** | C++17 | 标准库 |
@@ -43,113 +45,115 @@ opencode-cpp/
 ├── opencode-cpp-design.md         # 本文档
 │
 ├── packages/
-│   ├── cli/src/main.cpp           # CLI → AcpClient → 事件回调
+│   ├── cli/src/main.cpp           # CLI
 │   ├── server/src/                # HTTP 守护进程
 │   │   ├── main.cpp               # -p port -c config + 信号
-│   │   ├── server.h               # OpenCodeServer + ACP loop + ProviderRegistry + ToolRegistry
-│   │   └── server.cpp             # 7 端点 + run_acp_loop() + extract_tool_calls()
+│   │   ├── server.h               # OpenCodeServer + 所有子系统
+│   │   └── server.cpp             # 7 端点 + run_acp_loop()
 │   ├── llm/src/
-│   │   ├── types.h                # Message (tool_call 扩展), ChatRequest/Response
+│   │   ├── types.h                # 共享类型
 │   │   ├── provider.h             # LLMProvider 抽象
 │   │   ├── openai_compatible_provider.h/cpp  # 通用兼容层
 │   │   ├── provider_registry.h    # 多 provider
-│   │   ├── tool.h                 # Tool 基类 + Permission + Schema/Call/Result
-│   │   ├── tool_registry.h        # Tool 注册表 (shared_mutex)
-│   │   ├── tools/tools.h/cpp      # 6 工具: bash, read, write, edit, glob, grep
-│   │   ├── client.h/cpp           # HTTPS + SSE 解析
-│   │   ├── acp.h                  # ACP 协议
-│   │   ├── acp_client.h/cpp       # ACP 客户端
-│   │   └── log.h                  # 日志系统
-│   └── util/src/config.h/cpp      # ProviderConfig + AppConfig
+│   │   ├── tool.h / tool_registry.h / tools/  # Tool 系统
+│   │   ├── session_store.h/cpp    # SQLite CRUD
+│   │   ├── context_source.h/cpp   # SystemContext + 6 sources
+│   │   ├── client.h/cpp           # HTTPS + SSE
+│   │   ├── acp.h / acp_client.h/cpp  # ACP 协议
+│   │   └── log.h                  # 日志
+│   └── util/src/config.h/cpp      # 配置
 │
 ├── config/config.toml
-├── bin/  (启动脚本)
+├── bin/
 └── scripts/build.sh
 ```
 
 ---
 
-## Tool Registry
+## SQLite 持久化
 
-### 接口
+### SessionStore
 
 ```cpp
-enum class Permission { Denied, Ask, Allow };
-
-struct ToolSchema {
-    std::string name, description;
-    json parameters;  // JSON Schema
-};
-
-class Tool {
-    virtual ToolSchema schema() const = 0;
-    virtual Permission default_permission() const = 0;
-    virtual ToolResult execute(const ToolCall&) = 0;
-};
-
-class ToolRegistry {
-    void register_tool(unique_ptr<Tool>);
-    vector<ToolSchema> all_schemas() const;
-    ToolResult execute(const ToolCall&);
-    Permission check_permission(name);
+class SessionStore {
+    // 会话: create / load / delete / list
+    // 消息: append_message / load_messages
+    // Context 快照: save_context_snapshot / load_context_snapshot
 };
 ```
 
-### 6 个内置工具
+数据库: `/tmp/codis_sessions.db`, WAL 模式, FOREIGN KEYS
 
-| Tool | Permission | 实现 |
-|------|-----------|------|
-| `bash` | Ask | fork+exec, 30s 超时, stdout/stderr 管道, 64KB 截断 |
-| `read` | Allow | std::ifstream, offset/limit 分页, 行号前缀 |
-| `write` | Allow | std::ofstream, 自动 mkdir |
-| `edit` | Ask | find→replace→write, replaceAll, .bak 备份 |
-| `glob` | Allow | recursive_directory_iterator, **/*.cpp 匹配 |
-| `grep` | Allow | std::regex, 递归搜索, 扩展名过滤, 200 匹配上限 |
+### 表
+
+```
+sessions(id PK, created_at, updated_at, metadata)
+messages(id PK, session_id FK, role, content, tool_call_id, tool_name)
+context_snapshots(session_id, source_key PK, value_json, rendered)
+```
 
 ---
 
-## ACP Loop
+## System Context
+
+### ContextSource
+
+```cpp
+struct ContextSource {
+    std::string key;
+    Loader loader;        // → ContextValue (raw JSON + rendered text)
+    Renderer render;      // → baseline text
+    optional<Renderer> render_update;  // → incremental update text
+};
+```
+
+### 6 个内置源
+
+| key | 加载内容 | 增量 |
+|-----|----------|------|
+| `date` | 当前时间 | `The current date is now: ...` |
+| `platform` | OS + Shell | — |
+| `working_dir` | 工作目录 | — |
+| `git_status` | `git status --porcelain` | — |
+| `tools` | ToolRegistry schemas | — |
+| `project_instructions` | AGENTS.md / CONTEXT.md | — |
+
+### 工作流程
 
 ```
-while (turn < 10):
-    1. LLM stream (with tool schemas) → token frames
+build_baseline(session_id, store):
+  for each source:
+    val = loader()
+    text = render(val)
+    store.save_context_snapshot(key, val.raw, text)
+  return combined text → first system message
+
+reconcile(session_id, store):
+  for each source:
+    val = loader()
+    old = store.load_context_snapshot(key)
+    if val.raw == old: continue
+    update = render_update(val) or render(val)
+    store.save_context_snapshot(key, val.raw, text)
+  return combined update → mid-conversation system message
+```
+
+---
+
+## ACP Loop (含 System Context)
+
+```
+while turn < 10:
+    turn == 1 → build_baseline() → system message
+    turn >  1 → reconcile() → system message (if changed)
+
+    1. LLM stream (with tools) → assistant frames
     2. extract_tool_calls(content)
        ├─ empty → break
-       └─ has calls ↓
-    3. for each tool_call:
-       ├─ check_permission(name)
-       │   ├─ Denied → error frame
-       │   └─ Allow → execute()
-       ├─ push tool_result frame
-       └─ add to message history
-    4. continue loop (LLM sees tool results)
+       └─ has calls → execute each tool → tool_result frames
+    3. add tool results to message history
+    4. continue
 ```
-
----
-
-## ACP 协议事件
-
-| Event | SSE 帧 |
-|-------|--------|
-| `assistant` | `data: {"type":"assistant","data":{"delta":"..."}}` |
-| `tool_call` | `data: {"type":"tool_call","data":{"id":"x","name":"bash","arguments":{...}}}` |
-| `tool_result` | `data: {"type":"tool_result","data":{"id":"x","success":true,"content":"..."}}` |
-| `error` | `data: {"type":"error","data":{"message":"..."}}` |
-| `done` | `data: {"type":"done","data":{}}` |
-
----
-
-## REST API
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/health` | 健康 + tools + providers |
-| `GET` | `/api/v1/info` | 服务信息 |
-| `POST` | `/api/v1/chat` | 非流式 (含 tools) |
-| `POST` | `/api/v1/acp` | ACP SSE + 多轮 tool |
-| `POST` | `/api/v1/sessions` | 创建会话 |
-| `GET` | `/api/v1/sessions/:id` | 获取 |
-| `POST` | `/api/v1/sessions/:id/messages` | 添加消息 |
 
 ---
 
@@ -161,7 +165,7 @@ while (turn < 10):
 | Phase 2 | v0.2.0 | C/S 架构 + REST API + Session |
 | Phase 3 | v0.3.0 | ACP + SSE 实时流式 |
 | Phase 3.1 | v0.3.1 | 多 Provider + 日志 + SSL 修复 |
-| Phase 4 | v0.4.0 | **Tool Registry + 6 工具 + ACP 多轮 loop** |
-| Phase 5 | v0.5.0 | TUI (FTXUI) + Anthropic |
-| Phase 6 | v0.6.0 | SQLite 持久化 + System Context |
+| Phase 4 | v0.4.0 | Tool Registry + 6 工具 + ACP 多轮 loop |
+| Phase 5 | v0.5.0 | **SQLite 持久化 + System Context** |
+| Phase 6 | v0.6.0 | TUI (FTXUI) + Anthropic |
 | Phase 7 | v0.7.0 | Plugin 系统 (C ABI) |

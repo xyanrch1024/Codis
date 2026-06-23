@@ -29,6 +29,8 @@
 - **多 Provider** — OpenAI / DeepSeek / Groq / ...，配置文件驱动，零代码新增
 - **ACP 协议** — SSE 实时流式推送，5 种事件类型
 - **Tool Registry** — 6 个内置开发工具: bash, read, write, edit, glob, grep
+- **System Context** — 6 个上下文源: date, platform, working_dir, git, tools, AGENTS.md
+- **SQLite 持久化** — 会话/消息/Context 快照存储
 - **vcpkg 包管理** — 6 个第三方库，统一版本，零 FetchContent
 - **C++20** — 现代化 C++，协程就绪
 
