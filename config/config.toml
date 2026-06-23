@@ -1,0 +1,22 @@
+# OpenCode C++ 多 Provider 配置
+# 路径: ~/.config/opencode/config.toml 或通过 -c 指定
+
+default_provider = "deepseek"
+
+[llm]
+max_tokens = 4096
+temperature = 0.7
+
+[[providers]]
+name = "openai"
+api_key = ""                          # 留空则从 OPENAI_API_KEY 环境变量读取
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4o"
+base_url = "https://api.openai.com/v1"
+
+[[providers]]
+name = "deepseek"
+api_key = "sk-e7a81276a19f48798e31678fe408f57e"
+api_key_env = "DEEPSEEK_API_KEY"
+model = "deepseek-chat"
+base_url = "https://api.deepseek.com/v1"
