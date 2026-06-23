@@ -6,6 +6,8 @@
 #include "config.h"
 #include "provider_registry.h"
 #include "tool_registry.h"
+#include "session_store.h"
+#include "context_source.h"
 
 #include <httplib.h>
 
@@ -41,18 +43,7 @@ private:
 };
 
 // =============================================================================
-// Session Data
-// =============================================================================
-
-struct SessionData {
-    std::string id;
-    std::vector<Message> messages;
-    std::string model = "gpt-4o";
-    std::string provider = "openai";
-};
-
-// =============================================================================
-// Session Manager
+// Session Manager (Legacy — 保留兼容, 新代码用 SessionStore)
 // =============================================================================
 
 class SessionManager {
@@ -66,7 +57,6 @@ private:
     std::string next_id();
     mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, SessionData> sessions_;
-    uint64_t counter_ = 0;
 };
 
 // =============================================================================
@@ -102,6 +92,9 @@ private:
     std::vector<ToolCall> extract_tool_calls(const std::string& content);
     void run_acp_loop(SseFrameQueue& frames, ChatRequest req);
 
+    void init_context_sources();
+    std::string build_system_prompt(const std::string& session_id);
+
     int port_;
     std::unique_ptr<httplib::Server> server_;
     std::unique_ptr<std::thread> thread_;
@@ -111,6 +104,8 @@ private:
     ProviderRegistry provider_registry_;
     ToolRegistry tool_registry_;
     AppConfig config_;
+    SessionStore session_store_{"/tmp/codis_sessions.db"};
+    SystemContext system_context_;
 };
 
 } // namespace opencode

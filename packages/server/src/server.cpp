@@ -9,6 +9,16 @@
 
 namespace opencode {
 
+namespace {
+std::string expand_path(const std::string& path) {
+    if (path.starts_with("~/")) {
+        const char* home = std::getenv("HOME");
+        return (home ? home : "/tmp") + path.substr(1);
+    }
+    return path;
+}
+} // anonymous namespace
+
 // =============================================================================
 // SseFrameQueue
 // =============================================================================
@@ -53,10 +63,9 @@ std::optional<SessionData> SessionManager::get_session(const std::string& id) {
     auto it = sessions_.find(id);
     return it != sessions_.end() ? std::optional(it->second) : std::nullopt;
 }
-void SessionManager::add_message(const std::string& id, const Message& msg) {
-    std::unique_lock lock(mutex_);
-    auto it = sessions_.find(id);
-    if (it != sessions_.end()) it->second.messages.push_back(msg);
+void SessionManager::add_message(const std::string& id, const Message&) {
+    // Legacy — 由 SessionStore 替代
+    (void)id;
 }
 std::vector<std::string> SessionManager::list_sessions() const {
     std::shared_lock lock(mutex_);
@@ -105,7 +114,23 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
     tool_registry_.register_tool(std::make_unique<tools::GlobTool>());
     tool_registry_.register_tool(std::make_unique<tools::GrepTool>());
 
+    init_context_sources();
     register_routes();
+}
+
+// =============================================================================
+// Context Sources 初始化
+// =============================================================================
+
+void OpenCodeServer::init_context_sources() {
+    system_context_.register_source(context_sources::date_source());
+    system_context_.register_source(context_sources::working_dir_source());
+    system_context_.register_source(context_sources::platform_source());
+    system_context_.register_source(context_sources::git_status_source());
+    system_context_.register_source(context_sources::project_instructions_source("."));
+    system_context_.register_source(context_sources::tools_source([this]() {
+        return tool_registry_.all_schemas();
+    }));
 }
 
 OpenCodeServer::~OpenCodeServer() { stop(); }
@@ -248,6 +273,10 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
 void OpenCodeServer::run_acp_loop(SseFrameQueue& frames, ChatRequest req) {
     static const int MAX_TURNS = 10;
 
+    // 创建或加载 session
+    auto session_id = session_store_.create_session();
+    LOG_DEBUG("ACP loop started, session {}", session_id);
+
     json tools = json::array();
     for (auto& s : tool_registry_.all_schemas()) {
         tools.push_back({{"type", "function"}, {"function", {
@@ -257,14 +286,27 @@ void OpenCodeServer::run_acp_loop(SseFrameQueue& frames, ChatRequest req) {
         }}});
     }
 
+    // 构建 baseline System Context (首次 turn)
+    auto baseline = system_context_.build_baseline(session_id, session_store_);
+    req.messages.insert(req.messages.begin(), {"system", baseline});
+
     std::string assistant_content;
     auto turn = std::make_shared<int>(0);
+    bool is_first_turn = true;
 
     while (*turn < MAX_TURNS) {
         (*turn)++;
         LOG_DEBUG("ACP loop turn {}/{}", *turn, MAX_TURNS);
 
-        // 调用 LLM
+        // 增量 context reconciliation (非首次 turn)
+        if (!is_first_turn) {
+            auto update = system_context_.reconcile(session_id, session_store_);
+            if (update) {
+                req.messages.push_back({"system", *update});
+            }
+        }
+        is_first_turn = false;
+
         assistant_content.clear();
         call_llm_stream(req, frames, tools);
 
@@ -337,25 +379,26 @@ std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& cont
 
 void OpenCodeServer::handle_session_create(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
-    auto id = session_mgr_.create_session();
+    auto id = session_store_.create_session();
     res.status = 201;
     res.set_content(json{{"session_id", id}}.dump(), "application/json");
 }
 void OpenCodeServer::handle_session_get(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
-    auto session = session_mgr_.get_session(req.matches[1]);
+    auto session = session_store_.load_session(req.matches[1]);
     if (!session) { res.status = 404; res.set_content(R"({"error":"not found"})", "application/json"); return; }
     json j;
-    j["id"] = session->id; j["model"] = session->model; j["provider"] = session->provider;
+    j["id"] = session->id;
+    auto msgs = session_store_.load_messages(session->id);
     j["messages"] = json::array();
-    for (auto& m : session->messages) j["messages"].push_back(m.to_json());
+    for (auto& m : msgs) j["messages"].push_back(m.to_json());
     res.set_content(j.dump(2), "application/json");
 }
 void OpenCodeServer::handle_session_add_message(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
         auto msg = Message::from_json(json::parse(req.body));
-        session_mgr_.add_message(req.matches[1], msg);
+        session_store_.append_message(req.matches[1], msg);
         res.set_content(R"({"status":"ok"})", "application/json");
     } catch (const std::exception& e) {
         res.status = 400;
