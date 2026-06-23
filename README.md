@@ -28,7 +28,7 @@
 - **C/S 架构** — Server 守护进程 + 轻量 CLI 客户端
 - **多 Provider** — OpenAI / DeepSeek / Groq / ...，配置文件驱动，零代码新增
 - **ACP 协议** — SSE 实时流式推送，5 种事件类型
-- **日志系统** — 5 级日志，环境变量控制，输出到 stderr + 文件
+- **Tool Registry** — 6 个内置开发工具: bash, read, write, edit, glob, grep
 - **vcpkg 包管理** — 6 个第三方库，统一版本，零 FetchContent
 - **C++20** — 现代化 C++，协程就绪
 
