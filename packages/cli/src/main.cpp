@@ -64,7 +64,6 @@ int main(int argc, char** argv) {
     std::string prompt_arg;
     std::string system_prompt = "You are a helpful AI coding assistant.";
     bool interactive = false;
-    bool watch_mode = false;
     int  max_tokens  = 4096;
     double temperature = 0.7;
     int  server_port = 8711;
@@ -80,7 +79,6 @@ int main(int argc, char** argv) {
     app.add_option("--temperature",    temperature,   "Temperature");
     app.add_option("prompt",           prompt_arg,    "User prompt");
     app.add_flag("-i,--interactive",   interactive,   "Interactive mode");
-    app.add_flag("-w,--watch",          watch_mode,    "Watch mode: view-only, no input");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -194,15 +192,7 @@ int main(int argc, char** argv) {
                 std::cout << "\n\n> " << std::flush;
             }
         };
-        // Watch mode: 后台 SSE 监听，接收其他 client 的广播
-        if (watch_mode && !current_session.empty()) {
-            acp.connect(current_session, view_cbs);
-            show_header();
-            std::cout << "Watch mode. Press Enter to exit.\n";
-            std::cin.get();
-            acp.disconnect();
-            return 0;
-        }
+        if (!current_session.empty()) acp.connect(current_session, view_cbs);
 
         std::string line;
         while (true) {
