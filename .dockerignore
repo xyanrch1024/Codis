@@ -1,0 +1,7 @@
+build/
+cmake-build-*/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+.git/
