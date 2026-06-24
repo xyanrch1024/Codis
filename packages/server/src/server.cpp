@@ -291,41 +291,50 @@ std::shared_ptr<SseFrameQueue> OpenCodeServer::attach_to_session(
 
         auto& active = active_sessions_[sid];
 
-        // 同步历史消息到新 client（attach/active/new 三种情况都同步）
-        auto history_msgs = session_store_.load_messages(sid);
-        for (auto& m : history_msgs) {
-            if (m.role == "user")
-                queue->push(acp::assistant_frame("\n[User] " + m.content));
-            else if (m.role == "assistant" && !m.content.empty())
-                queue->push(acp::assistant_frame(m.content));
-        }
-
         if (active.processing) {
-            // LLM 正在运行 → 只加入监听
+            // LLM 正在运行 + view-only → 同步历史 + 加入监听
             active.clients.push_back(queue);
-            LOG_INFO("client attached to active session {} ({} listeners, {} history msgs)",
-                     sid.substr(0, 8), active.clients.size(), history_msgs.size());
+            if (!has_new_msg) {
+                auto history_msgs = session_store_.load_messages(sid);
+                for (auto& m : history_msgs) {
+                    if (m.role == "user")
+                        queue->push(acp::assistant_frame("\n[User] " + m.content));
+                    else if (m.role == "assistant" && !m.content.empty())
+                        queue->push(acp::assistant_frame(m.content));
+                }
+            }
+            LOG_INFO("client attached to active session {} ({} listeners)",
+                     sid.substr(0, 8), active.clients.size());
             return queue;
         }
 
-        // 无新消息 → 同步历史，保持 SSE 连接等待广播
+        // 无新消息 → 同步历史 + 保持 SSE 连接
         if (!has_new_msg) {
+            auto history_msgs = session_store_.load_messages(sid);
+            for (auto& m : history_msgs) {
+                if (m.role == "user")
+                    queue->push(acp::assistant_frame("\n[User] " + m.content));
+                else if (m.role == "assistant" && !m.content.empty())
+                    queue->push(acp::assistant_frame(m.content));
+            }
             LOG_INFO("client joined session {} (view-only, {} msgs)",
                      sid.substr(0, 8), history_msgs.size());
             active.clients.push_back(queue);
-            return queue;  // 不发 done，SSE 保持打开
+            return queue;
         }
 
-        // 有新消息 → 触发 LLM
+        // 有新消息 → 触发 LLM（不推历史，client 已有）
         active.processing = true;
         active.clients.push_back(queue);
-        LOG_INFO("session {} activated (new LLM run, {} history msgs)",
-                 sid.substr(0, 8), history_msgs.size());
+        LOG_INFO("session {} activated (new LLM run)", sid.substr(0, 8));
     }
 
-    // 保存 user 消息
-    for (auto& m : req.messages) {
-        if (m.role == "user") session_store_.append_message(sid, m);
+    // 只保存本次新增的 user 消息（最后一条非 system 的 user 消息）
+    for (auto it = req.messages.rbegin(); it != req.messages.rend(); ++it) {
+        if (it->role == "user" && !it->content.empty()) {
+            session_store_.append_message(sid, *it);
+            break;
+        }
     }
 
     std::thread([this, sid, req = std::move(req)]() mutable {
