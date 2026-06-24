@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <vector>
 #include <sstream>
+#include <mutex>
 
 #include "acp_client.h"
 #include "log.h"
@@ -175,9 +176,11 @@ int main(int argc, char** argv) {
         std::cout << "\nCommands: /exit /sessions /session <id> /clear\n\n";
 
         // 启动后台 SSE 监听（实时接收其他 client 的广播）
+        std::mutex cout_mtx;
         AcpClient::Callbacks view_cbs{
             .on_assistant = [&](std::string_view delta) {
-                std::cout << "\r\033[K" << delta << std::flush;  // 覆盖 > 行
+                std::lock_guard lock(cout_mtx);
+                std::cout << "\r\033[K" << delta << std::flush;
             },
             .on_tool_call = [](const acp::ToolCallEvent& tc) {
                 std::cout << "\n[Broadcast Tool: " << tc.name << "]\n";
@@ -282,16 +285,20 @@ int main(int argc, char** argv) {
 
             AcpClient::Callbacks cbs{
                 .on_assistant = [&](std::string_view delta) {
+                    std::lock_guard lock(cout_mtx);
                     std::cout << delta << std::flush;
                     assistant_content.append(delta);
                 },
-                .on_tool_call = [](const acp::ToolCallEvent& tc) {
+                .on_tool_call = [&](const acp::ToolCallEvent& tc) {
+                    std::lock_guard lock(cout_mtx);
                     std::cout << "\n[Tool: " << tc.name << "]\n";
                 },
-                .on_tool_result = [](const acp::ToolResultEvent& tr) {
+                .on_tool_result = [&](const acp::ToolResultEvent& tr) {
+                    std::lock_guard lock(cout_mtx);
                     std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
                 },
-                .on_error = [](std::string_view msg) {
+                .on_error = [&](std::string_view msg) {
+                    std::lock_guard lock(cout_mtx);
                     std::cerr << "\nError: " << msg << "\n";
                 },
                 .on_done = []() {}
