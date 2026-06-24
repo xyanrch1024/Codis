@@ -153,64 +153,48 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
             client.set_connection_timeout(5, 0);
             client.set_read_timeout(300, 0);
 
-            httplib::Request hreq;
-            hreq.method = "POST";
-            hreq.path = "/api/v1/acp";
-            hreq.set_header("Content-Type", "application/json");
-            hreq.set_header("Accept", "text/event-stream");
-
-            json body;
-            body["session_id"] = session_id;
-            body["messages"] = json::array();
-            hreq.body = body.dump();
-
-            httplib::Response hres;
-            httplib::Error err;
-            if (!client.send(hreq, hres, err) || !connected_) continue;
-
-            // 解析 SSE body
-            std::string content = hres.body;
-            std::size_t pos;
-            while ((pos = content.find('\n')) != std::string::npos && connected_) {
-                auto line = content.substr(0, pos);
-                content.erase(0, pos + 1);
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (line.empty()) continue;
-
-                if (line.starts_with("data: ")) {
-                    auto event = acp::parse_frame(line);
-                    if (!event) continue;
-                    switch (event->type) {
-                    case acp::EventType::assistant:
-                        if (callbacks_.on_assistant)
-                            callbacks_.on_assistant(event->data.value("delta", ""));
-                        break;
-                    case acp::EventType::tool_call:
-                        if (callbacks_.on_tool_call) {
-                            callbacks_.on_tool_call({
-                                event->data.value("id",""),
-                                event->data.value("name",""),
-                                event->data.value("arguments", acp::json::object())});
+            // GET /api/v1/acp/stream/{session_id} — 专用 SSE 长连接端点
+            auto res = client.Get(("/api/v1/acp/stream/" + session_id).c_str(),
+                [&](const char* data, size_t len) {
+                    if (!connected_) return false;
+                    static thread_local std::string buf;
+                    buf.append(data, len);
+                    std::size_t pos;
+                    while ((pos = buf.find('\n')) != std::string::npos) {
+                        auto line = buf.substr(0, pos);
+                        buf.erase(0, pos + 1);
+                        if (line.empty() || line.back() == '\r') line.pop_back();
+                        if (line.empty()) continue;
+                        if (line.starts_with("data: ")) {
+                            auto event = acp::parse_frame(line);
+                            if (!event) continue;
+                            switch (event->type) {
+                            case acp::EventType::assistant:
+                                if (callbacks_.on_assistant) callbacks_.on_assistant(event->data.value("delta", ""));
+                                break;
+                            case acp::EventType::tool_call:
+                                if (callbacks_.on_tool_call) callbacks_.on_tool_call({
+                                    event->data.value("id",""), event->data.value("name",""),
+                                    event->data.value("arguments", acp::json::object())});
+                                break;
+                            case acp::EventType::tool_result:
+                                if (callbacks_.on_tool_result) callbacks_.on_tool_result({
+                                    event->data.value("id",""), event->data.value("success",false),
+                                    event->data.value("content","")});
+                                break;
+                            case acp::EventType::error:
+                                if (callbacks_.on_error) callbacks_.on_error(event->data.value("message",""));
+                                break;
+                            case acp::EventType::done:
+                                if (callbacks_.on_done) callbacks_.on_done();
+                                break;
+                            }
                         }
-                        break;
-                    case acp::EventType::tool_result:
-                        if (callbacks_.on_tool_result) {
-                            callbacks_.on_tool_result({
-                                event->data.value("id",""),
-                                event->data.value("success",false),
-                                event->data.value("content","")});
-                        }
-                        break;
-                    case acp::EventType::error:
-                        if (callbacks_.on_error)
-                            callbacks_.on_error(event->data.value("message",""));
-                        break;
-                    case acp::EventType::done:
-                        if (callbacks_.on_done) callbacks_.on_done();
-                        break;
                     }
-                }
-            }
+                    return true;
+                });
+
+            if (!res || !connected_) continue;
         }
     });
 
