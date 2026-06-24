@@ -1,6 +1,5 @@
 #include "server.h"
 #include "tools/tools.h"
-#include "feishu_bot.h"
 
 #include <iostream>
 #include <thread>
