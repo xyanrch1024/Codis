@@ -1,6 +1,7 @@
 add_executable(opencode-server
     src/main.cpp
     src/server.cpp
+    src/feishu_bot.cpp
 )
 
 target_include_directories(opencode-server PRIVATE

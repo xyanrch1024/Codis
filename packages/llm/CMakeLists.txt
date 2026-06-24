@@ -5,6 +5,7 @@ add_library(opencode_llm STATIC
     src/tools/tools.cpp
     src/session_store.cpp
     src/context_source.cpp
+    src/feishu_ws_client.cpp
 )
 
 target_include_directories(opencode_llm PUBLIC src ${SQLite3_INCLUDE_DIR})

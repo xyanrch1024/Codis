@@ -27,5 +27,10 @@ base_url = "https://api.deepseek.com"
 [[providers]]
 name = "glm"
 api_key_env = "GLM_API_KEY"
-model = "glm-4.5-flash"
-base_url = "https://open.bigmodel.cn/api/paas/v4"
+    model = "glm-4.5-flash"
+    base_url = "https://open.bigmodel.cn/api/paas/v4"
+
+[feishu]
+app_id = ""
+app_secret = ""
+enabled = false
