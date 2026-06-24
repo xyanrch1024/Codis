@@ -40,6 +40,7 @@ struct Message {
 struct ChatRequest {
     std::string provider = "openai";
     std::string model = "gpt-4o";
+    std::string session_id;
     std::vector<Message> messages;
     std::optional<int> max_tokens;
     std::optional<double> temperature;

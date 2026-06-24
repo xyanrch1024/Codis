@@ -239,19 +239,14 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
         auto chat_req = ChatRequest::from_json(body);
         chat_req.stream = true;
 
-        auto frames = std::make_shared<SseFrameQueue>();
+        bool is_new = false;
+        auto frames = attach_to_session(
+            body.value("session_id", ""), chat_req, is_new);
 
-        std::thread llm_thread([this, req = std::move(chat_req), frames]() mutable {
-            try {
-                run_acp_loop(*frames, std::move(req));
-                frames->push(acp::done_frame());
-            } catch (const std::exception& e) {
-                frames->push(acp::error_frame(e.what()));
-                frames->push(acp::done_frame());
-            }
-            frames->close();
-        });
-        llm_thread.detach();
+        // 首个 SSE 帧携带 session_id
+        if (is_new) {
+            frames->push(acp::assistant_frame(""));
+        }
 
         res.set_chunked_content_provider("text/event-stream",
             [frames](size_t, httplib::DataSink& sink) -> bool {
@@ -269,28 +264,110 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
 }
 
 // =============================================================================
-// ACP Loop — 多轮 tool call
+// attach_to_session — 核心：检查 activeSessions 决定新建或加入
 // =============================================================================
 
-void OpenCodeServer::run_acp_loop(SseFrameQueue& frames, ChatRequest req) {
+std::shared_ptr<SseFrameQueue> OpenCodeServer::attach_to_session(
+    const std::string& session_id, ChatRequest& req, bool& is_new)
+{
+    auto queue = std::make_shared<SseFrameQueue>();
+    std::string sid = session_id;
+
+    // 是否有新的 user 消息需要 LLM 处理（空 messages = 只查看历史）
+    bool has_new_msg = false;
+    for (auto& m : req.messages) {
+        if (m.role == "user" && !m.content.empty()) has_new_msg = true;
+    }
+
+    {
+        std::unique_lock lock(active_mutex_);
+
+        if (sid.empty() || !session_store_.load_session(sid)) {
+            sid = session_store_.create_session();
+            is_new = true;
+        } else {
+            is_new = false;
+        }
+
+        auto& active = active_sessions_[sid];
+
+        // 同步历史消息到新 client（attach/active/new 三种情况都同步）
+        auto history_msgs = session_store_.load_messages(sid);
+        for (auto& m : history_msgs) {
+            if (m.role == "user")
+                queue->push(acp::assistant_frame("\n[User] " + m.content));
+            else if (m.role == "assistant" && !m.content.empty())
+                queue->push(acp::assistant_frame(m.content));
+        }
+
+        if (active.processing) {
+            // LLM 正在运行 → 只加入监听
+            active.clients.push_back(queue);
+            LOG_INFO("client attached to active session {} ({} listeners, {} history msgs)",
+                     sid.substr(0, 8), active.clients.size(), history_msgs.size());
+            return queue;
+        }
+
+        // 无新消息 → 只同步历史，不触发 LLM
+        if (!has_new_msg) {
+            LOG_INFO("client joined session {} (history-only, {} msgs)",
+                     sid.substr(0, 8), history_msgs.size());
+            queue->push(acp::done_frame());
+            return queue;
+        }
+
+        // 有新消息 → 触发 LLM
+        active.processing = true;
+        active.clients.push_back(queue);
+        LOG_INFO("session {} activated (new LLM run, {} history msgs)",
+                 sid.substr(0, 8), history_msgs.size());
+    }
+
+    // 保存 user 消息
+    for (auto& m : req.messages) {
+        if (m.role == "user") session_store_.append_message(sid, m);
+    }
+
+    std::thread([this, sid, req = std::move(req)]() mutable {
+        run_acp_loop_broadcast(sid, std::move(req));
+    }).detach();
+
+    return queue;
+}
+
+// =============================================================================
+// run_acp_loop_broadcast — 广播版本的 ACP 循环
+// =============================================================================
+
+void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatRequest req) {
     static const int MAX_TURNS = 10;
 
-    // 创建或加载 session
-    auto session_id = session_store_.create_session();
-    LOG_DEBUG("ACP loop started, session {}", session_id);
+    LOG_DEBUG("ACP loop started, session {}", session_id.substr(0, 8));
 
     json tools = json::array();
     for (auto& s : tool_registry_.all_schemas()) {
         tools.push_back({{"type", "function"}, {"function", {
-            {"name", s.name},
-            {"description", s.description},
+            {"name", s.name}, {"description", s.description},
             {"parameters", s.parameters}
         }}});
     }
 
-    // 构建 baseline System Context (首次 turn)
     auto baseline = system_context_.build_baseline(session_id, session_store_);
     req.messages.insert(req.messages.begin(), {"system", baseline});
+
+    // 广播 helper
+    auto broadcast = [&](const std::string& frame) {
+        std::shared_lock lock(active_mutex_);
+        auto it = active_sessions_.find(session_id);
+        if (it == active_sessions_.end()) return;
+        it->second.clients.erase(
+            std::remove_if(it->second.clients.begin(), it->second.clients.end(),
+                [&](auto& w) {
+                    if (auto q = w.lock()) { q->push(frame); return false; }
+                    return true;  // 已过期
+                }),
+            it->second.clients.end());
+    };
 
     std::string assistant_content;
     auto turn = std::make_shared<int>(0);
@@ -300,31 +377,35 @@ void OpenCodeServer::run_acp_loop(SseFrameQueue& frames, ChatRequest req) {
         (*turn)++;
         LOG_DEBUG("ACP loop turn {}/{}", *turn, MAX_TURNS);
 
-        // 增量 context reconciliation (非首次 turn)
         if (!is_first_turn) {
             auto update = system_context_.reconcile(session_id, session_store_);
-            if (update) {
-                req.messages.push_back({"system", *update});
-            }
+            if (update) req.messages.push_back({"system", *update});
         }
         is_first_turn = false;
 
         assistant_content.clear();
-        call_llm_stream(req, frames, tools);
+        auto prov = resolve_provider(req);
+        prov->stream_chat(req, [&](std::string_view delta) {
+            assistant_content += delta;
+            broadcast(acp::assistant_frame(delta));
+        });
 
-        // 检查 tool calls
+        // 保存 assistant 消息到持久化存储
+        if (!assistant_content.empty()) {
+            session_store_.append_message(session_id, {"assistant", assistant_content});
+        }
+
         auto call_list = extract_tool_calls(assistant_content);
         if (call_list.empty()) break;
 
-        // 执行工具
         for (auto& call : call_list) {
             auto perm = tool_registry_.check_permission(call.name);
             if (perm == Permission::Denied) {
-                frames.push(acp::tool_result_frame(call.id, false, "Permission denied"));
+                broadcast(acp::tool_result_frame(call.id, false, "Permission denied"));
                 continue;
             }
             auto result = tool_registry_.execute(call);
-            frames.push(acp::tool_result_frame(result.id, result.success, result.content));
+            broadcast(acp::tool_result_frame(result.id, result.success, result.content));
 
             Message asst_msg;
             asst_msg.role = "assistant";
@@ -341,8 +422,17 @@ void OpenCodeServer::run_acp_loop(SseFrameQueue& frames, ChatRequest req) {
     }
 
     if (*turn >= MAX_TURNS) {
-        frames.push(acp::error_frame("Max turns reached"));
+        broadcast(acp::error_frame("Max turns reached"));
     }
+
+    broadcast(acp::done_frame());
+
+    // 清理
+    {
+        std::unique_lock lock(active_mutex_);
+        active_sessions_.erase(session_id);
+    }
+    LOG_DEBUG("session {} completed", session_id.substr(0, 8));
 }
 
 // =============================================================================

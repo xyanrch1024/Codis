@@ -1,5 +1,10 @@
 # OpenCode C++ 多 Provider 配置
 # 路径: ~/.config/opencode/config.toml 或通过 -c 指定
+#
+# API Key 通过环境变量设置，不要在配置文件里写明文:
+#   export OPENAI_API_KEY="sk-..."
+#   export DEEPSEEK_API_KEY="sk-..."
+#   export GLM_API_KEY="..."
 
 default_provider = "glm"
 
@@ -9,22 +14,18 @@ temperature = 0.7
 
 [[providers]]
 name = "openai"
-api_key = ""                          # 留空则从 OPENAI_API_KEY 环境变量读取
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 base_url = "https://api.openai.com/v1"
 
 [[providers]]
 name = "deepseek"
-#api_key = "xsk-e7a81276a19f48798e31678fe408f57e"
-api_key = ""
 api_key_env = "DEEPSEEK_API_KEY"
 model = "deepseek-v4-flash"
 base_url = "https://api.deepseek.com"
 
 [[providers]]
 name = "glm"
-api_key = "26cdbc74da8044fe809d63c8861c2b90.4PM5USSm65qXNGfu"
 api_key_env = "GLM_API_KEY"
 model = "glm-4.5-flash"
 base_url = "https://open.bigmodel.cn/api/paas/v4"

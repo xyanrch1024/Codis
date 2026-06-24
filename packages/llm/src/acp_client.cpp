@@ -40,7 +40,10 @@ bool AcpClient::send(const ChatRequest& request, Callbacks callbacks) {
     hreq.path = "/api/v1/acp";
     hreq.set_header("Content-Type", "application/json");
     hreq.set_header("Accept", "text/event-stream");
-    hreq.body = request.to_json().dump();
+
+    auto req_json = request.to_json();
+    if (!request.session_id.empty()) req_json["session_id"] = request.session_id;
+    hreq.body = req_json.dump();
 
     httplib::Response hres;
     httplib::Error err;

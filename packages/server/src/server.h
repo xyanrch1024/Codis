@@ -60,6 +60,15 @@ private:
 };
 
 // =============================================================================
+// Active Session — 活跃会话（多 client 共享）
+// =============================================================================
+
+struct ActiveSession {
+    std::vector<std::weak_ptr<SseFrameQueue>> clients;  // 所有监听者
+    std::atomic<bool> processing{false};
+};
+
+// =============================================================================
 // HTTP Server
 // =============================================================================
 
@@ -77,6 +86,10 @@ private:
     void register_routes();
     void set_cors(httplib::Response& res);
 
+    // session → attach client 或创建新的
+    std::shared_ptr<SseFrameQueue> attach_to_session(
+        const std::string& session_id, ChatRequest& req, bool& is_new);
+
     void handle_health(const httplib::Request& req, httplib::Response& res);
     void handle_info(const httplib::Request& req, httplib::Response& res);
     void handle_chat(const httplib::Request& req, httplib::Response& res);
@@ -92,7 +105,9 @@ private:
 
     std::shared_ptr<LLMProvider> resolve_provider(const ChatRequest& req);
     std::vector<ToolCall> extract_tool_calls(const std::string& content);
-    void run_acp_loop(SseFrameQueue& frames, ChatRequest req);
+
+    // 改造为广播版本
+    void run_acp_loop_broadcast(const std::string& session_id, ChatRequest req);
 
     void init_context_sources();
     std::string build_system_prompt(const std::string& session_id);
@@ -108,6 +123,9 @@ private:
     AppConfig config_;
     SessionStore session_store_{"/tmp/codis_sessions.db"};
     SystemContext system_context_;
+
+    std::shared_mutex active_mutex_;
+    std::unordered_map<std::string, ActiveSession> active_sessions_;
 };
 
 } // namespace opencode

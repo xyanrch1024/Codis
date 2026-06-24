@@ -67,10 +67,12 @@ int main(int argc, char** argv) {
     double temperature = 0.7;
     int  server_port = 8711;
     std::string server_bin;
+    std::string session_arg;
 
     app.add_option("-p,--port",        server_port,   "Server port (default: 8711)");
     app.add_option("--server-bin",     server_bin,    "Server binary path");
     app.add_option("-m,--model",       model,         "Model name");
+    app.add_option("-S,--session",     session_arg,   "Session ID to attach");
     app.add_option("-s,--system",      system_prompt, "System prompt");
     app.add_option("-t,--max-tokens",  max_tokens,    "Max tokens");
     app.add_option("--temperature",    temperature,   "Temperature");
@@ -103,6 +105,7 @@ int main(int argc, char** argv) {
     AcpClient acp(server_port);
 
     // 构建请求模板
+    std::string current_session;
     auto build_req = [&](const std::vector<Message>& msgs) {
         ChatRequest req;
         req.model       = model;
@@ -111,35 +114,36 @@ int main(int argc, char** argv) {
         req.max_tokens  = max_tokens;
         req.temperature = temperature;
         req.stream      = true;
+        req.session_id  = current_session;
         return req;
     };
 
+    // ---- 会话初始化 ----
+    if (!session_arg.empty()) {
+        current_session = session_arg;
+    } else {
+        current_session = acp.get_last_session();
+    }
+    if (current_session.empty()) {
+        auto sid = acp.create_session();
+        if (sid) current_session = *sid;
+    }
+
     // ---- 交互模式 ----
     if (interactive || prompt_arg.empty()) {
-        // 自动恢复或创建 session
-        std::string current_session = acp.get_last_session();
-        bool loaded = false;
+        std::vector<Message> conversation;
+        conversation.push_back({"system", system_prompt});
+
+        // 加载 session 历史
         if (!current_session.empty()) {
             auto info = acp.get_session(current_session);
-            if (info && !info->messages.empty()) {
-                LOG_INFO("restored session {} ({} msgs)", current_session, info->messages.size());
+            if (info) {
+                conversation = info->messages;
             }
         }
         if (current_session.empty()) {
             auto sid = acp.create_session();
             if (sid) current_session = *sid;
-        }
-
-        std::vector<Message> conversation;
-        conversation.push_back({"system", system_prompt});
-
-        // 如果恢复了 session，加载历史消息
-        if (!current_session.empty()) {
-            auto info = acp.get_session(current_session);
-            if (info) {
-                conversation = info->messages;
-                loaded = !conversation.empty();
-            }
         }
 
         auto show_header = [&]() {
@@ -155,10 +159,24 @@ int main(int argc, char** argv) {
         };
         show_header();
 
-        std::cout << "Commands: /exit /sessions /session <id> /clear\n\n";
+        // 显示历史聊天
+        if (conversation.size() > 1) {  // 跳过 system message
+            std::cout << std::format("── {} messages loaded from session ──\n", conversation.size() - 1);
+            for (size_t i = 1; i < conversation.size(); i++) {
+                auto& m = conversation[i];
+                if (m.role == "user")
+                    std::cout << "You: " << m.content << "\n";
+                else if (m.role == "assistant")
+                    std::cout << "AI: " << m.content << "\n";
+            }
+            std::cout << "──────────────────────────────────────\n";
+        } else {
+            std::cout << "New session. Type your message.\n";
+        }
+
+        std::cout << "\nCommands: /exit /sessions /session <id> /clear\n\n";
 
         std::string line;
-        bool first_msg = !loaded;
         while (true) {
             std::cout << "> " << std::flush;
             if (!std::getline(std::cin, line)) break;
@@ -222,8 +240,6 @@ int main(int argc, char** argv) {
                     }
                     current_session = sid;
                     conversation = info->messages;
-                    loaded = true;
-                    first_msg = false;
                     show_header();
                     std::cout << std::format("Restored session: {} messages loaded.\n\n",
                         conversation.size());
@@ -239,19 +255,11 @@ int main(int argc, char** argv) {
                 conversation.push_back({"system", system_prompt});
                 if (!current_session.empty()) acp.create_session();
                 std::cout << "Context cleared.\n\n";
-                first_msg = true;
                 continue;
             }
 
             // ---- 普通消息 ----
             conversation.push_back({"user", line});
-
-            // 首次消息自动设置 session title
-            if (first_msg) {
-                first_msg = false;
-                // 通过 server 的 session store 设置 title（需要新增端点或复用）
-            }
-
             std::cout << "\n";
             std::string assistant_content;
 
