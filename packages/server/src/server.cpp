@@ -116,15 +116,6 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
 
     init_context_sources();
     register_routes();
-
-    // 启动飞书 Bot (如果配置了)
-    auto fs_app_id = std::getenv("FEISHU_APP_ID");
-    auto fs_app_secret = std::getenv("FEISHU_APP_SECRET");
-    if (fs_app_id && fs_app_secret && strlen(fs_app_id) > 0) {
-        feishu_bot_ = std::make_unique<FeishuBot>(fs_app_id, fs_app_secret);
-        feishu_bot_->start();
-        LOG_INFO("Feishu bot started");
-    }
 }
 
 // =============================================================================

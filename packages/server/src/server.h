@@ -9,7 +9,6 @@
 #include "session_store.h"
 #include "context_source.h"
 #include "event_bus.h"
-#include "feishu_bot.h"
 
 #include <httplib.h>
 
@@ -126,7 +125,6 @@ private:
     SessionStore session_store_{"/tmp/codis_sessions.db"};
     SystemContext system_context_;
     EventBus event_bus_;
-    std::unique_ptr<FeishuBot> feishu_bot_;
 
     std::shared_mutex active_mutex_;
     std::unordered_map<std::string, ActiveSession> active_sessions_;
