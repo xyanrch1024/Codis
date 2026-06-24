@@ -7,14 +7,14 @@
 │  codis        │ ◄─────────────────► │  codis-server             │
 │  (CLI/TUI)   │   text/event-stream  │  (后台守护进程)            │
 │              │                      │                          │
-│  命令:        │   POST /api/v1/acp   │  ├─ activeSessions (共享) │
-│  /sessions   │   ─────────────────  │  │   session: {clients[]} │
-│  /session id │   ◄─ SSE broadcast   │  ├─ ProviderRegistry     │
-│  /clear      │                      │  ├─ ToolRegistry (6)     │
-│              │                      │  ├─ SystemContext (6)    │
-│  启动时:      │                      │  ├─ SessionStore(SQLite) │
-│  同步历史     │                      │  └─ Logger               │
-│  显示聊天     │                      │                          │
+│  send()      │   POST /api/v1/acp   │  ├─ activeSessions       │
+│  connect()   │   ─────────────────  │  │   session → {clients} │
+│  后台SSE线程  │   ◄─ SSE broadcast   │  ├─ ProviderRegistry     │
+│              │                      │  ├─ ToolRegistry (6)     │
+│  交互命令:    │                      │  ├─ SystemContext (6)    │
+│  /sessions   │                      │  ├─ SessionStore(SQLite) │
+│  /session id │                      │  └─ Logger               │
+│  /clear      │                      │                          │
 └──────────────┘                      └─────────────────────────┘
 ```
 
@@ -42,29 +42,22 @@ opencode-cpp/
 ├── ARCHITECTURE.md / opencode-cpp-design.md / plan.md
 │
 ├── packages/
-│   ├── cli/src/main.cpp             # CLI + 会话命令 + 启动历史同步
+│   ├── cli/src/main.cpp             # CLI + 后台 SSE + 历史同步
 │   ├── server/src/                  # HTTP 守护进程
-│   │   ├── main.cpp                 # -p port -c config
-│   │   ├── server.h                 # activeSessions + 所有子系统
-│   │   └── server.cpp               # 8 端点 + attach_to_session + broadcast
 │   ├── llm/src/
-│   │   ├── types.h                  # Message + ChatRequest (含 session_id)
-│   │   ├── session_store.h/cpp      # SQLite CRUD + list_info / search
+│   │   ├── types.h                  # Message + ChatRequest(session_id)
+│   │   ├── session_store.h/cpp      # SQLite CRUD
 │   │   ├── context_source.h/cpp     # SystemContext + 6 sources
 │   │   ├── tool.h / tool_registry.h / tools/  # 6 工具
-│   │   ├── provider_registry.h      # 多 provider
-│   │   ├── openai_compatible_provider.h/cpp
-│   │   ├── client.h/cpp             # HTTPS + SSE
-│   │   ├── acp.h / acp_client.h/cpp # ACP 协议 + 客户端
+│   │   ├── acp.h / acp_client.h/cpp # ACP 协议 + 客户端 (send/connect)
 │   │   └── log.h
 │   └── util/src/config.h/cpp        # ProviderConfig (api_key_env)
 │
-├── config/config.toml               # env vars only, no plaintext keys
-├── bin/ / scripts/
-└── plan.md
+├── config/config.toml               # env vars only
+└── bin/ / scripts/
 ```
 
-## activeSessions（多 Client 共享）
+## activeSessions — 多 Client 实时共享
 
 ```
 struct ActiveSession {
@@ -72,78 +65,60 @@ struct ActiveSession {
     atomic<bool> processing;
 };
 
-map<string, ActiveSession> active_sessions_;  // shared_mutex 保护
+map<string, ActiveSession> active_sessions_;  // shared_mutex
 ```
 
-### 三路 attach 逻辑
+### attach_to_session 三路分支
 
 ```
-Client POST /api/v1/acp {session_id, messages}
+POST /api/v1/acp {session_id, messages}
   │
-  ├─ session 正在 processing → 加入监听 + 同步历史 (不触发 LLM)
-  ├─ session 空闲 + messages 无 user 内容 → 同步历史 + done (不触发 LLM)
-  └─ session 空闲 + 有 user 消息 → 同步历史 + 启动 LLM + 广播
+  ├─ processing=true → 加入监听 + 同步历史 (不触发 LLM)
+  ├─ messages 无 user 内容 → 同步历史 + 加入监听 + 不发 done (view-only)
+  └─ 有新 user 消息 → 同步历史 + 加入监听 + 启动 LLM + 广播
 ```
 
-### LLM 广播
+### Client 双模式
 
-```
-run_acp_loop_broadcast():
-  ├─ LLM stream → token
-  │   └─ broadcast(assistant_frame(delta))
-  │       └─ 遍历 active.clients → queue->push(frame)
-  ├─ tool_call → tool.execute() → broadcast(tool_result_frame)
-  └─ done → broadcast(done_frame) → erase from active_sessions
-```
-
-## 会话管理
-
-### CLI 命令
-
-| 命令 | 功能 |
-|------|------|
-| `/sessions` | 表格列出所有 session |
-| `/session <id>` | 切换 session |
-| `/session <id> use` | 恢复历史到当前 |
-| `/session <id> del` | 删除 |
-| `/clear` | 清空当前 |
-
-### CLI 启动
-
-```bash
-# 自动恢复最后 session + 显示历史聊天
-./opencode -i
-
-# attach 到指定 session
-./opencode -i -S "2dd48b8c-dd8d-4930-83fd-af23d44fa56b"
-```
-
-启动时自动 `GET /api/v1/sessions/:id` 拉取历史并渲染聊天格式。
-
-### 配置（仅环境变量）
-
-```toml
-[[providers]]
-name = "deepseek"
-api_key_env = "DEEPSEEK_API_KEY"   # 不在文件里写明文 key
-model = "deepseek-chat"
-```
-
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-export GLM_API_KEY="..."
-```
-
-## REST API
-
-| 方法 | 路径 | 说明 |
+| 方法 | 行为 | 用途 |
 |------|------|------|
-| `GET` | `/api/v1/health` | 健康 + tools + providers |
-| `POST` | `/api/v1/acp` | ACP SSE + 多轮 tool + multi-client |
-| `GET` | `/api/v1/sessions` | 列出所有 |
-| `GET` | `/api/v1/sessions/:id` | 获取 + 消息历史 |
-| `DELETE` | `/api/v1/sessions/:id` | 删除 |
-| `POST` | `/api/v1/sessions/:id/messages` | 添加消息 |
+| `send(req, cb)` | 阻塞 POST → 解析 SSE body → 返回 | 发送消息，等待回复 |
+| `connect(sid, cb)` | 后台线程循环 POST + 解析 SSE | 实时接收其他 client 的广播 |
+
+### 实时同步流程
+
+```
+Client A: send("hello") → LLM runs → broadcast
+  ├─ queue_A → SSE → Client A 即时显示
+  └─ queue_B → SSE → Client B 后台线程接收 → 实时渲染
+
+Client B: connect(session_id)
+  ├─ 同步历史消息
+  ├─ 保持 SSE 连接
+  └─ 实时接收 broadcast
+```
+
+## CLI 启动体验
+
+```bash
+./opencode -i                    # 自动恢复最后 session + 显示历史
+./opencode -i -S <session_id>   # attach 到指定 session
+```
+
+```
+╔══════════════════════════════════════════╗
+║  Codis Client  v0.7.0                  ║
+║  Server:   localhost:8711               ║
+║  Session:  2dd48b8c...                  ║
+╚══════════════════════════════════════════╝
+── 3 messages loaded from session ──
+You: hello
+AI: Hello! How can I help?
+──────────────────────────────────────
+Commands: /exit /sessions /session <id> /clear
+
+>
+```
 
 ## ACP 协议
 
@@ -155,16 +130,41 @@ export GLM_API_KEY="..."
 | `error` | `data: {"type":"error","data":{"message":"..."}}` |
 | `done` | `data: {"type":"done","data":{}}` |
 
+## REST API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/health` | 健康 + tools + providers |
+| `POST` | `/api/v1/acp` | ACP SSE + session_id + 多 client |
+| `GET` | `/api/v1/sessions` | 列出所有 |
+| `GET` | `/api/v1/sessions/:id` | 获取 + 消息历史 |
+| `DELETE` | `/api/v1/sessions/:id` | 删除 |
+
+## 配置（仅环境变量）
+
+```toml
+[[providers]]
+name = "glm"
+api_key_env = "GLM_API_KEY"
+model = "glm-4.5-flash"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+```
+
+```bash
+export GLM_API_KEY="..."
+./opencode-server -p 8711 -c config/config.toml
+```
+
 ## Phase 演进
 
 | Phase | 版本 | 交付 |
 |-------|------|------|
 | 1 | v0.1.0 | CLI + 非流式 LLM |
-| 2 | v0.2.0 | C/S REST + Session |
+| 2 | v0.2.0 | C/S REST |
 | 3 | v0.3.0 | ACP + SSE |
-| 3.1 | v0.3.1 | 多 Provider + 日志 + SSL |
-| 4 | v0.4.0 | Tool Registry + 6 工具 |
-| 5 | v0.5.0 | SQLite + System Context |
-| 6 | v0.6.0 | Session 管理 + CLI 命令 |
-| 7 | v0.7.0 | **activeSessions 多 client 共享 + 历史同步 + 广播** |
-| 8 | v0.8.0 | ReAct + RAG (见 plan.md) |
+| 3.1 | v0.3.1 | 多 Provider + 日志 |
+| 4 | v0.4.0 | Tool Registry |
+| 5 | v0.5.0 | SQLite + SystemContext |
+| 6 | v0.6.0 | Session CLI |
+| 7 | v0.7.0 | **activeSessions 多 client 实时同步 + 后台 SSE** |
+| 8 | v0.8.0 | ReAct + RAG |

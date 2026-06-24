@@ -131,8 +131,88 @@ bool AcpClient::send(const ChatRequest& request, Callbacks callbacks) {
 }
 
 // =============================================================================
-// 会话管理（复用 REST）
+// 长连接模式 — 后台 SSE 线程, 实时接收广播
 // =============================================================================
+
+bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
+    if (connected_) return false;
+    callbacks_ = std::move(callbacks);
+
+    connected_ = true;
+    sse_thread_ = std::thread([this, session_id]() {
+        while (connected_) {
+            httplib::Client client(host_, port_);
+            client.set_connection_timeout(5, 0);
+            client.set_read_timeout(300, 0);
+
+            httplib::Request hreq;
+            hreq.method = "POST";
+            hreq.path = "/api/v1/acp";
+            hreq.set_header("Content-Type", "application/json");
+            hreq.set_header("Accept", "text/event-stream");
+
+            json body;
+            body["session_id"] = session_id;
+            body["messages"] = json::array();
+            hreq.body = body.dump();
+
+            httplib::Response hres;
+            httplib::Error err;
+            if (!client.send(hreq, hres, err) || !connected_) continue;
+
+            // 解析 SSE body
+            std::string content = hres.body;
+            std::size_t pos;
+            while ((pos = content.find('\n')) != std::string::npos && connected_) {
+                auto line = content.substr(0, pos);
+                content.erase(0, pos + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.empty()) continue;
+
+                if (line.starts_with("data: ")) {
+                    auto event = acp::parse_frame(line);
+                    if (!event) continue;
+                    switch (event->type) {
+                    case acp::EventType::assistant:
+                        if (callbacks_.on_assistant)
+                            callbacks_.on_assistant(event->data.value("delta", ""));
+                        break;
+                    case acp::EventType::tool_call:
+                        if (callbacks_.on_tool_call) {
+                            callbacks_.on_tool_call({
+                                event->data.value("id",""),
+                                event->data.value("name",""),
+                                event->data.value("arguments", acp::json::object())});
+                        }
+                        break;
+                    case acp::EventType::tool_result:
+                        if (callbacks_.on_tool_result) {
+                            callbacks_.on_tool_result({
+                                event->data.value("id",""),
+                                event->data.value("success",false),
+                                event->data.value("content","")});
+                        }
+                        break;
+                    case acp::EventType::error:
+                        if (callbacks_.on_error)
+                            callbacks_.on_error(event->data.value("message",""));
+                        break;
+                    case acp::EventType::done:
+                        if (callbacks_.on_done) callbacks_.on_done();
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    return true;
+}
+
+void AcpClient::disconnect() {
+    connected_ = false;
+    if (sse_thread_.joinable()) sse_thread_.join();
+}
 
 std::optional<std::string> AcpClient::create_session() {
     auto res = http_->Post("/api/v1/sessions", "", "");

@@ -308,12 +308,12 @@ std::shared_ptr<SseFrameQueue> OpenCodeServer::attach_to_session(
             return queue;
         }
 
-        // 无新消息 → 只同步历史，不触发 LLM
+        // 无新消息 → 同步历史，保持 SSE 连接等待广播
         if (!has_new_msg) {
-            LOG_INFO("client joined session {} (history-only, {} msgs)",
+            LOG_INFO("client joined session {} (view-only, {} msgs)",
                      sid.substr(0, 8), history_msgs.size());
-            queue->push(acp::done_frame());
-            return queue;
+            active.clients.push_back(queue);
+            return queue;  // 不发 done，SSE 保持打开
         }
 
         // 有新消息 → 触发 LLM
@@ -385,6 +385,7 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
 
         assistant_content.clear();
         auto prov = resolve_provider(req);
+        if (!prov) { broadcast(acp::error_frame("No provider configured")); break; }
         prov->stream_chat(req, [&](std::string_view delta) {
             assistant_content += delta;
             broadcast(acp::assistant_frame(delta));
@@ -525,20 +526,22 @@ void OpenCodeServer::handle_session_add_message(const httplib::Request& req, htt
 // =============================================================================
 // Provider 解析 + LLM 调用
 // =============================================================================
-
 std::shared_ptr<LLMProvider> OpenCodeServer::resolve_provider(const ChatRequest& req) {
     std::string name = req.provider.empty() ? provider_registry_.default_name() : req.provider;
     LOG_DEBUG("resolving provider '{}'", name);
     auto provider = provider_registry_.get(name);
     if (provider) return *provider;
+
     LOG_WARN("provider '{}' not found, fallback", name);
     auto list = provider_registry_.list();
     if (!list.empty()) return *provider_registry_.get(list[0]);
-    throw std::runtime_error("No provider configured");
-}
 
+    LOG_ERROR("no provider configured");
+    return nullptr;
+}
 std::string OpenCodeServer::call_llm(const ChatRequest& req, const json& tools) {
     auto prov = resolve_provider(req);
+    if (!prov) throw std::runtime_error("No provider configured. Set API key env var (e.g. GLM_API_KEY)");
     auto result = prov->chat(req);
     if (!result.success) {
         LOG_ERROR("LLM call failed: {}", result.error);
@@ -549,6 +552,7 @@ std::string OpenCodeServer::call_llm(const ChatRequest& req, const json& tools) 
 
 void OpenCodeServer::call_llm_stream(const ChatRequest& req, SseFrameQueue& frames, const json& tools) {
     auto prov = resolve_provider(req);
+    if (!prov) throw std::runtime_error("No provider configured. Set API key env var (e.g. GLM_API_KEY)");
     prov->stream_chat(req, [&frames](std::string_view delta) {
         frames.push(acp::assistant_frame(delta));
     });

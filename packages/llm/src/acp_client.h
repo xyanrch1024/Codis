@@ -8,10 +8,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
 #include <thread>
+#include <atomic>
 #include <httplib.h>
 
 namespace opencode {
@@ -47,6 +45,10 @@ public:
     // 发起 ACP 对话（同步阻塞直到完成）
     bool send(const ChatRequest& request, Callbacks callbacks);
 
+    // 长连接模式：打开 SSE 流，后台持续回调
+    bool connect(const std::string& session_id, Callbacks callbacks);
+    void disconnect();
+
     // 健康检查
     bool health_check();
 
@@ -63,6 +65,9 @@ private:
     std::string host_;
     int port_;
     std::unique_ptr<httplib::Client> http_;
+    std::thread sse_thread_;
+    std::atomic<bool> connected_{false};
+    Callbacks callbacks_;
 };
 
 } // namespace opencode

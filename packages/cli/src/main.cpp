@@ -159,15 +159,13 @@ int main(int argc, char** argv) {
         };
         show_header();
 
-        // 显示历史聊天
-        if (conversation.size() > 1) {  // 跳过 system message
+        // 显示历史
+        if (conversation.size() > 1) {
             std::cout << std::format("── {} messages loaded from session ──\n", conversation.size() - 1);
             for (size_t i = 1; i < conversation.size(); i++) {
                 auto& m = conversation[i];
-                if (m.role == "user")
-                    std::cout << "You: " << m.content << "\n";
-                else if (m.role == "assistant")
-                    std::cout << "AI: " << m.content << "\n";
+                if (m.role == "user")  std::cout << "You: " << m.content << "\n";
+                else if (m.role == "assistant") std::cout << "AI: " << m.content << "\n";
             }
             std::cout << "──────────────────────────────────────\n";
         } else {
@@ -176,6 +174,23 @@ int main(int argc, char** argv) {
 
         std::cout << "\nCommands: /exit /sessions /session <id> /clear\n\n";
 
+        // 启动后台 SSE 监听（实时接收其他 client 的广播）
+        AcpClient::Callbacks view_cbs{
+            .on_assistant = [&](std::string_view delta) {
+                std::cout << "\r\033[K" << delta << std::flush;  // 覆盖 > 行
+            },
+            .on_tool_call = [](const acp::ToolCallEvent& tc) {
+                std::cout << "\n[Broadcast Tool: " << tc.name << "]\n";
+            },
+            .on_error = [](std::string_view msg) {
+                std::cout << "\n[Broadcast Error: " << msg << "]\n";
+            },
+            .on_done = [&]() {
+                std::cout << "\n\n> " << std::flush;
+            }
+        };
+        if (!current_session.empty()) acp.connect(current_session, view_cbs);
+
         std::string line;
         while (true) {
             std::cout << "> " << std::flush;
@@ -183,7 +198,7 @@ int main(int argc, char** argv) {
             if (line.empty()) continue;
 
             // ---- 特殊命令 ----
-            if (line == "/exit" || line == "/quit") break;
+            if (line == "/exit" || line == "/quit") { acp.disconnect(); break; }
 
             if (line == "/sessions") {
                 auto sessions = acp.list_sessions();
