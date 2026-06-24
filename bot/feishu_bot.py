@@ -46,18 +46,21 @@ async def codis_send(session_id: str, text: str):
 
 
 async def handle_message(event: lark.im.v1.P2ImMessageReceiveV1):
+    log.info(f"!!! GOT MESSAGE v2 !!!")
     msg = event.event.message
     chat_id = msg.chat_id
     msg_id = msg.message_id
+    msg_id = msg.message_id
     content = json.loads(msg.content)
     text = content.get("text", "")
+    log.info(f"recieve msg: {text}")
 
     # 去重
     if LAST_MSG_IDS.get(chat_id) == msg_id:
         return
     LAST_MSG_IDS[chat_id] = msg_id
 
-    if not text or msg.chat_type == "p2p":
+    if not text:
         return
 
     log.info(f"[{chat_id[:8]}] {text[:50]}")
@@ -78,9 +81,13 @@ def main():
     app_id = os.environ["FEISHU_APP_ID"]
     app_secret = os.environ["FEISHU_APP_SECRET"]
 
+    def on_any(event: lark.CustomizedEvent) -> None:
+        log.info(f"!!! CUSTOM EVENT: type={event.header.event_type} body={event.body[:300]}")
+
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(handle_message)
+        .register_p1_customized_event("im.chat.access_event.bot_p2p_chat_entered_v1", on_any)
         .build()
     )
 
