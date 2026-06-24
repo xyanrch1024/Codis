@@ -269,7 +269,8 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
 void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     std::string sid = req.matches[1];
-    if (!session_store_.load_session(sid)) sid = session_store_.create_session();
+    if (!session_store_.load_session(sid))
+        session_store_.create_session_with_id(sid);
 
     auto queue = std::make_shared<SseFrameQueue>();
     {

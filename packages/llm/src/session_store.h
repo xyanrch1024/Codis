@@ -33,6 +33,7 @@ public:
 
     // 会话
     std::string create_session(const std::string& metadata = "{}");
+    void create_session_with_id(const std::string& id);
     std::optional<SessionData> load_session(const std::string& id);
     void save_session(const std::string& id, const SessionData& data);
     void delete_session(const std::string& id);

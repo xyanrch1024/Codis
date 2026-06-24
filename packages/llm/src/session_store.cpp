@@ -307,6 +307,16 @@ std::string SessionStore::get_last_session() {
     return id;
 }
 
+void SessionStore::create_session_with_id(const std::string& id) {
+    std::lock_guard lock(mutex_);
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "INSERT OR IGNORE INTO sessions (id) VALUES (?)", -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
 int SessionStore::message_count(const std::string& session_id) {
     std::lock_guard lock(mutex_);
     sqlite3_stmt* stmt = nullptr;
