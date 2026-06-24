@@ -130,6 +130,14 @@ bool AcpClient::send(const ChatRequest& request, Callbacks callbacks) {
     return true;
 }
 
+bool AcpClient::send_async(const ChatRequest& request) {
+    httplib::Headers headers = {{"Content-Type", "application/json"}};
+    auto req_json = request.to_json();
+    if (!request.session_id.empty()) req_json["session_id"] = request.session_id;
+    auto res = http_->Post("/api/v1/acp", headers, req_json.dump(), "application/json");
+    return res && (res->status == 200 || res->status == 202);
+}
+
 // =============================================================================
 // 长连接模式 — 后台 SSE 线程, 实时接收广播
 // =============================================================================

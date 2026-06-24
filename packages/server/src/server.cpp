@@ -171,6 +171,7 @@ void OpenCodeServer::register_routes() {
     server_->Get("/api/v1/info",         [this](auto& r, auto& s) { handle_info(r, s); });
     server_->Post("/api/v1/chat",        [this](auto& r, auto& s) { handle_chat(r, s); });
     server_->Post("/api/v1/acp",         [this](auto& r, auto& s) { handle_acp(r, s); });
+    server_->Get(R"(/api/v1/acp/stream/([a-f0-9\-]+))", [this](auto& r, auto& s) { handle_acp_stream(r, s); });
     server_->Post("/api/v1/sessions",    [this](auto& r, auto& s) { handle_session_create(r, s); });
     server_->Get("/api/v1/sessions",     [this](auto& r, auto& s) { handle_session_list(r, s); });
     server_->Get(R"(/api/v1/sessions/([a-f0-9\-]+))",     [this](auto& r, auto& s) { handle_session_get(r, s); });
@@ -237,30 +238,63 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
     try {
         auto body = json::parse(req.body);
         auto chat_req = ChatRequest::from_json(body);
-        chat_req.stream = true;
+        std::string sid = body.value("session_id", "");
 
-        bool is_new = false;
-        auto frames = attach_to_session(
-            body.value("session_id", ""), chat_req, is_new);
+        if (sid.empty() || !session_store_.load_session(sid))
+            sid = session_store_.create_session();
 
-        // 首个 SSE 帧携带 session_id
-        if (is_new) {
-            frames->push(acp::assistant_frame(""));
+        bool has_msg = false;
+        for (auto& m : chat_req.messages)
+            if (m.role == "user" && !m.content.empty()) has_msg = true;
+
+        if (has_msg) {
+            for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it) {
+                if (it->role == "user" && !it->content.empty()) {
+                    session_store_.append_message(sid, *it); break;
+                }
+            }
+            std::thread([this, sid, req = std::move(chat_req)]() mutable {
+                run_acp_loop_broadcast(sid, std::move(req));
+            }).detach();
         }
 
-        res.set_chunked_content_provider("text/event-stream",
-            [frames](size_t, httplib::DataSink& sink) -> bool {
-                auto frame = frames->pop();
-                if (frame.empty()) { sink.done(); return false; }
-                if (!sink.write(frame.data(), frame.size())) return false;
-                if (frame.find("\"done\"") != std::string::npos) { sink.done(); return false; }
-                return true;
-            });
-
+        res.status = 202;
+        res.set_content(json{{"session_id", sid, "accepted", has_msg}}.dump(), "application/json");
     } catch (const std::exception& e) {
         res.status = 400;
         res.set_content(json{{"error", e.what()}}.dump(), "application/json");
     }
+}
+
+void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Response& res) {
+    set_cors(res);
+    std::string sid = req.matches[1];
+    if (!session_store_.load_session(sid)) sid = session_store_.create_session();
+
+    auto queue = std::make_shared<SseFrameQueue>();
+    {
+        std::unique_lock lock(active_mutex_);
+        auto& active = active_sessions_[sid];
+        auto history = session_store_.load_messages(sid);
+        for (auto& m : history) {
+            if (m.role == "user")
+                queue->push(acp::assistant_frame("\n[User] " + m.content));
+            else if (m.role == "assistant" && !m.content.empty())
+                queue->push(acp::assistant_frame(m.content));
+        }
+        active.clients.push_back(queue);
+        LOG_INFO("SSE stream attached to session {} (viewer {})",
+                 sid.substr(0, 8), active.clients.size());
+    }
+
+    res.set_chunked_content_provider("text/event-stream",
+        [queue](size_t, httplib::DataSink& sink) -> bool {
+            auto frame = queue->pop();
+            if (frame.empty()) { sink.done(); return false; }
+            if (!sink.write(frame.data(), frame.size())) return false;
+            if (frame.find("\"done\"") != std::string::npos) return true;
+            return true;
+        });
 }
 
 // =============================================================================

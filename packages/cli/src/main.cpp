@@ -175,21 +175,34 @@ int main(int argc, char** argv) {
 
         std::cout << "\nCommands: /exit /sessions /session <id> /clear\n\n";
 
-        // 启动后台 SSE 监听（实时接收其他 client 的广播）
+        // SSE 长连接（接收所有 LLM 响应 + 其他客户端广播）
         std::mutex cout_mtx;
+        std::string shared_assistant_content;
         AcpClient::Callbacks view_cbs{
             .on_assistant = [&](std::string_view delta) {
                 std::lock_guard lock(cout_mtx);
-                std::cout << "\r\033[K" << delta << std::flush;
+                std::cout << delta << std::flush;
+                shared_assistant_content.append(delta);
             },
-            .on_tool_call = [](const acp::ToolCallEvent& tc) {
-                std::cout << "\n[Broadcast Tool: " << tc.name << "]\n";
+            .on_tool_call = [&](const acp::ToolCallEvent& tc) {
+                std::lock_guard lock(cout_mtx);
+                std::cout << "\n[Tool: " << tc.name << "]\n";
             },
-            .on_error = [](std::string_view msg) {
-                std::cout << "\n[Broadcast Error: " << msg << "]\n";
+            .on_tool_result = [&](const acp::ToolResultEvent& tr) {
+                std::lock_guard lock(cout_mtx);
+                std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
+            },
+            .on_error = [&](std::string_view msg) {
+                std::lock_guard lock(cout_mtx);
+                std::cerr << "\nError: " << msg << "\n";
             },
             .on_done = [&]() {
-                std::cout << "\n\n> " << std::flush;
+                std::lock_guard lock(cout_mtx);
+                if (!shared_assistant_content.empty()) {
+                    conversation.push_back({"assistant", shared_assistant_content});
+                    shared_assistant_content.clear();
+                }
+                std::cout << "\n> " << std::flush;
             }
         };
         if (!current_session.empty()) acp.connect(current_session, view_cbs);
@@ -283,34 +296,8 @@ int main(int argc, char** argv) {
 
             auto req = build_req(conversation);
 
-            AcpClient::Callbacks cbs{
-                .on_assistant = [&](std::string_view delta) {
-                    std::lock_guard lock(cout_mtx);
-                    std::cout << delta << std::flush;
-                    assistant_content.append(delta);
-                },
-                .on_tool_call = [&](const acp::ToolCallEvent& tc) {
-                    std::lock_guard lock(cout_mtx);
-                    std::cout << "\n[Tool: " << tc.name << "]\n";
-                },
-                .on_tool_result = [&](const acp::ToolResultEvent& tr) {
-                    std::lock_guard lock(cout_mtx);
-                    std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
-                },
-                .on_error = [&](std::string_view msg) {
-                    std::lock_guard lock(cout_mtx);
-                    std::cerr << "\nError: " << msg << "\n";
-                },
-                .on_done = []() {}
-            };
-
-            bool ok = acp.send(req, cbs);
-
-            std::cout << "\n\n";
-
-            if (ok && !assistant_content.empty()) {
-                conversation.push_back({"assistant", assistant_content});
-            }
+            // 长连接模式: fire-and-forget, 回复通过 SSE stream 到达
+            acp.send_async(req);
         }
     }
     // ---- 单次模式 ----

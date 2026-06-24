@@ -94,6 +94,7 @@ private:
     void handle_info(const httplib::Request& req, httplib::Response& res);
     void handle_chat(const httplib::Request& req, httplib::Response& res);
     void handle_acp(const httplib::Request& req, httplib::Response& res);
+    void handle_acp_stream(const httplib::Request& req, httplib::Response& res);
     void handle_session_create(const httplib::Request& req, httplib::Response& res);
     void handle_session_list(const httplib::Request& req, httplib::Response& res);
     void handle_session_get(const httplib::Request& req, httplib::Response& res);

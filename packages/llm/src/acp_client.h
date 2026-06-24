@@ -45,6 +45,9 @@ public:
     // 发起 ACP 对话（同步阻塞直到完成）
     bool send(const ChatRequest& request, Callbacks callbacks);
 
+    // fire-and-forget: 只发送消息，不等待回复
+    bool send_async(const ChatRequest& request);
+
     // 长连接模式：打开 SSE 流，后台持续回调
     bool connect(const std::string& session_id, Callbacks callbacks);
     void disconnect();
