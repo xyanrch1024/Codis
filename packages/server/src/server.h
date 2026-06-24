@@ -8,6 +8,7 @@
 #include "tool_registry.h"
 #include "session_store.h"
 #include "context_source.h"
+#include "event_bus.h"
 
 #include <httplib.h>
 
@@ -60,11 +61,10 @@ private:
 };
 
 // =============================================================================
-// Active Session — 活跃会话（多 client 共享）
+// Active Session 跟踪
 // =============================================================================
 
 struct ActiveSession {
-    std::vector<std::weak_ptr<SseFrameQueue>> clients;  // 所有监听者
     std::atomic<bool> processing{false};
 };
 
@@ -124,6 +124,7 @@ private:
     AppConfig config_;
     SessionStore session_store_{"/tmp/codis_sessions.db"};
     SystemContext system_context_;
+    EventBus event_bus_;
 
     std::shared_mutex active_mutex_;
     std::unordered_map<std::string, ActiveSession> active_sessions_;
