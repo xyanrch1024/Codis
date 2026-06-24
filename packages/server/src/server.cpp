@@ -355,18 +355,14 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
     auto baseline = system_context_.build_baseline(session_id, session_store_);
     req.messages.insert(req.messages.begin(), {"system", baseline});
 
-    // 广播 helper
+    // 广播 helper — 只做写操作, 不在帧级别清理过期 client
     auto broadcast = [&](const std::string& frame) {
-        std::shared_lock lock(active_mutex_);
+        std::unique_lock lock(active_mutex_);
         auto it = active_sessions_.find(session_id);
         if (it == active_sessions_.end()) return;
-        it->second.clients.erase(
-            std::remove_if(it->second.clients.begin(), it->second.clients.end(),
-                [&](auto& w) {
-                    if (auto q = w.lock()) { q->push(frame); return false; }
-                    return true;  // 已过期
-                }),
-            it->second.clients.end());
+        for (auto& w : it->second.clients) {
+            if (auto q = w.lock()) q->push(frame);
+        }
     };
 
     std::string assistant_content;
@@ -428,10 +424,21 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
 
     broadcast(acp::done_frame());
 
-    // 清理
+    // 清理过期 client + 标记完成
     {
         std::unique_lock lock(active_mutex_);
-        active_sessions_.erase(session_id);
+        auto it = active_sessions_.find(session_id);
+        if (it != active_sessions_.end()) {
+            it->second.clients.erase(
+                std::remove_if(it->second.clients.begin(), it->second.clients.end(),
+                    [](auto& w) { return w.expired(); }),
+                it->second.clients.end());
+            if (it->second.clients.empty()) {
+                active_sessions_.erase(it);
+            } else {
+                it->second.processing = false;
+            }
+        }
     }
     LOG_DEBUG("session {} completed", session_id.substr(0, 8));
 }
