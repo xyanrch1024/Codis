@@ -7,19 +7,42 @@
 │  codis        │ ◄─────────────────────► │  codis-server             │
 │  (CLI/TUI)   │  SSE long-lived stream   │  (后台守护进程)            │
 │              │                          │                          │
-│  send_async()│  POST /api/v1/acp        │  ├─ activeSessions       │
-│  connect()   │  ──────────────────────► │  │   session → {clients} │
-│  后台SSE线程  │  GET /api/v1/acp/stream   │  ├─ ProviderRegistry     │
-│              │ ◄════ SSE keep-alive ═══ │  ├─ ToolRegistry (6)     │
-│              │                          │  ├─ SystemContext (6)    │
-│  交互命令:    │                          │  ├─ SessionStore(SQLite) │
-│  /sessions   │                          │  └─ Logger               │
-│  /session id │                          │                          │
+│  send_async()│  POST /api/v1/acp        │  ├─ EventBus (pub/sub)   │
+│  connect()   │  ──────────────────────► │  │   topic: session:*:   │
+│  后台SSE线程  │  GET /api/v1/acp/stream   │  │     event             │
+│              │ ◄════ SSE keep-alive ═══ │  ├─ ProviderRegistry     │
+│              │                          │  ├─ ToolRegistry (6)     │
+│  交互命令:    │                          │  ├─ SystemContext (6)    │
+│  /sessions   │                          │  ├─ SessionStore(SQLite) │
+│  /session id │                          │  └─ Logger               │
 │  /clear      │                          │                          │
 └──────────────┘                          └─────────────────────────┘
 ```
 
-## 通信架构
+## 通信架构 (v0.9.0)
+
+### EventBus — 解耦的发布/订阅
+
+```
+                         EventBus (全局单例)
+                    ┌─────────────────────────────┐
+                    │  topic → [handler_id, handler] │
+                    │                             │
+  LLM Worker ──────►│  publish("s:123:event", f)  │
+                    │       │                     │
+                    │       ├─► handler_A(f)       │──► queue_A → SSE A
+                    │       ├─► handler_B(f)       │──► queue_B → SSE B
+                    │       └─► handler_log(f)     │──► 审计日志 (未来)
+                    │                             │
+  Tool.execute ────►│  publish("s:123:event", f)  │
+                    │                             │
+                    └─────────────────────────────┘
+```
+
+- `subscribe(topic, handler)`: SSE stream 注册回调
+- `publish(topic, frame)`: LLM Worker 发送帧
+- `unsubscribe(topic, id)`: SSE stream 断开时取消
+- `shared_mutex`: 读多写少，performance near lock-free
 
 ### 长 TCP 连接
 
@@ -28,42 +51,39 @@
 
 Client                            Server
   │                                │
-  │  GET /api/v1/acp/stream/{id}   │  建立 SSE 长连接
+  │  GET /api/v1/acp/stream/{id}   │  SSE stream: subscribe EventBus
   │ ═══════ keep-alive ══════════ │
   │  ←── history frames ──────── │  历史消息
-  │  ←── broadcast tokens ────── │  其他 client 的消息
   │                                │
-  │  POST /api/v1/acp              │  fire-and-forget 发送消息
+  │  POST /api/v1/acp              │  fire-and-forget → LLM
   │  {session_id, messages}        │  → 202 Accepted
-  │                                │  → LLM → broadcast → SSE stream
+  │                                │  → LLM → publish EventBus
   │  ←── assistant frames ────── │  实时 token
   │  ←── done ─────────────────── │
-  │                                │
-  │  POST /api/v1/acp              │  下一条消息...
-  │  ←── assistant frames ────── │
 ```
 
-### 端点对比
+### 端点
 
 | 端点 | 方法 | 连接 | 说明 |
 |------|------|------|------|
-| `/api/v1/acp/stream/{id}` | GET | **长连接** | SSE 流，持续推送，客户端用 `connect()` |
-| `/api/v1/acp` | POST | 短连接 | fire-and-forget，触发 LLM，返回 202 |
+| `/api/v1/acp/stream/{id}` | GET | 长连接 | SSE stream, subscribe EventBus |
+| `/api/v1/acp` | POST | 短连接 | fire-and-forget, 202 |
 
 ## 技术选型
 
 | 类别 | 库 | 版本 | 管理 |
 |------|-----|------|------|
-| HTTP 客户端/服务端 | **cpp-httplib** | 0.47.0 [openssl] | vcpkg |
-| JSON | **nlohmann/json** | 3.12.0 | vcpkg |
-| CLI 参数 | **CLI11** | 2.6.2 | vcpkg |
-| 配置 (TOML) | **toml++** | 3.4.0 | vcpkg |
-| SSL/TLS | **OpenSSL** | 3.6.3 | vcpkg |
-| 异步 IO + 信号 | **standalone asio** | 1.32.0 | vcpkg |
-| 数据库 | **SQLite3** | 3.45.1 | 系统自带 |
-| C++ 标准 | **C++20** | | |
-| 构建 | **CMake** 3.20+ | | |
-| 包管理 | **vcpkg** manifest (6 包) | | |
+| HTTP | cpp-httplib | 0.47.0 [openssl] | vcpkg |
+| JSON | nlohmann/json | 3.12.0 | vcpkg |
+| CLI | CLI11 | 2.6.2 | vcpkg |
+| 配置 | toml++ | 3.4.0 | vcpkg |
+| SSL | OpenSSL | 3.6.3 | vcpkg |
+| 异步 IO | standalone asio | 1.32.0 | vcpkg |
+| 数据库 | SQLite3 | 3.45.1 | 系统自带 |
+| EventBus | **std::shared_mutex** | C++17 | 标准库 |
+| C++ | C++20 | | |
+| 构建 | CMake 3.20+ | | |
+| 包管理 | vcpkg manifest (6 包) | | |
 
 ## 项目目录
 
@@ -73,53 +93,47 @@ opencode-cpp/
 ├── ARCHITECTURE.md / opencode-cpp-design.md / plan.md
 │
 ├── packages/
-│   ├── cli/src/main.cpp             # CLI: connect() + send_async()
-│   ├── server/src/                  # HTTP 守护进程
-│   │   ├── main.cpp                 # -p port -c config
-│   │   ├── server.h                 # activeSessions + 所有子系统
-│   │   └── server.cpp               # handle_acp(fire-and-forget) + handle_acp_stream(SSE)
+│   ├── cli/src/main.cpp           # connect() + send_async()
+│   ├── server/src/                # 2 ACP 端点 + EventBus publish
 │   ├── llm/src/
-│   │   ├── types.h                  # Message + ChatRequest(session_id)
-│   │   ├── session_store.h/cpp      # SQLite CRUD + create_session_with_id
-│   │   ├── context_source.h/cpp     # SystemContext + 6 sources
-│   │   ├── tool.h / tool_registry.h / tools/  # 6 工具
-│   │   ├── acp.h / acp_client.h/cpp # ACP 协议 + 客户端 (send_async/connect)
+│   │   ├── event_bus.h            # 发布/订阅 (shared_mutex)
+│   │   ├── types.h / acp.h / acp_client.h/cpp
+│   │   ├── session_store.h/cpp
+│   │   ├── context_source.h/cpp
+│   │   ├── tool.h / tool_registry.h / tools/
 │   │   └── log.h
-│   └── util/src/config.h/cpp        # ProviderConfig (api_key_env)
+│   └── util/src/config.h/cpp
 │
-├── config/config.toml               # env vars only
+├── config/config.toml
 └── bin/ / scripts/
+```
+
+## EventBus API
+
+```cpp
+class EventBus {
+    using Handler = function<void(const string& frame)>;
+
+    uint64_t subscribe(topic, Handler);           // 订阅
+    void unsubscribe(topic, subscription_id);      // 取消
+    void publish(topic, frame);                    // 发布 (shared_lock)
+    void clear(topic);                             // 清理
+    size_t subscriber_count(topic);               // 订阅数
+};
 ```
 
 ## Client API
 
-| 方法 | 行为 | 用途 |
-|------|------|------|
-| `connect(sid, cbs)` | `GET /stream/{sid}` → SSE 长连接 → 后台线程接收 | 建立长连接，接收所有 LLM 响应和广播 |
-| `send_async(req)` | `POST /acp` → 202 → 立即返回 | fire-and-forget 发送消息 |
-| `send(req, cbs)` | `POST /acp` → 阻塞读取 SSE body → 返回 | 同步发送消息（旧） |
+| 方法 | 行为 |
+|------|------|
+| `connect(sid, cbs)` | `GET /stream/{sid}` → SSE → 后台线程接收 EventBus 推送 |
+| `send_async(req)` | `POST /acp` → 202 → 无阻塞 |
 
-## activeSessions — 多 Client 共享
-
-```
-struct ActiveSession {
-    vector<weak_ptr<SseFrameQueue>> clients;  // SSE stream 监听者
-    atomic<bool> processing;
-};
-
-map<string, ActiveSession> active_sessions_;  // unique_lock 保护
-```
-
-### 广播流程
+## activeSessions — 处理中的 LLM 跟踪
 
 ```
-handle_acp (fire-and-forget):
-  ├─ 保存 user 消息到 SessionStore
-  └─ detach LLM thread → run_acp_loop_broadcast()
-       │
-       ├─ LLM stream → broadcast(assistant_frame)
-       ├─ tool.execute → broadcast(tool_result_frame)
-       └─ done → broadcast(done_frame) + cleanup
+ActiveSession { atomic<bool> processing }
+  → 防止同一 session 并发 LLM 运行
 ```
 
 ## ACP 协议
@@ -132,40 +146,11 @@ handle_acp (fire-and-forget):
 | `error` | `data: {"type":"error","data":{"message":"..."}}` |
 | `done` | `data: {"type":"done","data":{}}` |
 
-## CLI 启动体验
-
-```bash
-./opencode -i                    # 恢复最后 session + 显示历史
-./opencode -i -S <session_id>   # attach 到指定 session
-./opencode -i -w                 # watch mode: 只接收广播，不输入
-```
-
-```
-╔══════════════════════════════════════════╗
-║  Codis Client  v0.8.0                  ║
-║  Server:   localhost:8711               ║
-║  Session:  00001111...                  ║
-╚══════════════════════════════════════════╝
-── 3 messages loaded from session ──
-You: hello
-AI: Hi! How can I help?
-──────────────────────────────────────
-Commands: /exit /sessions /session <id> /clear
-
-> 用户输入 → send_async → SSE stream 实时返回
-```
-
 ## Phase 演进
 
 | Phase | 版本 | 交付 |
 |-------|------|------|
-| 1 | v0.1.0 | CLI + 非流式 LLM |
-| 2 | v0.2.0 | C/S REST |
-| 3 | v0.3.0 | ACP + SSE |
-| 3.1 | v0.3.1 | 多 Provider + 日志 |
-| 4 | v0.4.0 | Tool Registry |
-| 5 | v0.5.0 | SQLite + SystemContext |
-| 6 | v0.6.0 | Session CLI |
-| 7 | v0.7.0 | Multi-client 共享 |
-| 8 | v0.8.0 | **长 TCP 连接: SSE stream + fire-and-forget** |
-| 9 | v0.9.0 | ReAct + RAG |
+| 1-7 | v0.1.0-v0.7.0 | 基础架构完成 |
+| 8 | v0.8.0 | 长 TCP: SSE stream + fire-and-forget |
+| 9 | v0.9.0 | **EventBus: pub/sub 解耦 LLM 与传输层** |
+| 10 | v0.10.0 | ReAct + RAG |
