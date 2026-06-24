@@ -3,20 +3,52 @@
 ## 总体拓扑
 
 ```
-┌──────────────┐   ACP + SSE (HTTP)   ┌─────────────────────────┐
-│  codis        │ ◄─────────────────► │  codis-server             │
-│  (CLI/TUI)   │   text/event-stream  │  (后台守护进程)            │
-│              │                      │                          │
-│  send()      │   POST /api/v1/acp   │  ├─ activeSessions       │
-│  connect()   │   ─────────────────  │  │   session → {clients} │
-│  后台SSE线程  │   ◄─ SSE broadcast   │  ├─ ProviderRegistry     │
-│              │                      │  ├─ ToolRegistry (6)     │
-│  交互命令:    │                      │  ├─ SystemContext (6)    │
-│  /sessions   │                      │  ├─ SessionStore(SQLite) │
-│  /session id │                      │  └─ Logger               │
-│  /clear      │                      │                          │
-└──────────────┘                      └─────────────────────────┘
+┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────┐
+│  codis        │ ◄─────────────────────► │  codis-server             │
+│  (CLI/TUI)   │  SSE long-lived stream   │  (后台守护进程)            │
+│              │                          │                          │
+│  send_async()│  POST /api/v1/acp        │  ├─ activeSessions       │
+│  connect()   │  ──────────────────────► │  │   session → {clients} │
+│  后台SSE线程  │  GET /api/v1/acp/stream   │  ├─ ProviderRegistry     │
+│              │ ◄════ SSE keep-alive ═══ │  ├─ ToolRegistry (6)     │
+│              │                          │  ├─ SystemContext (6)    │
+│  交互命令:    │                          │  ├─ SessionStore(SQLite) │
+│  /sessions   │                          │  └─ Logger               │
+│  /session id │                          │                          │
+│  /clear      │                          │                          │
+└──────────────┘                          └─────────────────────────┘
 ```
+
+## 通信架构
+
+### 长 TCP 连接
+
+```
+1 个 SSE 长连接 (贯穿整个 session 生命周期)
+
+Client                            Server
+  │                                │
+  │  GET /api/v1/acp/stream/{id}   │  建立 SSE 长连接
+  │ ═══════ keep-alive ══════════ │
+  │  ←── history frames ──────── │  历史消息
+  │  ←── broadcast tokens ────── │  其他 client 的消息
+  │                                │
+  │  POST /api/v1/acp              │  fire-and-forget 发送消息
+  │  {session_id, messages}        │  → 202 Accepted
+  │                                │  → LLM → broadcast → SSE stream
+  │  ←── assistant frames ────── │  实时 token
+  │  ←── done ─────────────────── │
+  │                                │
+  │  POST /api/v1/acp              │  下一条消息...
+  │  ←── assistant frames ────── │
+```
+
+### 端点对比
+
+| 端点 | 方法 | 连接 | 说明 |
+|------|------|------|------|
+| `/api/v1/acp/stream/{id}` | GET | **长连接** | SSE 流，持续推送，客户端用 `connect()` |
+| `/api/v1/acp` | POST | 短连接 | fire-and-forget，触发 LLM，返回 202 |
 
 ## 技术选型
 
@@ -32,7 +64,6 @@
 | C++ 标准 | **C++20** | | |
 | 构建 | **CMake** 3.20+ | | |
 | 包管理 | **vcpkg** manifest (6 包) | | |
-| 通信协议 | **ACP** over HTTP SSE | | |
 
 ## 项目目录
 
@@ -42,14 +73,17 @@ opencode-cpp/
 ├── ARCHITECTURE.md / opencode-cpp-design.md / plan.md
 │
 ├── packages/
-│   ├── cli/src/main.cpp             # CLI + 后台 SSE + 历史同步
+│   ├── cli/src/main.cpp             # CLI: connect() + send_async()
 │   ├── server/src/                  # HTTP 守护进程
+│   │   ├── main.cpp                 # -p port -c config
+│   │   ├── server.h                 # activeSessions + 所有子系统
+│   │   └── server.cpp               # handle_acp(fire-and-forget) + handle_acp_stream(SSE)
 │   ├── llm/src/
 │   │   ├── types.h                  # Message + ChatRequest(session_id)
-│   │   ├── session_store.h/cpp      # SQLite CRUD
+│   │   ├── session_store.h/cpp      # SQLite CRUD + create_session_with_id
 │   │   ├── context_source.h/cpp     # SystemContext + 6 sources
 │   │   ├── tool.h / tool_registry.h / tools/  # 6 工具
-│   │   ├── acp.h / acp_client.h/cpp # ACP 协议 + 客户端 (send/connect)
+│   │   ├── acp.h / acp_client.h/cpp # ACP 协议 + 客户端 (send_async/connect)
 │   │   └── log.h
 │   └── util/src/config.h/cpp        # ProviderConfig (api_key_env)
 │
@@ -57,67 +91,35 @@ opencode-cpp/
 └── bin/ / scripts/
 ```
 
-## activeSessions — 多 Client 实时共享
-
-```
-struct ActiveSession {
-    vector<weak_ptr<SseFrameQueue>> clients;  // 所有监听者
-    atomic<bool> processing;
-};
-
-map<string, ActiveSession> active_sessions_;  // shared_mutex
-```
-
-### attach_to_session 三路分支
-
-```
-POST /api/v1/acp {session_id, messages}
-  │
-  ├─ processing=true → 加入监听 + 同步历史 (不触发 LLM)
-  ├─ messages 无 user 内容 → 同步历史 + 加入监听 + 不发 done (view-only)
-  └─ 有新 user 消息 → 同步历史 + 加入监听 + 启动 LLM + 广播
-```
-
-### Client 双模式
+## Client API
 
 | 方法 | 行为 | 用途 |
 |------|------|------|
-| `send(req, cb)` | 阻塞 POST → 解析 SSE body → 返回 | 发送消息，等待回复 |
-| `connect(sid, cb)` | 后台线程循环 POST + 解析 SSE | 实时接收其他 client 的广播 |
+| `connect(sid, cbs)` | `GET /stream/{sid}` → SSE 长连接 → 后台线程接收 | 建立长连接，接收所有 LLM 响应和广播 |
+| `send_async(req)` | `POST /acp` → 202 → 立即返回 | fire-and-forget 发送消息 |
+| `send(req, cbs)` | `POST /acp` → 阻塞读取 SSE body → 返回 | 同步发送消息（旧） |
 
-### 实时同步流程
-
-```
-Client A: send("hello") → LLM runs → broadcast
-  ├─ queue_A → SSE → Client A 即时显示
-  └─ queue_B → SSE → Client B 后台线程接收 → 实时渲染
-
-Client B: connect(session_id)
-  ├─ 同步历史消息
-  ├─ 保持 SSE 连接
-  └─ 实时接收 broadcast
-```
-
-## CLI 启动体验
-
-```bash
-./opencode -i                    # 自动恢复最后 session + 显示历史
-./opencode -i -S <session_id>   # attach 到指定 session
-```
+## activeSessions — 多 Client 共享
 
 ```
-╔══════════════════════════════════════════╗
-║  Codis Client  v0.7.0                  ║
-║  Server:   localhost:8711               ║
-║  Session:  2dd48b8c...                  ║
-╚══════════════════════════════════════════╝
-── 3 messages loaded from session ──
-You: hello
-AI: Hello! How can I help?
-──────────────────────────────────────
-Commands: /exit /sessions /session <id> /clear
+struct ActiveSession {
+    vector<weak_ptr<SseFrameQueue>> clients;  // SSE stream 监听者
+    atomic<bool> processing;
+};
 
->
+map<string, ActiveSession> active_sessions_;  // unique_lock 保护
+```
+
+### 广播流程
+
+```
+handle_acp (fire-and-forget):
+  ├─ 保存 user 消息到 SessionStore
+  └─ detach LLM thread → run_acp_loop_broadcast()
+       │
+       ├─ LLM stream → broadcast(assistant_frame)
+       ├─ tool.execute → broadcast(tool_result_frame)
+       └─ done → broadcast(done_frame) + cleanup
 ```
 
 ## ACP 协议
@@ -130,29 +132,27 @@ Commands: /exit /sessions /session <id> /clear
 | `error` | `data: {"type":"error","data":{"message":"..."}}` |
 | `done` | `data: {"type":"done","data":{}}` |
 
-## REST API
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/health` | 健康 + tools + providers |
-| `POST` | `/api/v1/acp` | ACP SSE + session_id + 多 client |
-| `GET` | `/api/v1/sessions` | 列出所有 |
-| `GET` | `/api/v1/sessions/:id` | 获取 + 消息历史 |
-| `DELETE` | `/api/v1/sessions/:id` | 删除 |
-
-## 配置（仅环境变量）
-
-```toml
-[[providers]]
-name = "glm"
-api_key_env = "GLM_API_KEY"
-model = "glm-4.5-flash"
-base_url = "https://open.bigmodel.cn/api/paas/v4"
-```
+## CLI 启动体验
 
 ```bash
-export GLM_API_KEY="..."
-./opencode-server -p 8711 -c config/config.toml
+./opencode -i                    # 恢复最后 session + 显示历史
+./opencode -i -S <session_id>   # attach 到指定 session
+./opencode -i -w                 # watch mode: 只接收广播，不输入
+```
+
+```
+╔══════════════════════════════════════════╗
+║  Codis Client  v0.8.0                  ║
+║  Server:   localhost:8711               ║
+║  Session:  00001111...                  ║
+╚══════════════════════════════════════════╝
+── 3 messages loaded from session ──
+You: hello
+AI: Hi! How can I help?
+──────────────────────────────────────
+Commands: /exit /sessions /session <id> /clear
+
+> 用户输入 → send_async → SSE stream 实时返回
 ```
 
 ## Phase 演进
@@ -166,5 +166,6 @@ export GLM_API_KEY="..."
 | 4 | v0.4.0 | Tool Registry |
 | 5 | v0.5.0 | SQLite + SystemContext |
 | 6 | v0.6.0 | Session CLI |
-| 7 | v0.7.0 | **activeSessions 多 client 实时同步 + 后台 SSE** |
-| 8 | v0.8.0 | ReAct + RAG |
+| 7 | v0.7.0 | Multi-client 共享 |
+| 8 | v0.8.0 | **长 TCP 连接: SSE stream + fire-and-forget** |
+| 9 | v0.9.0 | ReAct + RAG |
