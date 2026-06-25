@@ -22,6 +22,17 @@ import lark_oapi as lark
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("feishu-bot")
 
+# 日志级别
+_log_level = os.environ.get("LOG_LEVEL", "info").upper()
+_log_map = {"TRACE": logging.DEBUG, "DEBUG": logging.DEBUG, "INFO": logging.INFO,
+            "WARN": logging.WARNING, "ERROR": logging.ERROR}
+_log_level = _log_map.get(_log_level, logging.INFO)
+_log_level = logging.DEBUG if _log_level == "TRACE" else _log_level  # debug for trace
+logging.getLogger().setLevel(_log_level)
+
+# 飞书 SDK 日志级别
+_lark_level = lark.LogLevel.DEBUG if _log_level <= logging.DEBUG else lark.LogLevel.INFO
+
 CODIS_SERVER = os.environ.get("CODIS_SERVER", "http://127.0.0.1:8711")
 CHAT_SESSIONS = {}  # chat_id → session_id
 LAST_MSG_IDS = {}   # chat_id → msg_id 去重
@@ -147,7 +158,7 @@ def main():
     cli = lark.ws.Client(
         app_id, app_secret,
         event_handler=handler,
-        log_level=lark.LogLevel.INFO,
+        log_level=_lark_level,
     )
 
     log.info("Feishu bot starting...")
