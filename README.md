@@ -1,166 +1,106 @@
 # Codis — C++ AI Coding Agent
 
-基于 C++20 的 AI 编程助手，Client/Server 架构，通过 ACP (Agent Communication Protocol) + SSE 实现实时流式对话。
+基于 C++20 的 AI 编程助手，支持多 Provider、多 Client 共享 Session、飞书 Bot 接入。
+
+## 快速开始 (Docker)
+
+```bash
+docker build -t codis .
+docker run -d --name codis \
+  -e FEISHU_APP_ID="cli_xxx" \
+  -e FEISHU_APP_SECRET="xxx" \
+  -e GLM_API_KEY="xxx" \
+  -e LOG_LEVEL=info \
+  -p 8711:8711 \
+  codis
+docker logs -f codis
+```
 
 ## 架构
 
 ```
-┌─────────────┐   ACP + SSE (HTTP)    ┌─────────────────────────┐
-│  codis       │ ◄──────────────────► │  codis-server             │
-│  (CLI/TUI)  │    text/event-stream  │  (后台守护进程)             │
-│             │                       │                           │
-│  AcpClient  │   POST /api/v1/acp    │  ├─ ProviderRegistry       │
-│  事件回调     │   ─────────────────   │  │   ├─ OpenAI             │
-│             │   ◄─ SSE frames ────  │  │   ├─ DeepSeek           │
-│             │                       │  │   └─ Groq/...           │
-└─────────────┘                       │  ├─ SessionManager         │
-                                      │  └─ SseFrameQueue          │
-                                      └─────────────────────────┘
-                                               │
-                                        ┌──────┴──────────────┐
-                                        │  OpenAI / DeepSeek  │
-                                        │  Groq / Anthropic   │
-                                        └─────────────────────┘
+┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────┐
+│  codis        │ ◄─────────────────────► │  codis-server             │
+│  (CLI/TUI)   │  SSE long-lived stream   │  (后台守护进程)            │
+│              │                          │                          │
+│  send_async()│  POST /api/v1/acp        │  ├─ EventBus (pub/sub)   │
+│  connect()   │  ──────────────────────► │  ├─ ProviderRegistry     │
+│              │  GET /api/v1/acp/stream   │  │   OpenAI/DeepSeek/GLM  │
+│  交互命令:    │ ◄════ SSE keep-alive ═══ │  ├─ ToolRegistry (6)     │
+│  /sessions   │                          │  ├─ SystemContext (6)    │
+│  /session id │                          │  ├─ SessionStore(SQLite) │
+│  /clear      │                          │  └─ Logger               │
+└──────────────┘                          └─────────────────────────┘
+                                                  ▲
+                                                  │ HTTP REST
+                                                  │
+┌──────────────────┐                              │
+│  Python Bot       │◄─────────────────────────────┘
+│                   │
+│  feishu_bot.py    │── WebSocket ──► 飞书服务器
+│                   │
+│  80 行 Python     │  lark-oapi SDK
+└──────────────────┘
 ```
 
 ## 特性
 
-- **C/S 架构** — Server 守护进程 + 轻量 CLI 客户端
-- **多 Provider** — OpenAI / DeepSeek / Groq / ...，配置文件驱动，零代码新增
-- **ACP 协议** — SSE 实时流式推送，5 种事件类型
-- **Tool Registry** — 6 个内置开发工具: bash, read, write, edit, glob, grep
-- **System Context** — 6 个上下文源: date, platform, working_dir, git, tools, AGENTS.md
-- **SQLite 持久化** — 会话/消息/Context 快照存储
-- **vcpkg 包管理** — 6 个第三方库，统一版本，零 FetchContent
-- **C++20** — 现代化 C++，协程就绪
+- **C/S 架构** — Server 守护进程 + CLI / Python Bot 客户端
+- **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置驱动
+- **EventBus** — pub/sub 解耦 LLM 与传输层
+- **长 TCP 连接** — SSE stream + fire-and-forget ACP
+- **多 Client 共享** — 同 session 多客户端实时广播
+- **Tool Registry** — bash, read, write, edit, glob, grep
+- **System Context** — date, platform, git_status, AGENTS.md
+- **SQLite 持久化** — 会话/消息/Context 快照
+- **Session 管理** — list / restore / delete / search
+- **日志系统** — 5 级，环境变量控制
+- **飞书 Bot** — Python lark-oapi SDK，WebSocket 长连接，无需公网 IP
+- **Docker 一键部署** — 单容器运行，零手动配置
 
-## 快速开始
+## CLI 命令
 
-### 前提条件
-
-```bash
-# 安装 vcpkg
-git clone --depth 1 https://github.com/microsoft/vcpkg ~/vcpkg
-~/vcpkg/bootstrap-vcpkg.sh
-
-# 设置环境变量
-export VCPKG_ROOT=~/vcpkg
-export OPENAI_API_KEY="sk-..."      # 或 DEEPSEEK_API_KEY
-```
-
-### 构建
-
-```bash
-git clone https://github.com/xyanrch1024/Codis.git
-cd Codis
-
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-cmake --build build -- -j$(nproc)
-```
-
-### 运行
-
-```bash
-# 启动 Server（debug 日志）
-OPENCODE_LOG_LEVEL=debug ./build/packages/server/opencode-server -p 8711
-
-# 启动 Client
-./build/packages/cli/opencode -i
-
-# 单次调用
-./build/packages/cli/opencode "你好，请介绍一下 C++20 协程"
-```
-
-### curl 直接调用
-
-```bash
-# 健康检查
-curl http://localhost:8711/api/v1/health
-
-# ACP SSE 流式对话
-curl -N -X POST http://localhost:8711/api/v1/acp \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"deepseek","model":"deepseek-chat","messages":[{"role":"user","content":"Hello"}]}'
-```
+| 命令 | 功能 |
+|------|------|
+| `/sessions` | 表格列出所有 session |
+| `/session <id> use` | 恢复会话 |
+| `/session <id> del` | 删除会话 |
+| `/clear` | 清空当前上下文 |
 
 ## 配置
 
 ```toml
-# config/config.toml
-default_provider = "deepseek"
+default_provider = "glm"
 
 [[providers]]
-name = "openai"
-api_key_env = "OPENAI_API_KEY"
-model = "gpt-4o"
-base_url = "https://api.openai.com/v1"
-
-[[providers]]
-name = "deepseek"
-api_key_env = "DEEPSEEK_API_KEY"
-model = "deepseek-chat"
-base_url = "https://api.deepseek.com/v1"
+name = "glm"
+api_key_env = "GLM_API_KEY"
+model = "glm-4.5-flash"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
 ```
-
-```bash
-./build/packages/server/opencode-server -p 8711 -c config/config.toml
-```
-
-## 日志
-
-```bash
-# 级别: trace / debug / info / warn / error / off
-OPENCODE_LOG_LEVEL=debug ./opencode-server -p 8711
-OPENCODE_LOG_LEVEL=trace ./opencode-server -p 8711
-
-# 输出到文件
-OPENCODE_LOG_FILE=/tmp/codis.log OPENCODE_LOG_LEVEL=debug ./opencode-server -p 8711
-```
-
-输出格式：`[HH:MM:SS.ms] [LEVEL] [tID] file:line  msg`
 
 ## REST API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/health` | 健康检查 + provider 列表 |
-| `GET` | `/api/v1/info` | 服务信息 |
-| `POST` | `/api/v1/chat` | 非流式聊天 |
-| `POST` | `/api/v1/acp` | ACP SSE 流式对话 |
-| `POST` | `/api/v1/sessions` | 创建会话 |
-| `GET` | `/api/v1/sessions/:id` | 获取会话 |
-
-## 项目结构
-
-```
-Codis/
-├── CMakeLists.txt                 # vcpkg toolchain
-├── vcpkg.json                     # 6 个依赖
-├── ARCHITECTURE.md                # 架构设计文档
-├── opencode-cpp-design.md         # 总体设计文档
-│
-├── packages/
-│   ├── cli/                       # CLI 客户端
-│   ├── server/                    # HTTP 守护进程
-│   ├── llm/                       # 共享库 (Provider + ACP + Log)
-│   └── util/                      # 配置
-│
-├── config/config.toml             # 示例配置
-└── scripts/build.sh               # 构建脚本
-```
+| `GET` | `/api/v1/health` | 健康检查 |
+| `POST` | `/api/v1/chat` | 同步聊天 |
+| `POST` | `/api/v1/acp` | fire-and-forget |
+| `GET` | `/api/v1/acp/stream/{id}` | SSE 长连接 |
+| `GET` | `/api/v1/sessions` | 列出会话 |
+| `DELETE` | `/api/v1/sessions/:id` | 删除会话 |
 
 ## 技术栈
 
-| 库 | 用途 | 版本 |
-|----|------|------|
-| cpp-httplib | HTTP 客户端/服务端 | 0.47.0 |
-| nlohmann/json | JSON | 3.12.0 |
-| CLI11 | CLI 参数 | 2.6.2 |
-| toml++ | 配置文件 | 3.4.0 |
-| OpenSSL | SSL/TLS | 3.6.3 |
-| standalone asio | 异步 IO + 信号 | 1.32.0 |
-
-## License
-
-MIT
+| 模块 | 库 |
+|------|-----|
+| HTTP | cpp-httplib 0.47.0 |
+| JSON | nlohmann/json 3.12.0 |
+| CLI | CLI11 2.6.2 |
+| 配置 | toml++ 3.4.0 |
+| SSL | OpenSSL 3.6.3 |
+| 异步 IO | standalone asio 1.32.0 |
+| 数据库 | SQLite3 3.45.1 |
+| 飞书 SDK | lark-oapi (Python) |
+| 构建 | CMake 3.20+ / vcpkg |
+| C++ | C++20 |
