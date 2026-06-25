@@ -60,6 +60,7 @@ public:
     std::vector<SessionInfo> list_sessions();
     std::optional<SessionInfo> get_session(const std::string& id);
     bool delete_session(const std::string& id);
+    bool delete_all_sessions();
     std::string get_last_session();
 
 private:

@@ -37,6 +37,7 @@ public:
     std::optional<SessionData> load_session(const std::string& id);
     void save_session(const std::string& id, const SessionData& data);
     void delete_session(const std::string& id);
+    void delete_all_sessions();
     std::vector<std::string> list_sessions();
 
     // 会话 (增强)

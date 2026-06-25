@@ -99,6 +99,7 @@ private:
     void handle_session_list(const httplib::Request& req, httplib::Response& res);
     void handle_session_get(const httplib::Request& req, httplib::Response& res);
     void handle_session_delete(const httplib::Request& req, httplib::Response& res);
+    void handle_session_delete_all(const httplib::Request& req, httplib::Response& res);
     void handle_session_add_message(const httplib::Request& req, httplib::Response& res);
     std::string call_llm(const ChatRequest& req);
 

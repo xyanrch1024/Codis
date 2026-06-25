@@ -255,6 +255,11 @@ bool AcpClient::delete_session(const std::string& id) {
     return res && res->status == 200;
 }
 
+bool AcpClient::delete_all_sessions() {
+    auto res = http_->Delete("/api/v1/sessions");
+    return res && res->status == 200;
+}
+
 std::string AcpClient::get_last_session() {
     auto res = http_->Get("/api/v1/sessions");
     if (!res || res->status != 200) return "";

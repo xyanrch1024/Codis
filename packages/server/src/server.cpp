@@ -175,7 +175,8 @@ void OpenCodeServer::register_routes() {
     server_->Post("/api/v1/sessions",    [this](auto& r, auto& s) { handle_session_create(r, s); });
     server_->Get("/api/v1/sessions",     [this](auto& r, auto& s) { handle_session_list(r, s); });
     server_->Get(R"(/api/v1/sessions/([a-f0-9\-]+))",     [this](auto& r, auto& s) { handle_session_get(r, s); });
-    server_->Delete(R"(/api/v1/sessions/([a-f0-9\-]+))",  [this](auto& r, auto& s) { handle_session_delete(r, s); });
+    server_->Delete("/api/v1/sessions",            [this](auto& r, auto& s) { handle_session_delete_all(r, s); });
+    server_->Delete(R"(/api/v1/sessions/([a-f0-9\-]+))", [this](auto& r, auto& s) { handle_session_delete(r, s); });
     server_->Post(R"(/api/v1/sessions/([a-f0-9\-]+)/messages)", [this](auto& r, auto& s) { handle_session_add_message(r, s); });
 }
 
@@ -482,6 +483,12 @@ void OpenCodeServer::handle_session_delete(const httplib::Request& req, httplib:
     set_cors(res);
     session_store_.delete_session(req.matches[1]);
     res.set_content(R"({"status":"ok"})", "application/json");
+}
+
+void OpenCodeServer::handle_session_delete_all(const httplib::Request& req, httplib::Response& res) {
+    set_cors(res);
+    session_store_.delete_all_sessions();
+    res.set_content(R"({"status":"ok","deleted":"all"})", "application/json");
 }
 
 void OpenCodeServer::handle_session_add_message(const httplib::Request& req, httplib::Response& res) {

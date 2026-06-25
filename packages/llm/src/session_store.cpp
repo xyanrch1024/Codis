@@ -146,6 +146,20 @@ void SessionStore::delete_session(const std::string& id) {
     sqlite3_finalize(stmt);
 }
 
+void SessionStore::delete_all_sessions() {
+    std::lock_guard lock(mutex_);
+    char* err = nullptr;
+    auto run = [&](const char* sql) {
+        if (sqlite3_exec(db_, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+            LOG_ERROR("SQL error: {}", err ? err : "unknown");
+            sqlite3_free(err); err = nullptr;
+        }
+    };
+    run("DELETE FROM context_snapshots");
+    run("DELETE FROM messages");
+    run("DELETE FROM sessions");
+}
+
 std::vector<std::string> SessionStore::list_sessions() {
     std::lock_guard lock(mutex_);
     std::vector<std::string> result;

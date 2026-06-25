@@ -69,7 +69,9 @@ int main(int argc, char** argv) {
     int  server_port = 8711;
     std::string server_bin;
     std::string session_arg;
+    bool clear_sessions = false;
 
+    app.add_flag("--clear-sessions",   clear_sessions, "Delete all sessions");
     app.add_option("-p,--port",        server_port,   "Server port (default: 8711)");
     app.add_option("--server-bin",     server_bin,    "Server binary path");
     app.add_option("-m,--model",       model,         "Model name");
@@ -104,6 +106,15 @@ int main(int argc, char** argv) {
     }
 
     AcpClient acp(server_port);
+
+    if (clear_sessions) {
+        if (acp.delete_all_sessions()) {
+            std::cout << "All sessions deleted.\n";
+        } else {
+            std::cerr << "Failed to delete sessions.\n";
+        }
+        return 0;
+    }
 
     // 构建请求模板
     std::string current_session;
@@ -286,6 +297,18 @@ int main(int argc, char** argv) {
                 conversation.push_back({"system", system_prompt});
                 if (!current_session.empty()) acp.create_session();
                 std::cout << "Context cleared.\n\n";
+                continue;
+            }
+
+            if (line == "/clearsessions") {
+                if (acp.delete_all_sessions()) {
+                    current_session.clear();
+                    conversation.clear();
+                    conversation.push_back({"system", system_prompt});
+                    std::cout << "All sessions deleted.\n\n";
+                } else {
+                    std::cout << "Failed to delete sessions.\n\n";
+                }
                 continue;
             }
 
