@@ -306,7 +306,7 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
     LOG_INFO("SSE stream attached to session {} (subscribers: {})",
              sid.substr(0, 8), event_bus_.subscriber_count(topic));
 
-    // SSE 长连接
+    // SSE 长连接：遇到 done 帧后关闭
     res.set_chunked_content_provider("text/event-stream",
         [queue, this, topic, sub_id](size_t, httplib::DataSink& sink) -> bool {
             auto frame = queue->pop();
@@ -314,9 +314,15 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
                 event_bus_.unsubscribe(topic, sub_id);
                 sink.done(); return false;
             }
+            bool is_done = frame.find("\"type\":\"done\"") != std::string::npos;
             if (!sink.write(frame.data(), frame.size())) {
                 event_bus_.unsubscribe(topic, sub_id);
                 return false;
+            }
+            if (is_done) {
+                queue->close();
+                event_bus_.unsubscribe(topic, sub_id);
+                sink.done(); return false;
             }
             return true;
         });
