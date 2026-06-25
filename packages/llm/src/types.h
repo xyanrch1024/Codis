@@ -44,6 +44,7 @@ struct ChatRequest {
     std::vector<Message> messages;
     std::optional<int> max_tokens;
     std::optional<double> temperature;
+    json tools = json::array();
     bool stream = false;
 
     json to_json() const {
@@ -54,6 +55,7 @@ struct ChatRequest {
         for (auto& m : messages) j["messages"].push_back(m.to_json());
         if (max_tokens) j["max_tokens"] = *max_tokens;
         if (temperature) j["temperature"] = *temperature;
+        if (!tools.empty()) j["tools"] = tools;
         j["stream"] = stream;
         return j;
     }
@@ -65,6 +67,7 @@ struct ChatRequest {
         r.max_tokens  = j.contains("max_tokens")  ? std::optional(j["max_tokens"].get<int>())  : std::nullopt;
         r.temperature = j.contains("temperature") ? std::optional(j["temperature"].get<double>()) : std::nullopt;
         r.stream      = j.value("stream", false);
+        if (j.contains("tools")) r.tools = j["tools"];
         if (j.contains("messages")) {
             for (auto& m : j["messages"]) r.messages.push_back(Message::from_json(m));
         }

@@ -97,6 +97,7 @@ private:
         }
         if (req.max_tokens)   body["max_tokens"]  = *req.max_tokens;
         if (req.temperature)  body["temperature"] = *req.temperature;
+        if (!req.tools.empty()) body["tools"] = req.tools;
         return body;
     }
 

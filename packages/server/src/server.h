@@ -100,9 +100,9 @@ private:
     void handle_session_get(const httplib::Request& req, httplib::Response& res);
     void handle_session_delete(const httplib::Request& req, httplib::Response& res);
     void handle_session_add_message(const httplib::Request& req, httplib::Response& res);
+    std::string call_llm(const ChatRequest& req);
 
-    std::string call_llm(const ChatRequest& req, const json& tools);
-    void call_llm_stream(const ChatRequest& req, SseFrameQueue& frames, const json& tools);
+    void call_llm_stream(const ChatRequest& req, SseFrameQueue& frames);
 
     std::shared_ptr<LLMProvider> resolve_provider(const ChatRequest& req);
     std::vector<ToolCall> extract_tool_calls(const std::string& content);

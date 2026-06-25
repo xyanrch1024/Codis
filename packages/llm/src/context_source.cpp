@@ -188,10 +188,14 @@ ContextSource tools_source(std::function<std::vector<ToolSchema>()> tool_fn) {
                 nlohmann::json item;
                 item["name"] = s.name;
                 item["description"] = s.description;
+                item["parameters"] = s.parameters;
                 arr.push_back(item);
                 oss << "- " << s.name << ": " << s.description << "\n";
             }
-            oss << "</available_tools>";
+            oss << "</available_tools>\n\n";
+            oss << "To call a tool, output a JSON block:\n";
+            oss << "```json\n{\"tool_calls\": [{\"id\":\"call_1\",\"function\":{\"name\":\"tool_name\",\"arguments\":{...}}}]\n```\n";
+            oss << "After receiving the result, continue the conversation.";
             return {.raw = arr, .rendered = oss.str()};
         },
         .render = [](const ContextValue& v) { return v.rendered; }

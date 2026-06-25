@@ -219,8 +219,9 @@ void OpenCodeServer::handle_chat(const httplib::Request& req, httplib::Response&
                 {"parameters", s.parameters}
             }}});
         }
+        chat_req.tools = tools;
 
-        std::string result = call_llm(chat_req, tools);
+        std::string result = call_llm(chat_req);
 
         json resp;
         resp["content"] = result;
@@ -337,6 +338,7 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
             {"parameters", s.parameters}
         }}});
     }
+    req.tools = tools;
 
     auto baseline = system_context_.build_baseline(session_id, session_store_);
     req.messages.insert(req.messages.begin(), {"system", baseline});
@@ -407,15 +409,22 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
 // =============================================================================
 
 std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& content) {
-    // 简单解析: 查找 LLM 输出的 JSON tool_call 块
-    // 完整实现可匹配 ```json...``` 块或直接 JSON 数组
     std::vector<ToolCall> calls;
     auto pos = content.find("\"tool_calls\"");
     if (pos == std::string::npos) return calls;
 
+    std::string json_str = content;
+    // 尝试从 markdown 代码块中提取
+    auto md_start = content.find("```json");
+    if (md_start != std::string::npos) {
+        md_start += 7; // skip "```json"
+        auto md_end = content.find("```", md_start);
+        if (md_end != std::string::npos)
+            json_str = content.substr(md_start, md_end - md_start);
+    }
+
     try {
-        // 尝试解析为完整 JSON
-        auto j = json::parse(content);
+        auto j = json::parse(json_str);
         if (j.contains("tool_calls")) {
             for (auto& tc : j["tool_calls"]) {
                 ToolCall call;
@@ -426,9 +435,7 @@ std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& cont
                 calls.push_back(call);
             }
         }
-    } catch (...) {
-        // 非 JSON 响应，无 tool calls
-    }
+    } catch (...) {}
     return calls;
 }
 
@@ -505,7 +512,7 @@ std::shared_ptr<LLMProvider> OpenCodeServer::resolve_provider(const ChatRequest&
     LOG_ERROR("no provider configured");
     return nullptr;
 }
-std::string OpenCodeServer::call_llm(const ChatRequest& req, const json& tools) {
+std::string OpenCodeServer::call_llm(const ChatRequest& req) {
     auto prov = resolve_provider(req);
     if (!prov) throw std::runtime_error("No provider configured. Set API key env var (e.g. GLM_API_KEY)");
     auto result = prov->chat(req);
@@ -516,7 +523,7 @@ std::string OpenCodeServer::call_llm(const ChatRequest& req, const json& tools) 
     return result.content;
 }
 
-void OpenCodeServer::call_llm_stream(const ChatRequest& req, SseFrameQueue& frames, const json& tools) {
+void OpenCodeServer::call_llm_stream(const ChatRequest& req, SseFrameQueue& frames) {
     auto prov = resolve_provider(req);
     if (!prov) throw std::runtime_error("No provider configured. Set API key env var (e.g. GLM_API_KEY)");
     prov->stream_chat(req, [&frames](std::string_view delta) {

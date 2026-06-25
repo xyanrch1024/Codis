@@ -59,16 +59,16 @@ ToolResult BashTool::execute(const ToolCall& call) {
 
     close(out_pipe[1]); close(err_pipe[1]);
 
-    // 等待超时
+    // 等待超时 (30 秒)
     int status;
     int waited = 0;
-    while (waited < 30) {
+    while (waited < 30000) {
         pid_t w = waitpid(pid, &status, WNOHANG);
         if (w > 0) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         waited += 100;
     }
-    if (waited >= 30) {
+    if (waited >= 30000) {
         kill(pid, SIGKILL);
         waitpid(pid, &status, 0);
         close(out_pipe[0]); close(err_pipe[0]);

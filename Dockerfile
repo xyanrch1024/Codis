@@ -5,10 +5,14 @@ FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y -qq \
-    build-essential cmake git curl zip unzip tar pkg-config \
-    libssl-dev python3 \
+    build-essential git curl zip unzip tar pkg-config \
+    libssl-dev python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
+# Install cmake >= 4.3.3 (vcpkg requirement)
+RUN pip3 install cmake --break-system-packages
+
+ARG VCPKG_CACHE_BUST=1
 # Install vcpkg
 RUN git clone --depth 1 https://github.com/microsoft/vcpkg.git /vcpkg \
     && /vcpkg/bootstrap-vcpkg.sh -disableMetrics
