@@ -3,11 +3,12 @@
 #include <string>
 #include <cstdlib>
 #include <format>
-#include <chrono>
 #include <thread>
+#include <chrono>
 #include <filesystem>
 #include <vector>
 #include <sstream>
+#include <mutex>
 
 #include "acp_client.h"
 #include "log.h"
@@ -145,9 +146,12 @@ int main(int argc, char** argv) {
         std::vector<Message> conversation;
         conversation.push_back({"system", system_prompt});
 
+        // 加载 session 历史
         if (!current_session.empty()) {
             auto info = acp.get_session(current_session);
-            if (info) conversation = info->messages;
+            if (info) {
+                conversation = info->messages;
+            }
         }
         if (current_session.empty()) {
             auto sid = acp.create_session();
@@ -155,26 +159,64 @@ int main(int argc, char** argv) {
         }
 
         auto show_header = [&]() {
-            std::cout << " OpenCode Client v0.6.0\n";
-            std::cout << std::format("  Server:  localhost:{}\n", server_port);
-            std::cout << std::format("  Model:   {}\n", model);
-            if (!current_session.empty())
-                std::cout << std::format("  Session: {}...\n", current_session.substr(0, 8));
-            std::cout << "\n";
+            std::cout << "╔══════════════════════════════════════════╗\n";
+            std::cout << "║  Codis Client  v0.6.0                  ║\n";
+            std::cout << std::format("║  Server:   localhost:{:<20d} ║\n", server_port);
+            std::cout << std::format("║  Model:    {:<27s} ║\n", model);
+            if (!current_session.empty()) {
+                auto short_id = current_session.substr(0, 8) + "...";
+                std::cout << std::format("║  Session:  {:<27s} ║\n", short_id);
+            }
+            std::cout << "╚══════════════════════════════════════════╝\n";
         };
         show_header();
 
+        // 显示历史
         if (conversation.size() > 1) {
-            std::cout << std::format("-- {} messages loaded --\n", conversation.size() - 1);
+            std::cout << std::format("── {} messages loaded from session ──\n", conversation.size() - 1);
             for (size_t i = 1; i < conversation.size(); i++) {
                 auto& m = conversation[i];
                 if (m.role == "user")  std::cout << "You: " << m.content << "\n";
                 else if (m.role == "assistant") std::cout << "AI: " << m.content << "\n";
             }
-            std::cout << "\n";
+            std::cout << "──────────────────────────────────────\n";
+        } else {
+            std::cout << "New session. Type your message.\n";
         }
 
-        std::cout << "Commands: /exit /sessions /session <id> /clear /clearsessions\n\n";
+        std::cout << "\nCommands: /exit /sessions /session <id> /clear\n\n";
+
+        // SSE 长连接（接收所有 LLM 响应 + 其他客户端广播）
+        std::mutex cout_mtx;
+        std::string shared_assistant_content;
+        AcpClient::Callbacks view_cbs{
+            .on_assistant = [&](std::string_view delta) {
+                std::lock_guard lock(cout_mtx);
+                std::cout << delta << std::flush;
+                shared_assistant_content.append(delta);
+            },
+            .on_tool_call = [&](const acp::ToolCallEvent& tc) {
+                std::lock_guard lock(cout_mtx);
+                std::cout << "\n[Tool: " << tc.name << "]\n";
+            },
+            .on_tool_result = [&](const acp::ToolResultEvent& tr) {
+                std::lock_guard lock(cout_mtx);
+                std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
+            },
+            .on_error = [&](std::string_view msg) {
+                std::lock_guard lock(cout_mtx);
+                std::cerr << "\nError: " << msg << "\n";
+            },
+            .on_done = [&]() {
+                std::lock_guard lock(cout_mtx);
+                if (!shared_assistant_content.empty()) {
+                    conversation.push_back({"assistant", shared_assistant_content});
+                    shared_assistant_content.clear();
+                }
+                std::cout << "\n> " << std::flush;
+            }
+        };
+        if (!current_session.empty()) acp.connect(current_session, view_cbs);
 
         std::string line;
         while (true) {
@@ -182,23 +224,25 @@ int main(int argc, char** argv) {
             if (!std::getline(std::cin, line)) break;
             if (line.empty()) continue;
 
-            if (line == "/exit" || line == "/quit") break;
+            // ---- 特殊命令 ----
+            if (line == "/exit" || line == "/quit") { acp.disconnect(); break; }
 
             if (line == "/sessions") {
                 auto sessions = acp.list_sessions();
                 if (sessions.empty()) {
                     std::cout << "No sessions found.\n\n";
                 } else {
-                    std::cout << std::format("{:<10} {:<5} {}\n", "ID", "Msgs", "Title");
-                    std::cout << std::string(50, '-') << "\n";
+                    std::cout << std::format("{:<10} {:<5} {:<10} {}\n", "ID", "Msgs", "Active", "Title");
+                    std::cout << std::string(60, '-') << "\n";
                     for (auto& s : sessions) {
                         auto short_id = s.id.substr(0, 8);
                         auto marker = (s.id == current_session) ? "*" : " ";
+                        auto msg_count_str = std::to_string(s.message_count);
                         auto title = s.title.size() > 35 ? s.title.substr(0, 35) + "..." : s.title;
-                        std::cout << std::format("{}{:<9} {:<5} {}\n",
-                            marker, short_id, s.message_count, title);
+                        std::cout << std::format("{}{:<9} {:<5} {:<10} {}\n",
+                            marker, short_id, msg_count_str, "", title);
                     }
-                    std::cout << "\n";
+                    std::cout << "  * = current session\n\n";
                 }
                 continue;
             }
@@ -239,7 +283,8 @@ int main(int argc, char** argv) {
                     current_session = sid;
                     conversation = info->messages;
                     show_header();
-                    std::cout << std::format("Session restored: {} messages.\n\n", conversation.size());
+                    std::cout << std::format("Restored session: {} messages loaded.\n\n",
+                        conversation.size());
                     continue;
                 }
 
@@ -250,6 +295,7 @@ int main(int argc, char** argv) {
             if (line == "/clear") {
                 conversation.clear();
                 conversation.push_back({"system", system_prompt});
+                if (!current_session.empty()) acp.create_session();
                 std::cout << "Context cleared.\n\n";
                 continue;
             }
@@ -266,32 +312,15 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            // ---- 普通消息：同步 send，阻塞等待 SSE 推送完成 ----
+            // ---- 普通消息 ----
             conversation.push_back({"user", line});
             std::cout << "\n";
-
-            auto req = build_req(conversation);
             std::string assistant_content;
 
-            AcpClient::Callbacks cbs{
-                .on_assistant = [&](std::string_view delta) {
-                    std::cout << delta << std::flush;
-                    assistant_content += delta;
-                },
-                .on_tool_call = [&](const acp::ToolCallEvent& tc) {
-                    std::cout << "\n[Tool: " << tc.name << "]\n";
-                },
-                .on_tool_result = [&](const acp::ToolResultEvent& tr) {
-                    std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
-                },
-                .on_error = [&](std::string_view msg) {
-                    std::cerr << "Error: " << msg << "\n";
-                }
-            };
+            auto req = build_req(conversation);
 
-            acp.send(req, cbs);
-            if (!assistant_content.empty())
-                conversation.push_back({"assistant", assistant_content});
+            // 长连接模式: fire-and-forget, 回复通过 SSE stream 到达
+            acp.send_async(req);
         }
     }
     // ---- 单次模式 ----
