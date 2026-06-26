@@ -319,13 +319,16 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
     // 首帧：告知客户端其 conn_id
     queue->push(acp::connected_frame(conn_id));
 
-    // 推历史消息
-    auto history = session_store_.load_messages(sid);
-    for (auto& m : history) {
-        if (m.role == "user")
-            queue->push(acp::assistant_frame("\n[User] " + m.content));
-        else if (m.role == "assistant" && !m.content.empty())
-            queue->push(acp::assistant_frame(m.content));
+    // 推历史消息（skip_history=1 时不推）
+    bool skip_history = req.has_param("skip_history");
+    if (!skip_history) {
+        auto history = session_store_.load_messages(sid);
+        for (auto& m : history) {
+            if (m.role == "user")
+                queue->push(acp::assistant_frame("\n[User] " + m.content));
+            else if (m.role == "assistant" && !m.content.empty())
+                queue->push(acp::assistant_frame(m.content));
+        }
     }
 
     LOG_INFO("SSE stream attached to session {} conn_id={}", sid.substr(0, 8), conn_id);

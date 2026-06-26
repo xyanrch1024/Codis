@@ -49,7 +49,7 @@ bool AcpClient::send(const ChatRequest& request, Callbacks callbacks) {
         return false;
     }
 
-    // Step 2: GET /api/v1/acp/stream/{sid} — 阻塞读 SSE 推送
+    // Step 2: GET /api/v1/acp/stream/{sid}?skip_history=1 — 阻塞读 SSE 推送
     httplib::Client stream_client(host_, port_);
     stream_client.set_connection_timeout(5, 0);
     stream_client.set_read_timeout(300, 0);
@@ -57,7 +57,7 @@ bool AcpClient::send(const ChatRequest& request, Callbacks callbacks) {
     std::string sse_buf;
     bool got_done = false;
 
-    stream_client.Get(("/api/v1/acp/stream/" + sid).c_str(),
+    stream_client.Get(("/api/v1/acp/stream/" + sid + "?skip_history=1").c_str(),
         [&](const char* data, size_t len) {
             sse_buf.append(data, len);
             std::size_t pos;
