@@ -331,25 +331,30 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
         }
     }
 
-    LOG_INFO("SSE stream attached to session {} conn_id={}", sid.substr(0, 8), conn_id);
+    bool keepalive = req.has_param("keepalive");
 
-    // SSE 长连接：从 queue pop 帧，遇到 done 自动关闭
+    LOG_INFO("SSE stream attached to session {} conn_id={} keepalive={}",
+             sid.substr(0, 8), conn_id, keepalive);
+
+    // SSE chunked provider: 从 queue pop 帧推给 client
     res.set_chunked_content_provider("text/event-stream",
-        [queue, this, sid, conn_id](size_t, httplib::DataSink& sink) -> bool {
+        [queue, this, sid, conn_id, keepalive](size_t, httplib::DataSink& sink) -> bool {
             auto frame = queue->pop();
             if (frame.empty()) {
                 cleanup_connection(sid, conn_id);
                 sink.done(); return false;
             }
-            bool is_done = frame.find("\"type\":\"done\"") != std::string::npos;
             if (!sink.write(frame.data(), frame.size())) {
                 cleanup_connection(sid, conn_id);
                 return false;
             }
-            if (is_done) {
-                queue->close();
-                cleanup_connection(sid, conn_id);
-                sink.done(); return false;
+            if (!keepalive) {
+                bool is_done = frame.find("\"type\":\"done\"") != std::string::npos;
+                if (is_done) {
+                    queue->close();
+                    cleanup_connection(sid, conn_id);
+                    sink.done(); return false;
+                }
             }
             return true;
         });
