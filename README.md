@@ -19,21 +19,22 @@ docker logs -f codis
 ## 架构
 
 ```
-┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────┐
-│  codis        │ ◄─────────────────────► │  codis-server             │
-│  (CLI/TUI)   │  SSE long-lived stream   │  (后台守护进程)            │
-│              │                          │                          │
-│  send_async()│  POST /api/v1/acp        │  ├─ EventBus (pub/sub)   │
-│  connect()   │  ──────────────────────► │  ├─ ProviderRegistry     │
-│              │  GET /api/v1/acp/stream   │  │   OpenAI/DeepSeek/GLM  │
-│  交互命令:    │ ◄════ SSE keep-alive ═══ │  ├─ ToolRegistry (6)     │
-│  /sessions   │                          │  ├─ SystemContext (6)    │
-│  /session id │                          │  ├─ SessionStore(SQLite) │
-│  /clear      │                          │  └─ Logger               │
-└──────────────┘                          └─────────────────────────┘
-                                                  ▲
-                                                  │ HTTP REST
-                                                  │
+┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────────────┐
+│  codis        │ ◄─────────────────────► │  codis-server                   │
+│  (CLI/TUI)   │  SSE long-lived stream   │  (后台守护进程)                  │
+│              │                          │                                 │
+│  send()      │  POST /api/v1/acp        │  ├─ SessionState (per session)  │
+│  connect()   │  ──────────────────────► │  │   conn_id → queue 直接广播    │
+│              │  GET /api/v1/acp/stream   │  ├─ ProviderRegistry           │
+│  交互命令:    │ ◄══ SSE keep-alive ════ │  │   OpenAI/DeepSeek/GLM        │
+│  /sessions   │                          │  ├─ ToolRegistry (6)           │
+│  /session id │                          │  ├─ SystemContext (6)          │
+│  /clear      │                          │  ├─ SessionStore (SQLite)      │
+│  /clearsessions                         │  └─ Logger                     │
+└──────────────┘                          └─────────────────────────────────┘
+                                                   ▲
+                                                   │ HTTP REST
+                                                   │
 ┌──────────────────┐                              │
 │  Python Bot       │◄─────────────────────────────┘
 │                   │
@@ -47,9 +48,9 @@ docker logs -f codis
 
 - **C/S 架构** — Server 守护进程 + CLI / Python Bot 客户端
 - **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置驱动
-- **EventBus** — pub/sub 解耦 LLM 与传输层
-- **长 TCP 连接** — SSE stream + fire-and-forget ACP
-- **多 Client 共享** — 同 session 多客户端实时广播
+- **SessionState 广播** — 每 session 独立管理连接队列，conn_id 精准路由
+- **长 TCP 连接** — SSE stream keepalive + fire-and-forget ACP
+- **多 Client 共享** — 同 session 多客户端独立通道
 - **Tool Registry** — bash, read, write, edit, glob, grep
 - **System Context** — date, platform, git_status, AGENTS.md
 - **SQLite 持久化** — 会话/消息/Context 快照
