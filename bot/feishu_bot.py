@@ -84,25 +84,74 @@ def feishu_send_message(chat_id: str, text: str):
             log.error(f"Send failed: {r.status_code} {r.text[:100]}")
 
 
-def codis_chat(text: str) -> str | None:
-    """同步调用 Codis /chat 端点，等待完整回复"""
+def codis_acp_chat(chat_id: str, text: str) -> str | None:
+    """ACP 多轮对话：POST /api/v1/acp → GET /api/v1/acp/stream/{sid}?skip_history=1"""
+
+    # 每个 chat_id 绑定一个 session，实现多轮上下文
+    sid = CHAT_SESSIONS.get(chat_id)
+    if not sid:
+        try:
+            with httpx.Client(timeout=10, trust_env=False) as cli:
+                r = cli.post(urljoin(CODIS_SERVER, "/api/v1/sessions"))
+                if r.status_code == 201:
+                    sid = r.json()["session_id"]
+                    CHAT_SESSIONS[chat_id] = sid
+        except Exception:
+            pass
+    if not sid:
+        log.error("Failed to create session")
+        return None
+
     try:
-        with httpx.Client(timeout=120, trust_env=False) as cli:
+        with httpx.Client(timeout=10, trust_env=False) as cli:
+            # Step 1: POST /api/v1/acp (fire-and-forget)
             body = {
                 "provider": "glm",
                 "model": "glm-4.5-flash",
+                "session_id": sid,
                 "messages": [{"role": "user", "content": text}],
                 "max_tokens": 1000,
             }
-            r = cli.post(urljoin(CODIS_SERVER, "/api/v1/chat"), json=body)
-            if r.status_code == 200:
-                data = r.json()
-                log.info(f"Chat response: {json.dumps(data)[:200]}")
-                return data.get("content", "")
-            else:
-                log.error(f"Chat failed: {r.status_code} {r.text[:200]}")
+            r = cli.post(urljoin(CODIS_SERVER, "/api/v1/acp"), json=body)
+            if r.status_code not in (200, 202):
+                log.error(f"ACP POST failed: {r.status_code}")
+                return None
+
+        # Step 2: GET SSE stream → 阻塞读直到 done
+        with httpx.Client(timeout=120, trust_env=False) as sse_cli:
+            content_parts = []
+            url = urljoin(CODIS_SERVER, f"/api/v1/acp/stream/{sid}?skip_history=1")
+
+            with sse_cli.stream("GET", url) as sse:
+                for line in sse.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    try:
+                        frame = json.loads(line[6:])  # skip "data: " prefix
+                        event_type = frame.get("type")
+                        data = frame.get("data", {})
+
+                        if event_type == "assistant":
+                            content_parts.append(data.get("delta", ""))
+                        elif event_type == "tool_call":
+                            log.info(f"Tool call: {data.get('name')}")
+                        elif event_type == "tool_result":
+                            ok = data.get("success", False)
+                            log.info(f"Tool result: {'ok' if ok else 'fail'}")
+                        elif event_type == "error":
+                            log.error(f"ACP error: {data.get('message', '')}")
+                            return None
+                        elif event_type == "done":
+                            break
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+
+                result = "".join(content_parts)
+                if result:
+                    log.info(f"ACP response: {result[:100]}")
+                    return result
     except Exception as e:
-        log.error(f"codis_chat error: {e}")
+        log.error(f"codis_acp_chat error: {e}")
     return None
 
 
@@ -126,8 +175,8 @@ def handle_message(event: lark.im.v1.P2ImMessageReceiveV1):
 
     log.info(f"[{chat_id[:8]}] {text[:50]}")
 
-    # 调用 LLM
-    reply = codis_chat(text)
+    # 调用 LLM（ACP 多轮，支持 tool）
+    reply = codis_acp_chat(chat_id, text)
     if reply:
         log.info(f"LLM reply: {reply[:50]}")
         feishu_send_message(chat_id, reply)
