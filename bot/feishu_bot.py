@@ -82,11 +82,6 @@ def feishu_send_message(chat_id: str, text: str):
             log.info(f"Reply sent to {chat_id[:8]}")
         else:
             log.error(f"Send failed: {r.status_code} {r.text[:100]}")
-    with httpx.Client(timeout=10, trust_env=False) as cli:
-        r = cli.post(urljoin(CODIS_SERVER, "/api/v1/sessions"))
-        if r.status_code == 201:
-            return r.json()["session_id"]
-    return None
 
 
 def codis_chat(text: str) -> str | None:
@@ -144,14 +139,13 @@ def main():
     app_id = os.environ["FEISHU_APP_ID"]
     app_secret = os.environ["FEISHU_APP_SECRET"]
 
-    def on_any(event: lark.CustomizedEvent) -> None:
-        log.info(f"!!! CUSTOM EVENT: type={event.header.event_type} body={event.body[:300]}")
-
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(handle_message)
-        .register_p1_customized_event("im.chat.access_event.bot_p2p_chat_entered_v1",
-            lambda e: log.info(f"bot entered chat"))
+        .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(
+            lambda e: log.debug("bot entered chat"))
+        .register_p2_im_message_message_read_v1(
+            lambda e: log.debug("message read"))
         .build()
     )
 
