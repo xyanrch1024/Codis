@@ -16,6 +16,7 @@ using json = nlohmann::json;
 // =============================================================================
 
 enum class EventType {
+    connected,    // SSE 连接建立，携带 conn_id
     assistant,    // 模型回复增量文本
     tool_call,    // 模型请求调用工具
     tool_result,  // 工具执行结果
@@ -25,6 +26,7 @@ enum class EventType {
 
 inline std::string to_string(EventType t) {
     switch (t) {
+        case EventType::connected:  return "connected";
         case EventType::assistant:  return "assistant";
         case EventType::tool_call:  return "tool_call";
         case EventType::tool_result: return "tool_result";
@@ -98,6 +100,10 @@ inline std::string done_frame() {
     return to_sse_frame(EventType::done, json::object());
 }
 
+inline std::string connected_frame(const std::string& conn_id) {
+    return to_sse_frame(EventType::connected, {{"conn_id", conn_id}});
+}
+
 // =============================================================================
 // SSE 帧解析
 // =============================================================================
@@ -121,7 +127,8 @@ inline std::optional<ParsedEvent> parse_frame(const std::string& sse_line) {
         auto type_str = j["type"].get<std::string>();
 
         EventType type;
-        if (type_str == "assistant")   type = EventType::assistant;
+        if (type_str == "connected")   type = EventType::connected;
+        else if (type_str == "assistant")   type = EventType::assistant;
         else if (type_str == "tool_call")   type = EventType::tool_call;
         else if (type_str == "tool_result") type = EventType::tool_result;
         else if (type_str == "error")       type = EventType::error;

@@ -50,7 +50,7 @@ public:
 
 private:
     mutable std::shared_mutex mutex_;
-    std::unordered_map<std::string, std::unordered_map<uint64_t, Handler>> topics_;
+    std::unordered_map<std::string, std::unordered_map<uin t64_t, Handler>> topics_;
     std::atomic<uint64_t> next_id_{1};
 };
 

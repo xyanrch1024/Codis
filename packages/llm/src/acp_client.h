@@ -72,6 +72,7 @@ private:
     std::thread sse_thread_;
     std::atomic<bool> connected_{false};
     Callbacks callbacks_;
+    std::string conn_id_;
 };
 
 } // namespace opencode

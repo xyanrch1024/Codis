@@ -17,6 +17,15 @@ std::string expand_path(const std::string& path) {
     }
     return path;
 }
+
+std::string gen_short_id() {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_int_distribution<> dis(0, 15);
+    std::ostringstream ss; ss << std::hex << std::setfill('0');
+    for (int i = 0; i < 8; i++) ss << dis(gen);
+    return ss.str();
+}
 } // anonymous namespace
 
 // =============================================================================
@@ -156,6 +165,19 @@ void OpenCodeServer::set_cors(httplib::Response& res) {
     res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
+std::string OpenCodeServer::generate_conn_id() {
+    return gen_short_id();
+}
+
+void OpenCodeServer::cleanup_connection(const std::string& sid, const std::string& conn_id) {
+    std::lock_guard lock(sessions_mutex_);
+    auto it = sessions_.find(sid);
+    if (it == sessions_.end()) return;
+    it->second.conns.erase(conn_id);
+    if (it->second.conns.empty())
+        sessions_.erase(it);
+}
+
 // =============================================================================
 // 路由
 // =============================================================================
@@ -241,6 +263,7 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
         auto body = json::parse(req.body);
         auto chat_req = ChatRequest::from_json(body);
         std::string sid = body.value("session_id", "");
+        std::string conn_id = body.value("conn_id", "");
 
         if (sid.empty() || !session_store_.load_session(sid))
             sid = session_store_.create_session();
@@ -256,19 +279,18 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
                 }
             }
 
-            // 检查是否有 LLM 正在运行
+            // 检查是否有 LLM 正在运行（按 session）
+            bool should_run = false;
             {
-                std::unique_lock lock(active_mutex_);
-                auto& active = active_sessions_[sid];
-                if (active.processing.exchange(true)) {
-                    // 已有 LLM 在运行，消息会在当前轮结束后处理
-                    lock.unlock();
-                } else {
-                    lock.unlock();
-                    std::thread([this, sid, req = std::move(chat_req)]() mutable {
-                        run_acp_loop_broadcast(sid, std::move(req));
-                    }).detach();
-                }
+                std::lock_guard lock(sessions_mutex_);
+                auto& state = sessions_[sid];
+                if (!state.processing.exchange(true))
+                    should_run = true;
+            }
+            if (should_run) {
+                std::thread([this, sid, conn_id, req = std::move(chat_req)]() mutable {
+                    run_acp_loop_broadcast(sid, conn_id, std::move(req));
+                }).detach();
             }
         }
 
@@ -287,12 +309,15 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
         session_store_.create_session_with_id(sid);
 
     auto queue = std::make_shared<SseFrameQueue>();
-    std::string topic = "session:" + sid + ":event";
+    std::string conn_id = generate_conn_id();
 
-    // 订阅 EventBus: 所有帧推入此 client 的 queue
-    auto sub_id = event_bus_.subscribe(topic, [queue](const std::string& frame) {
-        queue->push(frame);
-    });
+    {
+        std::lock_guard lock(sessions_mutex_);
+        sessions_[sid].conns[conn_id] = queue;
+    }
+
+    // 首帧：告知客户端其 conn_id
+    queue->push(acp::connected_frame(conn_id));
 
     // 推历史消息
     auto history = session_store_.load_messages(sid);
@@ -303,34 +328,54 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
             queue->push(acp::assistant_frame(m.content));
     }
 
-    LOG_INFO("SSE stream attached to session {} (subscribers: {})",
-             sid.substr(0, 8), event_bus_.subscriber_count(topic));
+    LOG_INFO("SSE stream attached to session {} conn_id={}", sid.substr(0, 8), conn_id);
 
-    // SSE 长连接
+    // SSE 长连接：从 queue pop 帧，遇到 done 自动关闭
     res.set_chunked_content_provider("text/event-stream",
-        [queue, this, topic, sub_id](size_t, httplib::DataSink& sink) -> bool {
+        [queue, this, sid, conn_id](size_t, httplib::DataSink& sink) -> bool {
             auto frame = queue->pop();
             if (frame.empty()) {
-                event_bus_.unsubscribe(topic, sub_id);
+                cleanup_connection(sid, conn_id);
                 sink.done(); return false;
             }
+            bool is_done = frame.find("\"type\":\"done\"") != std::string::npos;
             if (!sink.write(frame.data(), frame.size())) {
-                event_bus_.unsubscribe(topic, sub_id);
+                cleanup_connection(sid, conn_id);
                 return false;
+            }
+            if (is_done) {
+                queue->close();
+                cleanup_connection(sid, conn_id);
+                sink.done(); return false;
             }
             return true;
         });
 }
 
 // =============================================================================
-// run_acp_loop_broadcast — EventBus 发布
+// run_acp_loop_broadcast — 推送到指定 connection 的 queue
 // =============================================================================
 
-void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatRequest req) {
+void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
+                                             const std::string& conn_id, ChatRequest req) {
     static const int MAX_TURNS = 10;
-    std::string topic = "session:" + session_id + ":event";
 
-    LOG_DEBUG("ACP loop started, session {}", session_id.substr(0, 8));
+    auto broadcast = [&](const std::string& frame) {
+        std::lock_guard lock(sessions_mutex_);
+        auto it = sessions_.find(session_id);
+        if (it == sessions_.end()) return;
+        if (conn_id.empty()) {
+            // conn_id 为空时发送到所有连接
+            for (auto& [_, q] : it->second.conns)
+                q->push(frame);
+        } else {
+            auto qit = it->second.conns.find(conn_id);
+            if (qit != it->second.conns.end())
+                qit->second->push(frame);
+        }
+    };
+
+    LOG_DEBUG("ACP loop started, session {} conn={}", session_id.substr(0, 8), conn_id);
 
     json tools = json::array();
     for (auto& s : tool_registry_.all_schemas()) {
@@ -360,10 +405,10 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
 
         assistant_content.clear();
         auto prov = resolve_provider(req);
-        if (!prov) { event_bus_.publish(topic, acp::error_frame("No provider")); break; }
+        if (!prov) { broadcast(acp::error_frame("No provider")); break; }
         prov->stream_chat(req, [&](std::string_view delta) {
             assistant_content += delta;
-            event_bus_.publish(topic, acp::assistant_frame(delta));
+            broadcast(acp::assistant_frame(delta));
         });
 
         if (!assistant_content.empty())
@@ -375,11 +420,11 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
         for (auto& call : call_list) {
             auto perm = tool_registry_.check_permission(call.name);
             if (perm == Permission::Denied) {
-                event_bus_.publish(topic, acp::tool_result_frame(call.id, false, "Permission denied"));
+                broadcast(acp::tool_result_frame(call.id, false, "Permission denied"));
                 continue;
             }
             auto result = tool_registry_.execute(call);
-            event_bus_.publish(topic, acp::tool_result_frame(result.id, result.success, result.content));
+            broadcast(acp::tool_result_frame(result.id, result.success, result.content));
 
             Message asst_msg; asst_msg.role = "assistant";
             asst_msg.tool_call_id = call.id; asst_msg.tool_name = call.name;
@@ -392,15 +437,15 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id, ChatR
     }
 
     if (*turn >= MAX_TURNS)
-        event_bus_.publish(topic, acp::error_frame("Max turns reached"));
+        broadcast(acp::error_frame("Max turns reached"));
 
-    event_bus_.publish(topic, acp::done_frame());
+    broadcast(acp::done_frame());
 
     // 标记完成
     {
-        std::unique_lock lock(active_mutex_);
-        auto it = active_sessions_.find(session_id);
-        if (it != active_sessions_.end()) it->second.processing = false;
+        std::lock_guard lock(sessions_mutex_);
+        auto it = sessions_.find(session_id);
+        if (it != sessions_.end()) it->second.processing = false;
     }
     LOG_DEBUG("session {} completed", session_id.substr(0, 8));
 }
@@ -529,13 +574,4 @@ std::string OpenCodeServer::call_llm(const ChatRequest& req) {
     }
     return result.content;
 }
-
-void OpenCodeServer::call_llm_stream(const ChatRequest& req, SseFrameQueue& frames) {
-    auto prov = resolve_provider(req);
-    if (!prov) throw std::runtime_error("No provider configured. Set API key env var (e.g. GLM_API_KEY)");
-    prov->stream_chat(req, [&frames](std::string_view delta) {
-        frames.push(acp::assistant_frame(delta));
-    });
-}
-
 } // namespace opencode

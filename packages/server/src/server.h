@@ -8,7 +8,6 @@
 #include "tool_registry.h"
 #include "session_store.h"
 #include "context_source.h"
-#include "event_bus.h"
 
 #include <httplib.h>
 
@@ -61,10 +60,12 @@ private:
 };
 
 // =============================================================================
-// Active Session 跟踪
+// Session State — 每个 session 的 connections + processing 状态
 // =============================================================================
 
-struct ActiveSession {
+struct SessionState {
+    std::unordered_map<std::string, std::shared_ptr<SseFrameQueue>> conns;
+    std::mutex mutex;
     std::atomic<bool> processing{false};
 };
 
@@ -86,10 +87,6 @@ private:
     void register_routes();
     void set_cors(httplib::Response& res);
 
-    // session → attach client 或创建新的
-    std::shared_ptr<SseFrameQueue> attach_to_session(
-        const std::string& session_id, ChatRequest& req, bool& is_new);
-
     void handle_health(const httplib::Request& req, httplib::Response& res);
     void handle_info(const httplib::Request& req, httplib::Response& res);
     void handle_chat(const httplib::Request& req, httplib::Response& res);
@@ -103,13 +100,13 @@ private:
     void handle_session_add_message(const httplib::Request& req, httplib::Response& res);
     std::string call_llm(const ChatRequest& req);
 
-    void call_llm_stream(const ChatRequest& req, SseFrameQueue& frames);
-
     std::shared_ptr<LLMProvider> resolve_provider(const ChatRequest& req);
     std::vector<ToolCall> extract_tool_calls(const std::string& content);
 
-    // 改造为广播版本
-    void run_acp_loop_broadcast(const std::string& session_id, ChatRequest req);
+    void run_acp_loop_broadcast(const std::string& session_id,
+                                 const std::string& conn_id, ChatRequest req);
+    void cleanup_connection(const std::string& session_id, const std::string& conn_id);
+    std::string generate_conn_id();
 
     void init_context_sources();
     std::string build_system_prompt(const std::string& session_id);
@@ -125,10 +122,8 @@ private:
     AppConfig config_;
     SessionStore session_store_{"/tmp/codis_sessions.db"};
     SystemContext system_context_;
-    EventBus event_bus_;
-
-    std::shared_mutex active_mutex_;
-    std::unordered_map<std::string, ActiveSession> active_sessions_;
+    std::unordered_map<std::string, SessionState> sessions_;
+    std::mutex sessions_mutex_;
 };
 
 } // namespace opencode

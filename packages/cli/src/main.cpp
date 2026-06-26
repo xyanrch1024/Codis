@@ -35,7 +35,12 @@ bool ensure_server_running(int port, const std::string& server_binary) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        execl(server_binary.c_str(), server_binary.c_str(), "-p", std::to_string(port).c_str(), nullptr);
+        // 尝试在常见位置找 config.toml
+        std::string config_path = std::filesystem::path(server_binary).parent_path().parent_path().parent_path() / "config/config.toml";
+        if (!std::filesystem::exists(config_path))
+            config_path = "config/config.toml";
+        execl(server_binary.c_str(), server_binary.c_str(), "-p", std::to_string(port).c_str(),
+              "-c", config_path.c_str(), nullptr);
         _exit(127);
     }
     if (pid < 0) return false;
@@ -95,7 +100,7 @@ int main(int argc, char** argv) {
             ensure_server_running(server_port, bin);
         } else {
             LOG_ERROR("server binary not found: {}", bin);
-            std::cerr << "Server not running. Start it: opencode-server -p " << server_port << "\n";
+            std::cerr << "Server not running. Start it: opencode-server -p " << server_port << " -c config/config.toml\n";
             return 1;
         }
     }
