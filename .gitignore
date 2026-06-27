@@ -19,3 +19,5 @@ vcpkg-manifest-install.log
 # Cache
 _fetch_content/
 .cache/
+.local/
+__pycache__/
