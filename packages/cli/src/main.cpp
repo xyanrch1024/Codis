@@ -36,9 +36,9 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        std::string config = project_root + "/config/config.toml";
+        chdir(project_root.c_str());
         execl(server_binary.c_str(), server_binary.c_str(), "-p", std::to_string(port).c_str(),
-              "-c", config.c_str(), nullptr);
+              "-c", "config/config.toml", nullptr);
         _exit(127);
     }
     if (pid < 0) return false;

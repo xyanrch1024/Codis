@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <thread>
 #include <optional>
+#include <filesystem>
 
 #include <CLI/CLI.hpp>
 #include "server.h"
@@ -29,8 +30,10 @@ int main(int argc, char** argv) {
     LOG_INFO("OpenCode Server v0.3.1 starting (port {}, host {})", port, host);
     if (!config_path.empty()) LOG_INFO("config file: {}", config_path);
 
-    std::optional<std::string> cfg = config_path.empty()
-        ? std::nullopt : std::optional(config_path);
+    std::optional<std::string> cfg;
+    if (!config_path.empty()) {
+        cfg = std::filesystem::absolute(config_path).string();
+    }
 
     opencode::OpenCodeServer server(port, cfg);
 
