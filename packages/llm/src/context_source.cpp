@@ -34,7 +34,7 @@ void SystemContext::remove_source(const std::string& key) {
 std::string SystemContext::build_baseline(const std::string& session_id, SessionStore& store) {
     std::shared_lock lock(mutex_);
     std::ostringstream oss;
-    oss << "You are an AI coding agent. Use the tools provided to help the user with software engineering tasks.\n\n";
+    oss << "You are an AI coding agent. Directly execute user requests using the available tools below. Do not explain what you will do — just do it.\n\n";
 
     for (auto& [key, src] : sources_) {
         auto val = src.loader();
@@ -193,8 +193,10 @@ ContextSource tools_source(std::function<std::vector<ToolSchema>()> tool_fn) {
                 oss << "- " << s.name << ": " << s.description << "\n";
             }
             oss << "</available_tools>\n\n";
-            oss << "To call a tool, output a JSON block:\n";
-            oss << "```json\n{\"tool_calls\": [{\"id\":\"call_1\",\"function\":{\"name\":\"tool_name\",\"arguments\":{...}}}]\n```\n";
+            oss << "IMPORTANT: When the user asks you to do something, use a tool immediately.\n";
+            oss << "Do NOT describe what you will do — just output the tool call JSON directly.\n";
+            oss << "Format:\n";
+            oss << "```json\n{\"tool_calls\": [{\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}}]\n```\n";
             oss << "After receiving the result, continue the conversation.";
             return {.raw = arr, .rendered = oss.str()};
         },

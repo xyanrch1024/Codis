@@ -2,6 +2,7 @@
 #include "log.h"
 
 #include <iostream>
+#include <map>
 
 namespace opencode {
 
@@ -107,6 +108,9 @@ void LLMHttpClient::stream_post(const std::string& url,
 
     LOG_TRACE("SSE response {} bytes, parsing...", res->body.size());
 
+    // 收集 API 原生 tool_calls（按 index 分组）
+    std::map<int, json> tool_calls;
+
     // 逐行解析 SSE
     std::string_view body_view = res->body;
     std::size_t pos;
@@ -129,12 +133,45 @@ void LLMHttpClient::stream_post(const std::string& url,
                         auto& c = choice["delta"]["content"];
                         if (c.is_string() && on_token) on_token(c.get<std::string>());
                     }
+                    if (choice.contains("delta") && choice["delta"].contains("tool_calls")) {
+                        for (auto& tc : choice["delta"]["tool_calls"]) {
+                            int idx = tc.value("index", 0);
+                            auto& entry = tool_calls[idx];
+                            if (tc.contains("id")) entry["id"] = tc["id"];
+                            if (tc.contains("type")) entry["type"] = tc["type"];
+                            if (tc.contains("function")) {
+                                auto& func = tc["function"];
+                                if (func.contains("name")) entry["name"] = func["name"];
+                                if (func.contains("arguments")) {
+                                    std::string prev = entry.value("arguments", "");
+                                    entry["arguments"] = prev + func["arguments"].get<std::string>();
+                                }
+                            }
+                        }
+                    }
                 }
                 if (j.contains("delta") && j["delta"].contains("text")) {
                     if (on_token) on_token(j["delta"]["text"].get<std::string>());
                 }
             } catch (const json::parse_error&) {}
         }
+    }
+
+    // 拼装 tool_calls JSON 追加到 content
+    if (!tool_calls.empty()) {
+        json tc_list = json::array();
+        for (auto& [idx, entry] : tool_calls) {
+            auto args_str = entry.value("arguments", "{}");
+            json func = {{"name", entry.value("name", "")}};
+            try { func["arguments"] = json::parse(args_str); }
+            catch (...) { func["arguments"] = args_str; }
+            tc_list.push_back({
+                {"id", entry.value("id", "call_" + std::to_string(idx))},
+                {"function", func}
+            });
+        }
+        json wrapper = {{"tool_calls", tc_list}};
+        if (on_token) on_token(wrapper.dump());
     }
 
     if (on_done) on_done("", true, "");
