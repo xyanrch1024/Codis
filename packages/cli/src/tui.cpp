@@ -43,12 +43,15 @@ int TuiClient::run() {
     // SSE 连接（后台线程）
     AcpClient::Callbacks cbs{
         .on_assistant = [this](std::string_view delta) {
+            LOG_DEBUG("SSE delta: {}", delta);
             state_->append_pending(std::string(delta));
         },
         .on_tool_call = [this](const acp::ToolCallEvent& tc) {
+            LOG_DEBUG("SSE tool_call: {}", tc.name);
             state_->add_line("[Tool: " + tc.name + "]");
         },
         .on_tool_result = [this](const acp::ToolResultEvent& tr) {
+            LOG_DEBUG("SSE tool_result: {} success={}", tr.content.substr(0, 100), tr.success);
             state_->add_line("[Result: " + std::string(tr.success ? "ok" : "fail") + "]");
         },
         .on_error = [this](std::string_view msg) {

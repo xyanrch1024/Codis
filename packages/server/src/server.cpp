@@ -414,10 +414,17 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
         assistant_content.clear();
         auto prov = resolve_provider(req);
         if (!prov) { broadcast(acp::error_frame("No provider")); break; }
+
+        auto t0 = std::chrono::steady_clock::now();
         prov->stream_chat(req, [&](std::string_view delta) {
             assistant_content += delta;
             broadcast(acp::assistant_frame(delta));
         });
+
+        auto llm_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        LOG_DEBUG("turn {} LLM: {}ms {} tokens: {}", *turn, llm_ms,
+                  assistant_content.size(), assistant_content.substr(0, 200));
 
         if (!assistant_content.empty())
             session_store_.append_message(session_id, {"assistant", assistant_content});
