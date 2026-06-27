@@ -20,6 +20,7 @@ find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
 add_subdirectory(packages/util)
+add_subdirectory(packages/plugin)
 add_subdirectory(packages/llm)
 add_subdirectory(packages/cli)
 add_subdirectory(packages/server)
