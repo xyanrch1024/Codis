@@ -29,19 +29,16 @@ bool is_server_running(int port) {
     return client.health_check();
 }
 
-bool ensure_server_running(int port, const std::string& server_binary) {
+bool ensure_server_running(int port, const std::string& server_binary, const std::string& project_root) {
     if (is_server_running(port)) return true;
 
 #ifdef __linux__
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        // 尝试在常见位置找 config.toml
-        std::string config_path = std::filesystem::path(server_binary).parent_path().parent_path().parent_path() / "config/config.toml";
-        if (!std::filesystem::exists(config_path))
-            config_path = "config/config.toml";
+        std::string config = project_root + "/config/config.toml";
         execl(server_binary.c_str(), server_binary.c_str(), "-p", std::to_string(port).c_str(),
-              "-c", config_path.c_str(), nullptr);
+              "-c", config.c_str(), nullptr);
         _exit(127);
     }
     if (pid < 0) return false;
@@ -95,12 +92,16 @@ int main(int argc, char** argv) {
     // 自动启动 server
     if (!is_server_running(server_port)) {
         LOG_INFO("server not running on port {}, attempting auto-start", server_port);
+
+        auto cli_dir = std::filesystem::path(argv[0]).parent_path();  // build/packages/cli
+        auto project_root = std::filesystem::canonical(cli_dir / "../../..").string();
+
         std::string bin = server_bin.empty()
-            ? (std::filesystem::path(argv[0]).parent_path() / "opencode-server").string()
+            ? (project_root + "/build/packages/server/opencode-server")
             : server_bin;
 
         if (std::filesystem::exists(bin)) {
-            ensure_server_running(server_port, bin);
+            ensure_server_running(server_port, bin, project_root);
         } else {
             LOG_ERROR("server binary not found: {}", bin);
             std::cerr << "Server not running. Start it: opencode-server -p " << server_port << " -c config/config.toml\n";
