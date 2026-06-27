@@ -19,6 +19,7 @@ struct TuiState {
     int server_port = 8711;
     std::string system_prompt = "You are a helpful AI coding assistant.";
     bool processing = false;
+    std::vector<Message> history;   // 对话历史
 
     std::mutex mutex;
     std::atomic<bool> dirty{false};
@@ -37,6 +38,7 @@ struct TuiState {
         std::lock_guard lk(mutex);
         if (!pending.empty()) {
             lines.push_back("AI: " + pending);
+            history.push_back({"assistant", pending});
             pending.clear();
         }
         processing = false;

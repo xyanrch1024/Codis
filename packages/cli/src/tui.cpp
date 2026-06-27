@@ -170,9 +170,11 @@ void TuiClient::send_message(const std::string& text) {
     state_->processing = true;
     state_->dirty = true;
 
+    state_->history.push_back({"user", text});
+
     std::vector<Message> msgs;
     msgs.push_back({"system", state_->system_prompt});
-    msgs.push_back({"user", text});
+    for (auto& m : state_->history) msgs.push_back(m);
 
     ChatRequest req;
     req.model = model_;
@@ -195,6 +197,7 @@ void TuiClient::cmd_clear() {
     std::lock_guard lk(state_->mutex);
     state_->lines.clear();
     state_->pending.clear();
+    state_->history.clear();
     state_->dirty = true;
 }
 

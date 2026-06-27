@@ -397,6 +397,13 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
     auto baseline = system_context_.build_baseline(session_id, session_store_);
     req.messages.insert(req.messages.begin(), {"system", baseline});
 
+    // 加载 session 历史到 LLM 上下文（实现多轮对话）
+    auto history = session_store_.load_messages(session_id);
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        if (it->role == "user" || it->role == "assistant")
+            req.messages.insert(req.messages.begin(), *it);
+    }
+
     std::string assistant_content;
     auto turn = std::make_shared<int>(0);
     bool is_first_turn = true;
