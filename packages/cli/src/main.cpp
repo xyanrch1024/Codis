@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "acp_client.h"
+#include "tui.h"
 #include "log.h"
 
 #ifdef __linux__
@@ -75,7 +76,9 @@ int main(int argc, char** argv) {
     std::string server_bin;
     std::string session_arg;
     bool clear_sessions = false;
+    bool use_tui = false;
 
+    app.add_flag("--tui",             use_tui,        "Launch TUI mode");
     app.add_flag("--clear-sessions",   clear_sessions, "Delete all sessions");
     app.add_option("-p,--port",        server_port,   "Server port (default: 8711)");
     app.add_option("--server-bin",     server_bin,    "Server binary path");
@@ -119,6 +122,11 @@ int main(int argc, char** argv) {
             std::cerr << "Failed to delete sessions.\n";
         }
         return 0;
+    }
+
+    if (use_tui) {
+        TuiClient tui(server_port, model, provider, session_arg);
+        return tui.run();
     }
 
     // 构建请求模板
