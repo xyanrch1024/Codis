@@ -170,11 +170,54 @@ struct SessionState {
 | `messages` | session_id, role, content, timestamp |
 | `context_snapshots` | session_id, key, value, rendered |
 
+## Plugin 系统 (v0.8.0)
+
+### C ABI 接口
+
+插件实现为动态库 `.so`，通过 C ABI 接口与宿主通信，`dlopen` 加载。
+
+| 回调 | 说明 |
+|------|------|
+| `register_tool(name, desc, params, execute_fn, ctx)` | 注册自定义工具 |
+| `log(level, msg)` | 插件日志 |
+
+### 加载流程
+
+```
+Server 启动
+  └─ PluginLoader::load_directory(CODIS_PLUGIN_DIR)
+       ├─ 扫描 *.so → dlopen()
+       ├─ dlsym("plugin_init")
+       ├─ 注入 CodisAPI{register_tool, log}
+       └─ plugin_init(&api, config_json)
+            └─ api->register_tool("my_tool", ...)
+                 └─ PluginTool 适配器 → tool_registry_.register_tool()
+```
+
+### 插件示例 (C)
+
+```c
+int plugin_init(const CodisAPI* api, const char* config_json) {
+    api->register_tool("my_tool", "desc", param_json, execute_fn, NULL);
+    return 0;
+}
+void plugin_shutdown(void) { }
+```
+
+### 文件
+
+| 文件 | 说明 |
+|------|------|
+| `packages/llm/src/plugin.h` | C ABI 接口定义 |
+| `packages/llm/src/plugin_loader.h/cpp` | dlopen 加载器 |
+| `packages/llm/src/plugin_tool.h` | C 回调 → Tool 接口适配器 |
+| `plugins/echo_plugin.c` | 示例插件 |
+
 ## Phase 演进
 
 | Phase | 版本 | 交付 |
 |-------|------|------|
 | 1-7 | v0.1.0-v0.7.0 | 基础架构 |
-| 8 | v0.8.0 | 长 TCP: SSE stream + fire-and-forget |
+| 8 | v0.8.0 | Plugin 系统 (C ABI) |
 | 9 | v0.9.0 | EventBus: pub/sub 解耦 (已废弃) |
-| 10 | v0.10.0 | **SessionState 直接队列广播 + conn_id 精准路由 + keepalive** |
+| 10 | v0.10.0 | 长 TCP: SSE stream + keepalive + conn_id |

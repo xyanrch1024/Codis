@@ -55,6 +55,7 @@ docker logs -f codis
 - **System Context** — date, platform, git_status, AGENTS.md
 - **SQLite 持久化** — 会话/消息/Context 快照
 - **Session 管理** — list / restore / delete / search
+- **Plugin 系统** — C ABI dlopen，动态加载自定义工具
 - **日志系统** — 5 级，环境变量控制
 - **飞书 Bot** — Python lark-oapi SDK，WebSocket 长连接，无需公网 IP
 - **Docker 一键部署** — 单容器运行，零手动配置
