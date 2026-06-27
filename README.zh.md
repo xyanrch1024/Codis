@@ -18,6 +18,32 @@ docker run -d --name codis \
 docker logs -f codis
 ```
 
+## 快速开始 (原生)
+
+### 编译
+
+```bash
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+cmake --build build -j$(nproc)
+```
+
+### 运行
+
+```bash
+# 终端 1: 启动 server
+export GLM_API_KEY="your-api-key"
+./build/packages/server/opencode-server -c config/config.toml
+
+# 终端 2: 交互 CLI
+./build/packages/cli/opencode -i
+
+# 或启动 TUI
+./build/packages/cli/opencode --tui
+
+# 单次查询
+./build/packages/cli/opencode "什么是C++20?"
+```
+
 ## 架构
 
 ```

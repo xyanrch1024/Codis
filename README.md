@@ -18,6 +18,32 @@ docker run -d --name codis \
 docker logs -f codis
 ```
 
+## Quick Start (Native)
+
+### Build
+
+```bash
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+cmake --build build -j$(nproc)
+```
+
+### Run
+
+```bash
+# Terminal 1: start server
+export GLM_API_KEY="your-api-key"
+./build/packages/server/opencode-server -c config/config.toml
+
+# Terminal 2: interactive CLI
+./build/packages/cli/opencode -i
+
+# Or launch the TUI
+./build/packages/cli/opencode --tui
+
+# One-shot query
+./build/packages/cli/opencode "What is C++20?"
+```
+
 ## Architecture
 
 ```
