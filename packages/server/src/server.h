@@ -8,6 +8,8 @@
 #include "tool_registry.h"
 #include "session_store.h"
 #include "context_source.h"
+#include "plugin_loader.h"
+#include "plugin_tool.h"
 
 #include <httplib.h>
 
@@ -124,6 +126,7 @@ private:
     SystemContext system_context_;
     std::unordered_map<std::string, SessionState> sessions_;
     std::mutex sessions_mutex_;
+    PluginLoader plugin_loader_;
 };
 
 } // namespace opencode

@@ -21,3 +21,4 @@ _fetch_content/
 .cache/
 .local/
 __pycache__/
+.so

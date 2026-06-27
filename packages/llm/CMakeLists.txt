@@ -5,6 +5,7 @@ add_library(opencode_llm STATIC
     src/tools/tools.cpp
     src/session_store.cpp
     src/context_source.cpp
+    src/plugin_loader.cpp
 )
 
 target_include_directories(opencode_llm PUBLIC src ${SQLite3_INCLUDE_DIR})
@@ -16,4 +17,5 @@ target_link_libraries(opencode_llm PUBLIC
     OpenSSL::Crypto
     opencode_util
     SQLite::SQLite3
+    ${CMAKE_DL_LIBS}
 )

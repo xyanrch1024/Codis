@@ -1,5 +1,7 @@
 #include "server.h"
 #include "tools/tools.h"
+#include "plugin_loader.h"
+#include "plugin_tool.h"
 
 #include <iostream>
 #include <thread>
@@ -122,6 +124,22 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
     tool_registry_.register_tool(std::make_unique<tools::BashTool>());
     tool_registry_.register_tool(std::make_unique<tools::GlobTool>());
     tool_registry_.register_tool(std::make_unique<tools::GrepTool>());
+
+    // 加载插件
+    plugin_loader_.set_tool_registrar(
+        [this](const std::string& name, const std::string& desc,
+               const std::string& params, codis_tool_execute_fn exec, void* ctx) {
+            json params_json;
+            try { params_json = json::parse(params); } catch (...) { params_json = json::object(); }
+            tool_registry_.register_tool(
+                std::make_unique<PluginTool>(name, desc, params_json, exec, ctx));
+        });
+    plugin_loader_.set_logger([](int level, const std::string& msg) {
+        LOG_INFO("plugin: {}", msg);
+    });
+    const char* plugin_dir = std::getenv("CODIS_PLUGIN_DIR");
+    if (plugin_dir) plugin_loader_.load_directory(plugin_dir);
+    else plugin_loader_.load_directory("plugins");
 
     init_context_sources();
     register_routes();
