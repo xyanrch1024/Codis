@@ -299,6 +299,8 @@ int main(int argc, char** argv) {
                         std::cout << "Session not found.\n\n";
                         continue;
                     }
+                    // 通知服务端切换 session（SSE 不断开）
+                    acp.switch_session(sid);
                     current_session = sid;
                     conversation = info->messages;
                     show_header();
