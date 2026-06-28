@@ -78,12 +78,10 @@ int TuiClient::run() {
                     el = el | color(Color::Yellow);
                 else if (line.starts_with("[Error"))
                     el = el | color(Color::Red);
-                if (i == state_->lines.size() - 1 && state_->pending.empty())
-                    el = el | focus;
                 els.push_back(std::move(el));
             }
             if (!state_->pending.empty())
-                els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight) | focus);
+                els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight));
         }
         return vbox(std::move(els)) | frame | flex;
     });
