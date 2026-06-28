@@ -154,9 +154,18 @@ int main(int argc, char** argv) {
     } else if (cont_session) {
         current_session = acp.get_last_session();
     }
-    if (current_session.empty()) {
+    else{
         auto sid = acp.create_session();
-        if (sid) current_session = *sid;
+        if (sid) 
+        {
+                current_session = *sid;
+        }
+        else
+        {
+             std::cout << "Create session failed"<<std::endl;
+
+            return 1;
+        }
     }
 
     // ---- 交互模式 ----
@@ -171,20 +180,14 @@ int main(int argc, char** argv) {
                 conversation = info->messages;
             }
         }
-        if (current_session.empty()) {
-            auto sid = acp.create_session();
-            if (sid) current_session = *sid;
-        }
-
         auto show_header = [&]() {
             std::cout << "╔══════════════════════════════════════════╗\n";
             std::cout << "║  Codis Client  v0.6.0                  ║\n";
             std::cout << std::format("║  Server:   localhost:{:<20d} ║\n", server_port);
             std::cout << std::format("║  Model:    {:<27s} ║\n", model);
-            if (!current_session.empty()) {
-                auto short_id = current_session.substr(0, 8) + "...";
-                std::cout << std::format("║  Session:  {:<27s} ║\n", short_id);
-            }
+          
+            std::cout << std::format("║  Session:  {:<27s} ║\n", current_session.substr(0, 27));
+          
             std::cout << "╚══════════════════════════════════════════╝\n";
         };
         show_header();
@@ -234,7 +237,7 @@ int main(int argc, char** argv) {
                 std::cout << "\n> " << std::flush;
             }
         };
-        if (!current_session.empty()) acp.connect(current_session, view_cbs);
+        acp.connect(current_session, view_cbs);
 
         std::string line;
         while (true) {
@@ -391,7 +394,6 @@ int main(int argc, char** argv) {
             // ---- 普通消息 ----
             conversation.push_back({"user", line});
             std::cout << "\n";
-            std::string assistant_content;
 
             auto req = build_req(conversation);
 

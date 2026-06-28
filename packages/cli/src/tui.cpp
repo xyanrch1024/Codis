@@ -8,6 +8,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdlib>
+#include <sstream>
 
 namespace opencode {
 
@@ -114,9 +115,9 @@ int TuiClient::run() {
             hbox({
                 text(" Codis TUI ") | bold,
                 text(" Model: " + model_ + status) | dim,
-                text(" S: " + state_->current_session.substr(0, 8)) | dim,
+                text(" S: " + state_->current_session) | dim,
                 flex(text("")),
-                text("/exit /clear /sessions") | dim,
+                text("/exit /clear /sessions /balance") | dim,
             }),
             separator(),
             main_container->Render() | flex,
@@ -165,6 +166,10 @@ void TuiClient::send_message(const std::string& text) {
         cmd_delete_all();
         return;
     }
+    if (text.starts_with("/balance")) {
+        cmd_balance(text);
+        return;
+    }
 
     state_->add_line("You: " + text);
     state_->processing = true;
@@ -205,6 +210,62 @@ void TuiClient::cmd_delete_all() {
     acp_.delete_all_sessions();
     cmd_clear();
     state_->add_line("[All sessions deleted]");
+}
+
+void TuiClient::cmd_balance(const std::string& line) {
+    std::string prov = "deepseek";
+    auto parts = [&]() {
+        std::vector<std::string> v;
+        std::istringstream iss(line);
+        std::string w;
+        while (iss >> w) v.push_back(w);
+        return v;
+    }();
+    if (parts.size() > 1) prov = parts[1];
+
+    httplib::Client client("127.0.0.1", server_port_);
+    client.set_connection_timeout(10, 0);
+    client.set_read_timeout(10, 0);
+
+    auto http_res = client.Get(("/api/v1/balance/" + prov).c_str());
+    if (!http_res) {
+        state_->add_line("[Error] Server unreachable: " + httplib::to_string(http_res.error()));
+        state_->dirty = true;
+        return;
+    }
+    if (http_res->status != 200) {
+        try {
+            auto j = opencode::json::parse(http_res->body);
+            state_->add_line("[Error] " + j.value("error", http_res->body));
+        } catch (...) {
+            state_->add_line("[Error] HTTP " + std::to_string(http_res->status) + ": " + http_res->body.substr(0, 200));
+        }
+        state_->dirty = true;
+        return;
+    }
+
+    try {
+        auto j = opencode::json::parse(http_res->body);
+        auto& bal = j["balance"];
+        state_->add_line("--- " + prov + " Balance ---");
+
+        if (bal.contains("balance_infos") && !bal["balance_infos"].empty()) {
+            for (auto& bi : bal["balance_infos"]) {
+                state_->add_line("  Total:   " + bi.value("total_balance", "N/A"));
+                state_->add_line("  Topped:  " + bi.value("topped_up_balance", "N/A"));
+                state_->add_line("  Granted: " + bi.value("granted_balance", "N/A"));
+            }
+        } else {
+            state_->add_line("  Response: " + bal.dump(2));
+        }
+
+        if (bal.contains("is_available")) {
+            state_->add_line("  Active:  " + std::string(bal["is_available"].get<bool>() ? "Yes" : "No"));
+        }
+    } catch (const std::exception& e) {
+        state_->add_line("[Error] Parse failed: " + std::string(e.what()));
+    }
+    state_->dirty = true;
 }
 
 } // namespace opencode
