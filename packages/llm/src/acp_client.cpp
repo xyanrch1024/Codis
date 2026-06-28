@@ -249,4 +249,11 @@ std::string AcpClient::get_last_session() {
     return "";
 }
 
+bool AcpClient::switch_session(const std::string& session_id) {
+    json body = {{"conn_id", conn_id_}, {"session_id", session_id}};
+    httplib::Headers headers = {{"Content-Type", "application/json"}};
+    auto res = http_->Post("/api/v1/acp/switch", headers, body.dump(), "application/json");
+    return res && res->status == 200;
+}
+
 } // namespace opencode

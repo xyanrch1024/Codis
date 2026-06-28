@@ -94,6 +94,8 @@ private:
     void handle_chat(const httplib::Request& req, httplib::Response& res);
     void handle_acp(const httplib::Request& req, httplib::Response& res);
     void handle_acp_stream(const httplib::Request& req, httplib::Response& res);
+    void handle_acp_switch(const httplib::Request& req, httplib::Response& res);
+    void handle_balance(const httplib::Request& req, httplib::Response& res);
     void handle_session_create(const httplib::Request& req, httplib::Response& res);
     void handle_session_list(const httplib::Request& req, httplib::Response& res);
     void handle_session_get(const httplib::Request& req, httplib::Response& res);
@@ -101,6 +103,7 @@ private:
     void handle_session_delete_all(const httplib::Request& req, httplib::Response& res);
     void handle_session_add_message(const httplib::Request& req, httplib::Response& res);
     std::string call_llm(const ChatRequest& req);
+    json query_provider_balance(const std::string& provider_name);
 
     std::shared_ptr<LLMProvider> resolve_provider(const ChatRequest& req);
     std::vector<ToolCall> extract_tool_calls(const std::string& content);

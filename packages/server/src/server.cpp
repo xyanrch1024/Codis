@@ -212,6 +212,7 @@ void OpenCodeServer::register_routes() {
     server_->Get("/api/v1/info",         [this](auto& r, auto& s) { handle_info(r, s); });
     server_->Post("/api/v1/chat",        [this](auto& r, auto& s) { handle_chat(r, s); });
     server_->Post("/api/v1/acp",         [this](auto& r, auto& s) { handle_acp(r, s); });
+    server_->Post("/api/v1/acp/switch",  [this](auto& r, auto& s) { handle_acp_switch(r, s); });
     server_->Get(R"(/api/v1/acp/stream/([a-f0-9\-]+))", [this](auto& r, auto& s) { handle_acp_stream(r, s); });
     server_->Post("/api/v1/sessions",    [this](auto& r, auto& s) { handle_session_create(r, s); });
     server_->Get("/api/v1/sessions",     [this](auto& r, auto& s) { handle_session_list(r, s); });
@@ -378,6 +379,67 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
             }
             return true;
         });
+}
+
+// =============================================================================
+// handle_acp_switch — 切换 session 不断开 SSE
+// =============================================================================
+
+void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Response& res) {
+    set_cors(res);
+    try {
+        auto body = json::parse(req.body);
+        auto conn_id = body.value("conn_id", "");
+        auto new_sid = body.value("session_id", "");
+
+        if (conn_id.empty() || new_sid.empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"conn_id and session_id required"})", "application/json");
+            return;
+        }
+
+        if (!session_store_.load_session(new_sid))
+            session_store_.create_session_with_id(new_sid);
+
+        std::shared_ptr<SseFrameQueue> queue;
+
+        {
+            std::lock_guard lock(sessions_mutex_);
+            for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
+                auto qit = it->second.conns.find(conn_id);
+                if (qit != it->second.conns.end()) {
+                    queue = qit->second;
+                    it->second.conns.erase(qit);
+                    if (it->second.conns.empty())
+                        sessions_.erase(it);
+                    break;
+                }
+            }
+            if (queue)
+                sessions_[new_sid].conns[conn_id] = queue;
+        }
+
+        if (!queue) {
+            res.status = 400;
+            res.set_content(R"({"error":"conn_id not found"})", "application/json");
+            return;
+        }
+
+        queue->push(acp::connected_frame(conn_id));
+
+        auto history = session_store_.load_messages(new_sid);
+        for (auto& m : history) {
+            if (m.role == "user")
+                queue->push(acp::assistant_frame("\n[User] " + m.content));
+            else if (m.role == "assistant" && !m.content.empty())
+                queue->push(acp::assistant_frame(m.content));
+        }
+
+        res.set_content(R"({"status":"ok"})", "application/json");
+    } catch (const std::exception& e) {
+        res.status = 400;
+        res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+    }
 }
 
 // =============================================================================

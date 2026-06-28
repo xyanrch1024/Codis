@@ -316,15 +316,15 @@ void TuiClient::connect_sse() {
 }
 
 void TuiClient::switch_session(const SessionInfo& s) {
-    acp_.disconnect();
     std::lock_guard lk(state_->mutex);
     state_->lines.clear();
     state_->pending.clear();
     state_->history.clear();
     state_->current_session = s.id;
-    state_->add_line("[Switched to " + s.id.substr(0, 8) + "]");
     sessions_visible_ = false;
-    connect_sse();
+    state_->dirty = true;
+    // 通知服务端 SSE 切换到新 session，服务端推新历史
+    acp_.switch_session(s.id);
 }
 
 } // namespace opencode
