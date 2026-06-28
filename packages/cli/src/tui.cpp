@@ -41,6 +41,7 @@ int TuiClient::run() {
 
     // SSE 连接
     state_->notify_ = [&screen] { screen.Post([] {}); };
+    post_job_ = state_->notify_;
     connect_sse();
 
     // 输入组件
