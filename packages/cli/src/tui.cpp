@@ -65,22 +65,25 @@ int TuiClient::run() {
         Elements els;
         {
             std::lock_guard lk(state_->mutex);
-            for (auto& line : state_->lines) {
+            for (size_t i = 0; i < state_->lines.size(); i++) {
+                auto& line = state_->lines[i];
+                Element el = text(line);
                 if (line.starts_with("You: "))
-                    els.push_back(text(line) | color(Color::Cyan));
+                    el = el | color(Color::Cyan);
                 else if (line.starts_with("AI: "))
-                    els.push_back(text(line) | color(Color::Green));
+                    el = el | color(Color::Green);
                 else if (line.starts_with("[Tool"))
-                    els.push_back(text(line) | color(Color::Yellow) | dim);
+                    el = el | color(Color::Yellow) | dim;
                 else if (line.starts_with("[Result"))
-                    els.push_back(text(line) | color(Color::Yellow));
+                    el = el | color(Color::Yellow);
                 else if (line.starts_with("[Error"))
-                    els.push_back(text(line) | color(Color::Red));
-                else
-                    els.push_back(text(line));
+                    el = el | color(Color::Red);
+                if (i == state_->lines.size() - 1 && state_->pending.empty())
+                    el = el | focus;
+                els.push_back(std::move(el));
             }
             if (!state_->pending.empty())
-                els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight));
+                els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight) | focus);
         }
         return vbox(std::move(els)) | frame | flex;
     });
