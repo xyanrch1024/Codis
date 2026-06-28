@@ -3,11 +3,14 @@
 #include "acp_client.h"
 #include "types.h"
 
+#include <ftxui/component/component.hpp>
+
 #include <string>
 #include <vector>
 #include <mutex>
 #include <functional>
 #include <memory>
+#include <atomic>
 
 namespace opencode {
 
@@ -68,6 +71,10 @@ private:
     AcpClient acp_;
     std::shared_ptr<TuiState> state_;
     std::function<void()> post_job_;
+    ftxui::Component input_;
+
+    std::atomic<int> skip_events_{0};
+    std::string pending_input_;
 
     // Session overlay
     bool sessions_visible_ = false;

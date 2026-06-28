@@ -47,6 +47,7 @@ int TuiClient::run() {
     // 输入组件
     std::string input_text;
     auto input = Input(&input_text, "> ");
+    input_ = input;
     input |= CatchEvent([&](Event event) {
         if (event == Event::Return && !input_text.empty()) {
             send_message(input_text);
@@ -148,20 +149,26 @@ int TuiClient::run() {
                     state_->add_line("[Last session deleted, creating new...]");
                     auto sid = acp_.create_session();
                     if (sid) {
+                        skip_events_ = 0;
+                        pending_input_.clear();
                         state_->lines.clear();
                         state_->pending.clear();
                         state_->history.clear();
                         state_->current_session = *sid;
+                        acp_.switch_session(*sid);
                     }
                 } else {
                     session_selected_ = std::min(session_selected_, (int)session_list_.size() - 1);
                     if (was_current) {
                         auto sid = acp_.create_session();
                         if (sid) {
+                            skip_events_ = 0;
+                            pending_input_.clear();
                             state_->lines.clear();
                             state_->pending.clear();
                             state_->history.clear();
                             state_->current_session = *sid;
+                            acp_.switch_session(*sid);
                             state_->add_line("[Session " + s.id + " deleted, new session created]");
                         }
                     }
@@ -190,6 +197,15 @@ int TuiClient::run() {
             screen.ExitLoopClosure()();
             return true;
         }
+
+        // Flush any input the user typed during session switch
+        if (skip_events_ == 0 && !pending_input_.empty()) {
+            auto text = std::move(pending_input_);
+            pending_input_.clear();
+            send_message(text);
+            return true;
+        }
+
         return false;
     });
 
@@ -200,6 +216,13 @@ int TuiClient::run() {
 }
 
 void TuiClient::send_message(const std::string& text) {
+    if (text.starts_with("/")) {
+        // commands pass through even during switch
+    } else if (skip_events_.load() > 0) {
+        pending_input_ = text;
+        return;
+    }
+
     if (text == "/exit") {
         std::exit(0);
     }
@@ -220,10 +243,13 @@ void TuiClient::send_message(const std::string& text) {
     if (text.starts_with("/newsession")) {
         auto sid = acp_.create_session();
         if (sid) {
+            skip_events_ = 0;
+            pending_input_.clear();
             state_->lines.clear();
             state_->pending.clear();
             state_->history.clear();
             state_->current_session = *sid;
+            acp_.switch_session(*sid);
             state_->add_line("[New session created: " + *sid + "]");
         }
         return;
@@ -324,22 +350,34 @@ void TuiClient::cmd_balance(const std::string& line) {
 AcpClient::Callbacks TuiClient::build_callbacks() {
     return {
         .on_assistant = [this](std::string_view delta) {
+            if (skip_events_.load() > 0) return;
             LOG_DEBUG("SSE delta: {}", delta);
             state_->append_pending(std::string(delta));
         },
         .on_tool_call = [this](const acp::ToolCallEvent& tc) {
+            if (skip_events_.load() > 0) return;
             LOG_DEBUG("SSE tool_call: {}", tc.name);
             state_->add_line("[Tool: " + tc.name + "]");
         },
         .on_tool_result = [this](const acp::ToolResultEvent& tr) {
+            if (skip_events_.load() > 0) return;
             LOG_DEBUG("SSE tool_result: {} success={}", tr.content.substr(0, 100), tr.success);
             state_->add_line("[Result: " + std::string(tr.success ? "ok" : "fail") + "]");
         },
         .on_error = [this](std::string_view msg) {
             state_->add_line("[Error: " + std::string(msg) + "]");
             state_->processing = false;
+            skip_events_ = 0;
         },
         .on_done = [this]() {
+            if (skip_events_.load() > 0) {
+                if (--skip_events_ == 0) {
+                    state_->pending.clear();
+                    state_->processing = false;
+                    // Let main thread flush pending_input_ on next Event::Custom
+                }
+                return;
+            }
             state_->flush_pending();
         }
     };
@@ -350,18 +388,38 @@ void TuiClient::connect_sse() {
 }
 
 void TuiClient::switch_session(const SessionInfo& s) {
+    // Load session history synchronously
+    auto info = acp_.get_session(s.id);
     {
         std::lock_guard lk(state_->mutex);
         state_->lines.clear();
         state_->pending.clear();
         state_->history.clear();
-        state_->lines.push_back("[Switching to session " + s.id + "...]");
+
+        if (info) {
+            int assistant_count = 0;
+            for (auto& m : info->messages) {
+                if (m.role == "user")
+                    state_->lines.push_back("You: " + m.content);
+                else if (m.role == "assistant")
+                    state_->lines.push_back("AI: " + m.content);
+                state_->history.push_back(m);
+                if (m.role == "assistant") assistant_count++;
+            }
+            skip_events_ = assistant_count;
+            pending_input_.clear();
+            state_->lines.push_back("[Session loaded: " + std::to_string(info->messages.size()) + " messages]");
+        } else {
+            skip_events_ = 0;
+            state_->lines.push_back("[Session " + s.id + ": failed to load]");
+        }
     }
+
     state_->current_session = s.id;
     sessions_visible_ = false;
-    if (post_job_) post_job_();
-    // 通知服务端 SSE 切换到新 session，服务端推新历史
     acp_.switch_session(s.id);
+    input_->TakeFocus();
+    post_job_();
 }
 
 } // namespace opencode
