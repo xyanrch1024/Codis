@@ -40,7 +40,7 @@ int TuiClient::run() {
     }
 
     // SSE 连接
-    state_->notify_ = [&screen] { screen.Post([] {}); };
+    state_->notify_ = [&screen] { screen.Post(Event::Custom); };
     post_job_ = state_->notify_;
     connect_sse();
 
