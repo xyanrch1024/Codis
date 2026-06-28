@@ -111,7 +111,8 @@ int TuiClient::run() {
 
     auto main_renderer = Renderer(main_container, [&] {
         auto status = state_->processing ? " [processing...]" : "";
-        return vbox({
+
+        Elements header = {
             hbox({
                 text(" Codis TUI ") | bold,
                 text(" Model: " + model_ + status) | dim,
@@ -121,10 +122,57 @@ int TuiClient::run() {
             }),
             separator(),
             main_container->Render() | flex,
-        }) | border;
+        };
+
+        // Sessions overlay
+        if (sessions_visible_ && !session_list_.empty()) {
+            Elements rows;
+            for (int i = 0; i < (int)session_list_.size(); i++) {
+                auto& s = session_list_[i];
+                auto line = s.id + "  " + std::to_string(s.message_count) + " msgs  " + s.title;
+                auto el = text("  " + line);
+                if (i == session_selected_) el = el | inverted;
+                if (s.id == state_->current_session) el = text("> " + line) | bold;
+                rows.push_back(el);
+            }
+
+            auto overlay = window(text(" Sessions "), vbox({
+                vbox(std::move(rows)) | frame | flex,
+                separator(),
+                text(" " + std::to_string(session_selected_ + 1) + "/" +
+                     std::to_string(session_list_.size()) + "  ↑↓  Enter  ESC ") | dim | center,
+            })) | clear_under | center | border;
+
+            return dbox({vbox(std::move(header)) | border, overlay});
+        }
+
+        return vbox(std::move(header)) | border;
     });
 
     auto component = main_renderer | CatchEvent([&](Event event) {
+        if (sessions_visible_) {
+            if (event == Event::ArrowUp && session_selected_ > 0) {
+                session_selected_--;
+                return true;
+            }
+            if (event == Event::ArrowDown && session_selected_ < (int)session_list_.size() - 1) {
+                session_selected_++;
+                return true;
+            }
+            if (event == Event::Return && !session_list_.empty()) {
+                auto& s = session_list_[session_selected_];
+                state_->current_session = s.id;
+                state_->add_line("[Switched to " + s.id.substr(0, 8) + "]");
+                sessions_visible_ = false;
+                return true;
+            }
+            if (event == Event::Escape) {
+                sessions_visible_ = false;
+                return true;
+            }
+            return true;
+        }
+
         if (event == Event::CtrlC) {
             screen.ExitLoopClosure()();
             return true;
@@ -159,7 +207,9 @@ void TuiClient::send_message(const std::string& text) {
         return;
     }
     if (text == "/sessions") {
-        cmd_sessions();
+        session_list_ = acp_.list_sessions();
+        session_selected_ = 0;
+        sessions_visible_ = true;
         return;
     }
     if (text == "/clearsessions") {
@@ -189,13 +239,6 @@ void TuiClient::send_message(const std::string& text) {
     req.session_id = state_->current_session;
 
     acp_.send_async(req);
-}
-
-void TuiClient::cmd_sessions() {
-    auto sessions = acp_.list_sessions();
-    state_->add_line("--- Sessions ---");
-    for (auto& s : sessions)
-        state_->add_line("  " + s.id + "  msgs:" + std::to_string(s.message_count) + "  " + s.title);
 }
 
 void TuiClient::cmd_clear() {

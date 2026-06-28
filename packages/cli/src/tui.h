@@ -19,7 +19,8 @@ struct TuiState {
     int server_port = 8711;
     std::string system_prompt = "You are a helpful AI coding assistant.";
     bool processing = false;
-    std::vector<Message> history;   // 对话历史
+    std::vector<Message> history;
+    std::string status_msg;
 
     std::mutex mutex;
     std::atomic<bool> dirty{false};
@@ -54,9 +55,9 @@ public:
 
 private:
     void send_message(const std::string& text);
-    void cmd_sessions();
     void cmd_clear();
     void cmd_delete_all();
+    void cmd_balance(const std::string& line);
 
     int server_port_;
     std::string model_;
@@ -64,6 +65,11 @@ private:
     std::string session_arg_;
     AcpClient acp_;
     std::shared_ptr<TuiState> state_;
+
+    // Session overlay
+    bool sessions_visible_ = false;
+    int session_selected_ = 0;
+    std::vector<SessionInfo> session_list_;
 };
 
 } // namespace opencode
