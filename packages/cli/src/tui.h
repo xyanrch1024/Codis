@@ -73,6 +73,9 @@ private:
     void switch_session(const SessionInfo& s);
     void connect_sse();
     AcpClient::Callbacks build_callbacks();
+
+    // Scroll
+    bool auto_scroll_ = true;
 };
 
 } // namespace opencode

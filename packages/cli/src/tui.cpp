@@ -82,7 +82,25 @@ int TuiClient::run() {
             if (!state_->pending.empty())
                 els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight));
         }
+        // auto-scroll: focus last element so frame scrolls to bottom
+        if (auto_scroll_ && !els.empty())
+            els.back() = els.back() | focus;
         return vbox(std::move(els)) | frame | flex;
+    });
+
+    conversation_view |= CatchEvent([&](Event event) {
+        if (event.is_mouse()) {
+            auto& mouse = event.mouse();
+            if (mouse.motion == Mouse::Released) {
+                if (mouse.button == Mouse::WheelUp)
+                    auto_scroll_ = false;
+                if (mouse.button == Mouse::WheelDown) {
+                    // scroll to bottom: re-enable auto-scroll
+                    auto_scroll_ = true;
+                }
+            }
+        }
+        return false;  // let frame handle the scroll
     });
 
     auto main_container = Container::Vertical({conversation_view, input_bar});
