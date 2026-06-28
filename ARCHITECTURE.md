@@ -100,6 +100,68 @@ Client                                    Server
 
 `done` 帧标志一次 ACP 请求的 LLM 处理完全结束（含 tool 多轮对话）。
 
+## SessionState / conn_id / SseFrameQueue 关系
+
+### 数据结构
+
+```cpp
+unordered_map<string, SessionState> sessions_;  // session_id → SessionState
+
+struct SessionState {
+    unordered_map<string, shared_ptr<SseFrameQueue>> conns;  // conn_id → queue
+    atomic<bool> processing;                                   // LLM 并发锁
+};
+```
+
+- **session** ↔ **conn_id**：一对多（一个 session 多个 SSE 连接）
+- **conn_id** ↔ **SseFrameQueue**：一对一
+
+### 生命周期
+
+```
+1. SSE 连接建立
+   handle_acp_stream("session_A"):
+     → queue = make_shared<SseFrameQueue>()
+     → conn_id = generate_conn_id()
+     → sessions_["session_A"].conns[conn_id] = queue
+     → queue->push(connected_frame)      // 告知客户端 conn_id
+     → 进入 chunked provider 循环等待:
+         while (true):
+           auto frame = queue->pop()     // 阻塞等待
+           sink.write(frame)             // 写到 TCP
+
+2. ACP 请求处理
+   handle_acp("session_A", conn_id):
+     run_acp_loop_broadcast → broadcast(frame):
+       sessions_["session_A"].conns[conn_id]->push(frame)
+       → 唤醒 SSE 线程 pop() → sink.write() → 客户端
+
+3. 切换 session（不断开 SSE）
+   handle_acp_switch({conn_id, new_session}):
+     → conn_id 从旧 session 移除
+     → 插入 sessions_[new_session].conns[conn_id] = queue
+     → queue->push(connected_frame)       // 确认切换完毕
+
+4. 断开
+   cleanup_connection(sid, conn_id):
+     → sessions_[sid].conns.erase(conn_id)
+     → 若 session 无其他连接, sessions_.erase(sid)
+```
+
+### 线程模型
+
+```
+  ACP 线程 (detached)                 SSE 线程 (httplib)
+     │                                      │
+     │ broadcast(frame)                     │
+     │   ↓                                  │  queue->pop()
+     │   sessions_[sid].conns[cid]->push()  │    → cv_.wait(lock)
+     │   → lock → 入队 → notify_one() ──────►    → lock → 取出 → unlock
+     │   → unlock                          │    → sink.write() → TCP
+```
+
+ACP 线程不直接写 TCP，只入队。mutex + condition_variable 同步。
+
 ## 技术选型
 
 | 类别 | 库 | 版本 | 管理 |
@@ -124,8 +186,9 @@ opencode-cpp/
 │
 ├── packages/
 │   ├── cli/src/main.cpp           # connect() + send_async() + send()
+│   │       tui.h/cpp              # FTXUI TUI + session overlay
 │   ├── server/src/
-│   │   ├── server.h/cpp             # handle_acp_stream (conn_id)
+│   │   ├── server.h/cpp             # handle_acp_stream (conn_id), handle_acp_switch
 │   │   └── main.cpp                 # handle_acp (conn_id routing)
 │   ├── llm/src/
 │   │   ├── types.h / acp.h          # ACP 协议帧定义 + connected 事件
@@ -134,6 +197,12 @@ opencode-cpp/
 │   │   ├── context_source.h/cpp
 │   │   ├── tool.h / tool_registry.h / tools/
 │   │   └── log.h
+│   ├── plugin/
+│   │   ├── include/
+│   │   │   ├── plugin.h               # C ABI 接口
+│   │   │   ├── plugin_loader.h/cpp     # dlopen 加载器
+│   │   │   └── plugin_tool.h           # C → Tool 适配器
+│   │   └── CMakeLists.txt
 │   └── util/src/config.h/cpp
 │
 ├── config/config.toml
