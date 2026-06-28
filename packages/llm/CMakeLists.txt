@@ -9,7 +9,6 @@ add_library(opencode_llm STATIC
 
 target_include_directories(opencode_llm PUBLIC src ${SQLite3_INCLUDE_DIR})
 target_link_libraries(opencode_llm PUBLIC
-    asio::asio
     httplib::httplib
     nlohmann_json::nlohmann_json
     OpenSSL::SSL

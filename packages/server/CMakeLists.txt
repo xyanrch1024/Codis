@@ -10,7 +10,6 @@ target_include_directories(opencode-server PRIVATE
 )
 
 target_link_libraries(opencode-server PRIVATE
-    asio::asio
     httplib::httplib
     nlohmann_json::nlohmann_json
     CLI11::CLI11

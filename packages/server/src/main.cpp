@@ -1,18 +1,28 @@
-#include <asio/signal_set.hpp>
-#include <asio/io_context.hpp>
-
 #include <iostream>
 #include <string>
 #include <cstdlib>
 #include <thread>
 #include <optional>
 #include <filesystem>
+#include <signal.h>
+#include <mutex>
+#include <condition_variable>
 
 #include <CLI/CLI.hpp>
 #include "server.h"
 #include "log.h"
 
-namespace asio = ::asio;
+static std::mutex g_signal_mtx;
+static std::condition_variable g_signal_cv;
+static bool g_shutdown = false;
+
+extern "C" void signal_handler(int) {
+    {
+        std::lock_guard<std::mutex> lock(g_signal_mtx);
+        g_shutdown = true;
+    }
+    g_signal_cv.notify_one();
+}
 
 int main(int argc, char** argv) {
     CLI::App app{"OpenCode Server — Multi-Provider Backend"};
@@ -37,14 +47,17 @@ int main(int argc, char** argv) {
 
     opencode::OpenCodeServer server(port, cfg);
 
-    asio::io_context ioc;
-    asio::signal_set signals(ioc, SIGINT, SIGTERM);
-    signals.async_wait([&](auto ec, auto) {
-        if (!ec) { LOG_INFO("received shutdown signal"); server.stop(); ioc.stop(); }
-    });
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
 
     server.start();
-    ioc.run();
 
+    {
+        std::unique_lock<std::mutex> lock(g_signal_mtx);
+        g_signal_cv.wait(lock, [] { return g_shutdown; });
+    }
+
+    LOG_INFO("received shutdown signal");
+    server.stop();
     return 0;
 }

@@ -4,14 +4,12 @@
 #include <string_view>
 #include <functional>
 #include <memory>
-#include <asio/io_context.hpp>
 
 #include <nlohmann/json.hpp>
 #include <httplib.h>
 
 namespace opencode {
 
-namespace asio = ::asio;
 using json = nlohmann::json;
 
 class LLMHttpClient {

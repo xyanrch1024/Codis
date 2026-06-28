@@ -11,7 +11,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # 所有第三方库由 vcpkg 管理，零 FetchContent
 # ==============================================================================
 
-find_package(asio CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(CLI11 CONFIG REQUIRED)
