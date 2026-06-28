@@ -93,6 +93,9 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
     : port_(port)
     , server_(std::make_unique<httplib::Server>())
 {
+    // SSE 长连接不能因为空闲被断
+    server_->set_keep_alive_timeout(0);
+
     if (config_path && !config_path->empty()) {
         config_ = AppConfig::load(*config_path);
     }
