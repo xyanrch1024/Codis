@@ -76,6 +76,10 @@ private:
     void switch_session(const SessionInfo& s);
     void connect_sse();
     AcpClient::Callbacks build_callbacks();
+
+    // Conversation scrolling
+    int scroll_line_ = -1;  // -1 = auto-scroll to bottom
+    bool auto_scroll_ = true;
 };
 
 } // namespace opencode

@@ -82,8 +82,17 @@ int TuiClient::run() {
             }
             if (!state_->pending.empty())
                 els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight));
+
+            // 焦点控制：frame 将滚动到带 focus 的元素
+            if (!els.empty()) {
+                if (auto_scroll_) {
+                    els.back() = els.back() | focus;
+                } else if (scroll_line_ >= 0 && scroll_line_ < (int)els.size()) {
+                    els[scroll_line_] = els[scroll_line_] | focus;
+                }
+            }
         }
-        return vbox(std::move(els)) | frame | flex;
+        return vbox(std::move(els)) | frame | flex | vscroll_indicator;
     });
 
     auto main_container = Container::Vertical({conversation_view, input_bar});
@@ -179,6 +188,33 @@ int TuiClient::run() {
             return true;
         }
 
+        // 对话区上下滚动
+        if (event == Event::ArrowUp) {
+            if (auto_scroll_) {
+                auto_scroll_ = false;
+                scroll_line_ = (int)state_->lines.size();
+                if (!state_->pending.empty()) scroll_line_++;
+                scroll_line_ = std::max(0, scroll_line_ - 1);
+            } else if (scroll_line_ > 0) {
+                scroll_line_--;
+            }
+            post_job_();
+            return true;
+        }
+        if (event == Event::ArrowDown) {
+            if (scroll_line_ >= 0) {
+                scroll_line_++;
+                int max_line = (int)state_->lines.size();
+                if (!state_->pending.empty()) max_line++;
+                if (scroll_line_ >= max_line) {
+                    scroll_line_ = -1;
+                    auto_scroll_ = true;
+                }
+            }
+            post_job_();
+            return true;
+        }
+
         if (event == Event::CtrlS) {
             session_list_ = acp_.list_sessions();
             session_selected_ = 0;
@@ -235,6 +271,8 @@ void TuiClient::send_message(const std::string& text) {
 
     state_->add_line("You: " + text);
     state_->processing = true;
+    auto_scroll_ = true;
+    scroll_line_ = -1;
     post_job_();
 
     state_->history.push_back({"user", text});
@@ -326,6 +364,7 @@ AcpClient::Callbacks TuiClient::build_callbacks() {
         .on_assistant = [this](std::string_view delta) {
             LOG_DEBUG("SSE delta: {}", delta);
             state_->append_pending(std::string(delta));
+            //state_->flush_pending();
         },
         .on_tool_call = [this](const acp::ToolCallEvent& tc) {
             LOG_DEBUG("SSE tool_call: {}", tc.name);

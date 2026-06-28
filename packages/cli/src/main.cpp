@@ -395,19 +395,14 @@ int main(int argc, char** argv) {
             conversation.push_back({"user", line});
             std::cout << "\n";
 
-            auto req = build_req(conversation);
+            auto req = build_req(std::vector<Message>{{"user", line}});
 
-            // 长连接模式: fire-and-forget, 回复通过 SSE stream 到达
             acp.send_async(req);
         }
     }
     // ---- 单次模式 ----
     else {
-        std::vector<Message> messages = {
-            {"system", system_prompt},
-            {"user", prompt_arg}
-        };
-        auto req = build_req(messages);
+        auto req = build_req(std::vector<Message>{{"user", prompt_arg}});
 
         AcpClient::Callbacks cbs{
             .on_assistant = [](std::string_view delta) {
