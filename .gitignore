@@ -3,7 +3,6 @@ build/
 cmake-build-*/
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo

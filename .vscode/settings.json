@@ -1,0 +1,15 @@
+{
+    "cmake.configureArgs": [
+        "-DCMAKE_TOOLCHAIN_FILE=${env:HOME}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "-DSQLite3_INCLUDE_DIR=${env:HOME}/projects/opencode-cpp/.local/usr/include",
+        "-DSQLite3_LIBRARY=${env:HOME}/projects/opencode-cpp/.local/usr/lib/x86_64-linux-gnu/libsqlite3.so",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+    ],
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build"
+    ],
+    "files.associations": {
+        "*.h": "cpp"
+    }
+}
