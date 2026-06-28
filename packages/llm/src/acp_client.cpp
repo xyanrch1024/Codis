@@ -125,7 +125,7 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
     sse_thread_ = std::thread([this, session_id]() {
         httplib::Client client(host_, port_);
         client.set_connection_timeout(5, 0);
-        client.set_read_timeout(300, 0);
+        // read_timeout 不设 — keepalive SSE 永不超时
 
         // 只发一次 GET，服务端 keepalive 模式不主动断开，数据持续推送
         client.Get(("/api/v1/acp/stream/" + session_id + "?keepalive=1").c_str(),
