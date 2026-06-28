@@ -70,6 +70,9 @@ private:
     bool sessions_visible_ = false;
     int session_selected_ = 0;
     std::vector<SessionInfo> session_list_;
+    void switch_session(const SessionInfo& s);
+    void connect_sse();
+    AcpClient::Callbacks build_callbacks();
 };
 
 } // namespace opencode

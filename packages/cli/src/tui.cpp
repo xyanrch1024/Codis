@@ -41,30 +41,8 @@ int TuiClient::run() {
         return 1;
     }
 
-    // SSE 连接（后台线程）
-    AcpClient::Callbacks cbs{
-        .on_assistant = [this](std::string_view delta) {
-            LOG_DEBUG("SSE delta: {}", delta);
-            state_->append_pending(std::string(delta));
-        },
-        .on_tool_call = [this](const acp::ToolCallEvent& tc) {
-            LOG_DEBUG("SSE tool_call: {}", tc.name);
-            state_->add_line("[Tool: " + tc.name + "]");
-        },
-        .on_tool_result = [this](const acp::ToolResultEvent& tr) {
-            LOG_DEBUG("SSE tool_result: {} success={}", tr.content.substr(0, 100), tr.success);
-            state_->add_line("[Result: " + std::string(tr.success ? "ok" : "fail") + "]");
-        },
-        .on_error = [this](std::string_view msg) {
-            state_->add_line("[Error: " + std::string(msg) + "]");
-            state_->processing = false;
-            state_->dirty = true;
-        },
-        .on_done = [this]() {
-            state_->flush_pending();
-        }
-    };
-    acp_.connect(state_->current_session, cbs);
+    // SSE 连接
+    connect_sse();
 
     // 输入组件
     std::string input_text;
@@ -160,10 +138,7 @@ int TuiClient::run() {
                 return true;
             }
             if (event == Event::Return && !session_list_.empty()) {
-                auto& s = session_list_[session_selected_];
-                state_->current_session = s.id;
-                state_->add_line("[Switched to " + s.id.substr(0, 8) + "]");
-                sessions_visible_ = false;
+                switch_session(session_list_[session_selected_]);
                 return true;
             }
             if (event == Event::Escape) {
@@ -309,6 +284,47 @@ void TuiClient::cmd_balance(const std::string& line) {
         state_->add_line("[Error] Parse failed: " + std::string(e.what()));
     }
     state_->dirty = true;
+}
+
+AcpClient::Callbacks TuiClient::build_callbacks() {
+    return {
+        .on_assistant = [this](std::string_view delta) {
+            LOG_DEBUG("SSE delta: {}", delta);
+            state_->append_pending(std::string(delta));
+        },
+        .on_tool_call = [this](const acp::ToolCallEvent& tc) {
+            LOG_DEBUG("SSE tool_call: {}", tc.name);
+            state_->add_line("[Tool: " + tc.name + "]");
+        },
+        .on_tool_result = [this](const acp::ToolResultEvent& tr) {
+            LOG_DEBUG("SSE tool_result: {} success={}", tr.content.substr(0, 100), tr.success);
+            state_->add_line("[Result: " + std::string(tr.success ? "ok" : "fail") + "]");
+        },
+        .on_error = [this](std::string_view msg) {
+            state_->add_line("[Error: " + std::string(msg) + "]");
+            state_->processing = false;
+            state_->dirty = true;
+        },
+        .on_done = [this]() {
+            state_->flush_pending();
+        }
+    };
+}
+
+void TuiClient::connect_sse() {
+    acp_.connect(state_->current_session, build_callbacks());
+}
+
+void TuiClient::switch_session(const SessionInfo& s) {
+    acp_.disconnect();
+    std::lock_guard lk(state_->mutex);
+    state_->lines.clear();
+    state_->pending.clear();
+    state_->history.clear();
+    state_->current_session = s.id;
+    state_->add_line("[Switched to " + s.id.substr(0, 8) + "]");
+    sessions_visible_ = false;
+    connect_sse();
 }
 
 } // namespace opencode
