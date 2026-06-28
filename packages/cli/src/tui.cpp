@@ -195,7 +195,7 @@ void TuiClient::cmd_sessions() {
     auto sessions = acp_.list_sessions();
     state_->add_line("--- Sessions ---");
     for (auto& s : sessions)
-        state_->add_line("  " + s.id.substr(0, 8) + "  msgs:" + std::to_string(s.message_count) + "  " + s.title);
+        state_->add_line("  " + s.id + "  msgs:" + std::to_string(s.message_count) + "  " + s.title);
 }
 
 void TuiClient::cmd_clear() {

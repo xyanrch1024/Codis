@@ -253,15 +253,13 @@ int main(int argc, char** argv) {
                 if (sessions.empty()) {
                     std::cout << "No sessions found.\n\n";
                 } else {
-                    std::cout << std::format("{:<10} {:<5} {:<10} {}\n", "ID", "Msgs", "Active", "Title");
+                    std::cout << std::format("{:<38} {:<5} {}\n", "ID", "Msgs", "Title");
                     std::cout << std::string(60, '-') << "\n";
                     for (auto& s : sessions) {
-                        auto short_id = s.id.substr(0, 8);
                         auto marker = (s.id == current_session) ? "*" : " ";
-                        auto msg_count_str = std::to_string(s.message_count);
                         auto title = s.title.size() > 35 ? s.title.substr(0, 35) + "..." : s.title;
-                        std::cout << std::format("{}{:<9} {:<5} {:<10} {}\n",
-                            marker, short_id, msg_count_str, "", title);
+                        std::cout << std::format("{}{:<37} {:<5} {}\n",
+                            marker, s.id, s.message_count, title);
                     }
                     std::cout << "  * = current session\n\n";
                 }
@@ -283,7 +281,7 @@ int main(int argc, char** argv) {
 
                 if (cmd == "del" || cmd == "delete") {
                     if (acp.delete_session(sid)) {
-                        std::cout << "Session deleted: " << sid.substr(0, 8) << "...\n\n";
+                        std::cout << "Session deleted: " << sid << "\n\n";
                         if (sid == current_session) {
                             current_session.clear();
                             conversation.clear();
