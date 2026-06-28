@@ -297,12 +297,6 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
             if (m.role == "user" && !m.content.empty()) has_msg = true;
 
         if (has_msg) {
-            for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it) {
-                if (it->role == "user" && !it->content.empty()) {
-                    session_store_.append_message(sid, *it); break;
-                }
-            }
-
             // 检查是否有 LLM 正在运行（按 session）
             bool should_run = false;
             {
@@ -482,11 +476,26 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
     auto baseline = system_context_.build_baseline(session_id, session_store_);
     req.messages.insert(req.messages.begin(), {"system", baseline});
 
-    // 加载 session 历史到 LLM 上下文（实现多轮对话）
+    // 加载 session 历史（当前用户消息尚未保存，不会重复）
     auto history = session_store_.load_messages(session_id);
+    auto insert_pos = req.messages.begin() + 1; // 在 system 之后
     for (auto it = history.rbegin(); it != history.rend(); ++it) {
         if (it->role == "user" || it->role == "assistant")
-            req.messages.insert(req.messages.begin(), *it);
+            req.messages.insert(insert_pos, *it);
+    }
+
+    // 保存当前用户消息到 session store（供后续调用使用）
+    for (auto& m : req.messages) {
+        if (m.role == "user" && !m.content.empty()) {
+            bool in_history = false;
+            for (auto& h : history) {
+                if (h.role == "user" && h.content == m.content
+                    && h.tool_call_id == m.tool_call_id) {
+                    in_history = true; break;
+                }
+            }
+            if (!in_history) session_store_.append_message(session_id, m);
+        }
     }
 
     std::string assistant_content;
@@ -518,10 +527,13 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
         LOG_DEBUG("turn {} LLM: {}ms {} tokens: {}", *turn, llm_ms,
                   assistant_content.size(), assistant_content.substr(0, 200));
 
-        if (!assistant_content.empty())
-            session_store_.append_message(session_id, {"assistant", assistant_content});
-
         auto call_list = extract_tool_calls(assistant_content);
+
+        // Only save pure text responses to history (not tool call JSON)
+        if (!assistant_content.empty() && call_list.empty()) {
+            session_store_.append_message(session_id, {"assistant", assistant_content});
+        }
+
         if (call_list.empty()) break;
 
         for (auto& call : call_list) {
@@ -535,6 +547,7 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
 
             Message asst_msg; asst_msg.role = "assistant";
             asst_msg.tool_call_id = call.id; asst_msg.tool_name = call.name;
+            asst_msg.tool_arguments = call.arguments;
             req.messages.push_back(asst_msg);
 
             Message tool_msg; tool_msg.role = "tool";

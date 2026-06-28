@@ -202,14 +202,11 @@ void TuiClient::send_message(const std::string& text) {
 
     state_->history.push_back({"user", text});
 
-    std::vector<Message> msgs;
-    msgs.push_back({"system", state_->system_prompt});
-    for (auto& m : state_->history) msgs.push_back(m);
-
+    // Only send the new user message; server loads history from session store
     ChatRequest req;
     req.model = model_;
     req.provider = provider_;
-    req.messages = msgs;
+    req.messages = {{"user", text}};
     req.max_tokens = 4096;
     req.session_id = state_->current_session;
 
@@ -298,7 +295,12 @@ AcpClient::Callbacks TuiClient::build_callbacks() {
         },
         .on_tool_result = [this](const acp::ToolResultEvent& tr) {
             LOG_DEBUG("SSE tool_result: {} success={}", tr.content.substr(0, 100), tr.success);
-            state_->add_line("[Result: " + std::string(tr.success ? "ok" : "fail") + "]");
+            std::string label = tr.success ? "ok" : "fail";
+            if (!tr.content.empty()) {
+                state_->add_line("[Result: " + tr.content + "]");
+            } else {
+                state_->add_line("[Result: " + label + "]");
+            }
         },
         .on_error = [this](std::string_view msg) {
             state_->add_line("[Error: " + std::string(msg) + "]");
