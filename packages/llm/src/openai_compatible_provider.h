@@ -86,13 +86,10 @@ private:
             if (m.tool_call_id) {
                 msg["tool_call_id"] = *m.tool_call_id;
                 if (m.tool_name) {
-                    std::string args = m.tool_arguments
-                        ? m.tool_arguments->dump()
-                        : "{}";
                     msg["tool_calls"] = json::array({{
                         {"id", *m.tool_call_id},
                         {"type", "function"},
-                        {"function", {{"name", *m.tool_name}, {"arguments", args}}}
+                        {"function", {{"name", *m.tool_name}, {"arguments", "{}"}}}
                     }});
                 }
             }

@@ -62,7 +62,7 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
 int main(int argc, char** argv) {
     CLI::App app{"OpenCode C++ Client — ACP + SSE (v0.3.0)"};
 
-    std::string model         = "glm-4.7-flash";
+    std::string model         = "glm-4.5-flash";
     std::string provider      = "glm";
     std::string prompt_arg;
     std::string system_prompt = "You are a helpful AI coding assistant.";
@@ -222,11 +222,7 @@ int main(int argc, char** argv) {
             },
             .on_tool_result = [&](const acp::ToolResultEvent& tr) {
                 std::lock_guard lock(cout_mtx);
-                if (!tr.content.empty()) {
-                    std::cout << "[Result: " << tr.content << "]\n";
-                } else {
-                    std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
-                }
+                std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
             },
             .on_error = [&](std::string_view msg) {
                 std::lock_guard lock(cout_mtx);
@@ -307,6 +303,7 @@ int main(int argc, char** argv) {
                     acp.switch_session(sid);
                     current_session = sid;
                     conversation = info->messages;
+                    show_header();
                     std::cout << std::format("Restored session: {} messages loaded.\n\n",
                         conversation.size());
                     continue;
@@ -398,15 +395,7 @@ int main(int argc, char** argv) {
             conversation.push_back({"user", line});
             std::cout << "\n";
 
-            // Only send the new user message; server loads history from session store
-            ChatRequest req;
-            req.model = model;
-            req.provider = provider;
-            req.messages = {{"user", line}};
-            req.max_tokens = max_tokens;
-            req.temperature = temperature;
-            req.stream = true;
-            req.session_id = current_session;
+            auto req = build_req(conversation);
 
             // 长连接模式: fire-and-forget, 回复通过 SSE stream 到达
             acp.send_async(req);
