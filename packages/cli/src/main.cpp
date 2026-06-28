@@ -299,13 +299,16 @@ int main(int argc, char** argv) {
                         std::cout << "Session not found.\n\n";
                         continue;
                     }
-                    // 通知服务端切换 session（SSE 不断开）
                     acp.switch_session(sid);
                     current_session = sid;
                     conversation = info->messages;
                     show_header();
-                    std::cout << std::format("Restored session: {} messages loaded.\n\n",
-                        conversation.size());
+                    std::cout << std::format("── {} messages loaded ──\n", conversation.size());
+                    for (auto& m : conversation) {
+                        if (m.role == "user")  std::cout << "You: " << m.content << "\n";
+                        else if (m.role == "assistant") std::cout << "AI: " << m.content << "\n";
+                    }
+                    std::cout << "────────────────────\n\n";
                     continue;
                 }
 

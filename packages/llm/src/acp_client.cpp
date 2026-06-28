@@ -140,7 +140,7 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
             // read_timeout 不设 — keepalive SSE 永不超时
 
             // 只发一次 GET，服务端 keepalive 模式不主动断开，数据持续推送
-            client.Get(("/api/v1/acp/stream/" + session_id + "?keepalive=1").c_str(),
+            client.Get(("/api/v1/acp/stream/" + session_id + "?keepalive=1&skip_history=1").c_str(),
                 [&](const char* data, size_t len) {
                     if (!connected_) return false;
                     static thread_local std::string buf;
@@ -270,7 +270,7 @@ std::string AcpClient::get_last_session() {
 }
 
 bool AcpClient::switch_session(const std::string& session_id) {
-    json body = {{"conn_id", conn_id_}, {"session_id", session_id}};
+    json body = {{"conn_id", conn_id_}, {"session_id", session_id}, {"skip_history", true}};
     httplib::Headers headers = {{"Content-Type", "application/json"}};
     auto res = http_->Post("/api/v1/acp/switch", headers, body.dump(), "application/json");
     return res && res->status == 200;

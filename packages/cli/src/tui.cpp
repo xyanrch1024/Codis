@@ -389,18 +389,33 @@ void TuiClient::connect_sse() {
 }
 
 void TuiClient::switch_session(const SessionInfo& s) {
+    state_->current_session = s.id;
+    sessions_visible_ = false;
+
+    // 切换到新 session 的 SSE（skip_history=true，不走 SSE 推历史）
+    acp_.switch_session(s.id);
+
+    // 通过 REST API 拉历史
+    auto info = acp_.get_session(s.id);
     {
         std::lock_guard lk(state_->mutex);
         state_->lines.clear();
         state_->pending.clear();
         state_->history.clear();
-        state_->lines.push_back("[Switching to session " + s.id + "...]");
+        if (info) {
+            for (auto& m : info->messages) {
+                if (m.role == "user") {
+                    state_->lines.push_back("You: " + m.content);
+                    state_->history.push_back(m);
+                } else if (m.role == "assistant") {
+                    state_->lines.push_back("AI: " + m.content);
+                    state_->history.push_back(m);
+                }
+            }
+        }
     }
-    state_->current_session = s.id;
-    sessions_visible_ = false;
+    state_->add_line("[Session: " + s.id + "]");
     if (post_job_) post_job_();
-    // 通知服务端 SSE 切换到新 session，服务端推新历史
-    acp_.switch_session(s.id);
 }
 
 } // namespace opencode
