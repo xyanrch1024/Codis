@@ -74,9 +74,11 @@ int main(int argc, char** argv) {
     std::string session_arg;
     bool clear_sessions = false;
     bool use_tui = false;
+    bool cont_session = false;
 
     app.add_flag("--tui",             use_tui,        "Launch TUI mode");
     app.add_flag("--clear-sessions",   clear_sessions, "Delete all sessions");
+    app.add_flag("-c,--continue",      cont_session,   "Continue last session");
     app.add_option("-p,--port",        server_port,   "Server port (default: 8711)");
     app.add_option("--server-bin",     server_bin,    "Server binary path");
     app.add_option("-m,--model",       model,         "Model name");
@@ -126,6 +128,8 @@ int main(int argc, char** argv) {
     }
 
     if (use_tui) {
+        if (session_arg.empty() && cont_session)
+            session_arg = acp.get_last_session();
         TuiClient tui(server_port, model, provider, session_arg);
         return tui.run();
     }
@@ -147,7 +151,7 @@ int main(int argc, char** argv) {
     // ---- 会话初始化 ----
     if (!session_arg.empty()) {
         current_session = session_arg;
-    } else {
+    } else if (cont_session) {
         current_session = acp.get_last_session();
     }
     if (current_session.empty()) {
@@ -198,7 +202,7 @@ int main(int argc, char** argv) {
             std::cout << "New session. Type your message.\n";
         }
 
-        std::cout << "\nCommands: /exit /sessions /session <id> /clear\n\n";
+        std::cout << "\nCommands: /exit /sessions /session <id> /clear /balance\n\n";
 
         // SSE 长连接（接收所有 LLM 响应 + 其他客户端广播）
         std::mutex cout_mtx;
@@ -322,6 +326,64 @@ int main(int argc, char** argv) {
                     std::cout << "All sessions deleted.\n\n";
                 } else {
                     std::cout << "Failed to delete sessions.\n\n";
+                }
+                continue;
+            }
+
+            if (line == "/balance") {
+                // 查询 provider 余额 — 默认查 deepseek
+                std::string prov = "deepseek";
+                auto parts = [&]() {
+                    std::vector<std::string> v;
+                    std::istringstream iss(line);
+                    std::string w;
+                    while (iss >> w) v.push_back(w);
+                    return v;
+                }();
+                if (parts.size() > 1) prov = parts[1];
+
+                httplib::Client client("127.0.0.1", server_port);
+                client.set_connection_timeout(10, 0);
+                client.set_read_timeout(10, 0);
+
+                auto http_res = client.Get(("/api/v1/balance/" + prov).c_str());
+                if (!http_res) {
+                    std::cout << "[Error] Server unreachable: " << httplib::to_string(http_res.error()) << "\n\n";
+                    continue;
+                }
+                if (http_res->status != 200) {
+                    try {
+                        auto j = json::parse(http_res->body);
+                        std::cout << "[Error] " << j.value("error", http_res->body) << "\n\n";
+                    } catch (...) {
+                        std::cout << "[Error] HTTP " << http_res->status << ": " << http_res->body.substr(0, 200) << "\n\n";
+                    }
+                    continue;
+                }
+
+                try {
+                    auto j = json::parse(http_res->body);
+                    auto& bal = j["balance"];
+                    std::cout << "\n╔══════════════════════════════════════╗\n";
+                    std::cout << "║  " << prov << " balance                ║\n";
+                    std::cout << "╚══════════════════════════════════════╝\n";
+
+                    if (bal.contains("balance_infos") && !bal["balance_infos"].empty()) {
+                        for (auto& bi : bal["balance_infos"]) {
+                            std::cout << std::format("  Total:    {}\n", bi.value("total_balance", "N/A"));
+                            std::cout << std::format("  Topped:   {}\n", bi.value("topped_up_balance", "N/A"));
+                            std::cout << std::format("  Granted:  {}\n", bi.value("granted_balance", "N/A"));
+                        }
+                    } else {
+                        std::cout << "  Response: " << bal.dump(2) << "\n";
+                    }
+
+                    if (bal.contains("is_available")) {
+                        std::cout << std::format("  Active:   {}\n", bal["is_available"].get<bool>() ? "Yes" : "No");
+                    }
+                    std::cout << "\n";
+                } catch (const std::exception& e) {
+                    std::cout << "[Error] Parse failed: " << e.what() << "\n\n";
                 }
                 continue;
             }
