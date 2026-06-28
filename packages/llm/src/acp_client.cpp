@@ -126,8 +126,15 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
     connected_ = true;
     sse_thread_ = std::thread([this, session_id]() {
         int retry_delay = 1;
+        int retry_count = 0;
 
         while (connected_) {
+            if (retry_count >= 10) {
+                LOG_ERROR("SSE reconnect failed after {} attempts", retry_count);
+                if (callbacks_.on_error)
+                    callbacks_.on_error("Connection lost, max reconnection attempts reached");
+                break;
+            }
             httplib::Client client(host_, port_);
             client.set_connection_timeout(5, 0);
             // read_timeout 不设 — keepalive SSE 永不超时
@@ -179,7 +186,9 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
 
             if (!connected_) break;
 
-            LOG_WARN("SSE disconnected, reconnecting in {}s...", retry_delay);
+            retry_count++;
+            LOG_WARN("SSE disconnected, reconnecting ({}/{}) in {}s...",
+                     retry_count, 10, retry_delay);
             if (callbacks_.on_error)
                 callbacks_.on_error("Connection lost, reconnecting...");
 
