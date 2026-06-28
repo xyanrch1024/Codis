@@ -171,6 +171,10 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                 }
                 return true;
             });
+
+        LOG_WARN("SSE disconnected, session {}", session_id.substr(0, 8));
+        if (callbacks_.on_error)
+            callbacks_.on_error("SSE connection closed");
     });
 
     return true;

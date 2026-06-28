@@ -188,6 +188,7 @@ std::string OpenCodeServer::generate_conn_id() {
 }
 
 void OpenCodeServer::cleanup_connection(const std::string& sid, const std::string& conn_id) {
+    LOG_INFO("SSE stream detached session {} conn_id={}", sid.substr(0, 8), conn_id);
     std::lock_guard lock(sessions_mutex_);
     auto it = sessions_.find(sid);
     if (it == sessions_.end()) return;
@@ -218,6 +219,7 @@ void OpenCodeServer::register_routes() {
     server_->Delete("/api/v1/sessions",            [this](auto& r, auto& s) { handle_session_delete_all(r, s); });
     server_->Delete(R"(/api/v1/sessions/([a-f0-9\-]+))", [this](auto& r, auto& s) { handle_session_delete(r, s); });
     server_->Post(R"(/api/v1/sessions/([a-f0-9\-]+)/messages)", [this](auto& r, auto& s) { handle_session_add_message(r, s); });
+    server_->Get(R"(/api/v1/balance/([a-zA-Z0-9_\-]+))", [this](auto& r, auto& s) { handle_balance(r, s); });
 }
 
 // =============================================================================
@@ -338,8 +340,8 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
     queue->push(acp::connected_frame(conn_id));
 
     // 推历史消息（skip_history=1 时不推）
-    bool skip_history = req.has_param("skip_history");
-    if (!skip_history) {
+   // bool skip_history = req.has_param("skip_history");
+   // if (!skip_history) {
         auto history = session_store_.load_messages(sid);
         for (auto& m : history) {
             if (m.role == "user")
@@ -347,7 +349,7 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
             else if (m.role == "assistant" && !m.content.empty())
                 queue->push(acp::assistant_frame(m.content));
         }
-    }
+   // }
 
     bool keepalive = req.has_param("keepalive");
 
@@ -585,6 +587,115 @@ void OpenCodeServer::handle_session_add_message(const httplib::Request& req, htt
     } catch (const std::exception& e) {
         res.status = 400;
         res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+    }
+}
+
+// =============================================================================
+// 余额查询
+// =============================================================================
+
+void OpenCodeServer::handle_balance(const httplib::Request& req, httplib::Response& res) {
+    set_cors(res);
+    std::string provider_name = req.matches[1];
+
+    try {
+        auto result = query_provider_balance(provider_name);
+        res.set_content(result.dump(2), "application/json");
+    } catch (const std::exception& e) {
+        res.status = 400;
+        res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+    }
+}
+
+json OpenCodeServer::query_provider_balance(const std::string& provider_name) {
+    // 查找 provider 配置
+    auto providers = provider_registry_.list();
+    const ProviderConfig* target = nullptr;
+
+    for (auto& pc : config_.providers) {
+        if (pc.name == provider_name) {
+            target = &pc;
+            break;
+        }
+    }
+
+    if (!target) {
+        throw std::runtime_error("Provider '" + provider_name + "' not found in config");
+    }
+
+    if (target->api_key.empty()) {
+        throw std::runtime_error("No API key for provider '" + provider_name + "'");
+    }
+
+    // 解析 base_url
+    std::string base = target->base_url;
+    // 移除末尾的 /v1 等 path 部分，保留根 URL
+    auto balance_url = base;
+    // 对于 DeepSeek: https://api.deepseek.com -> https://api.deepseek.com/user/balance
+    // 尝试去除末尾的 /v1 路径段
+    if (balance_url.ends_with("/v1")) {
+        balance_url = balance_url.substr(0, balance_url.size() - 3);
+    } else if (balance_url.ends_with("/v1/")) {
+        balance_url = balance_url.substr(0, balance_url.size() - 4);
+    }
+    // 确保末尾没有斜杠
+    while (!balance_url.empty() && balance_url.back() == '/')
+        balance_url.pop_back();
+
+    std::string balance_endpoint = balance_url + "/user/balance";
+
+    LOG_DEBUG("querying balance for '{}' at {}", provider_name, balance_endpoint);
+
+    // 解析 host 和 path
+    std::string url_part;
+    bool use_ssl = false;
+
+    if (balance_endpoint.starts_with("https://")) {
+        use_ssl = true;
+        url_part = balance_endpoint.substr(8);
+    } else if (balance_endpoint.starts_with("http://")) {
+        url_part = balance_endpoint.substr(7);
+    } else {
+        throw std::runtime_error("Invalid URL: " + balance_endpoint);
+    }
+
+    std::string host, path;
+    auto slash_pos = url_part.find('/');
+    if (slash_pos != std::string::npos) {
+        host = url_part.substr(0, slash_pos);
+        path = url_part.substr(slash_pos);
+    } else {
+        host = url_part;
+        path = "/";
+    }
+
+    httplib::Client client((use_ssl ? "https://" : "http://") + host);
+    client.set_connection_timeout(10, 0);
+    client.set_read_timeout(10, 0);
+
+    httplib::Headers headers = {
+        {"Authorization", "Bearer " + target->api_key},
+        {"Accept", "application/json"}
+    };
+
+    auto http_res = client.Get(path, headers);
+    if (!http_res) {
+        throw std::runtime_error("HTTP request failed: " + httplib::to_string(http_res.error()));
+    }
+
+    if (http_res->status != 200) {
+        throw std::runtime_error("Balance API returned HTTP " + std::to_string(http_res->status)
+                                 + ": " + http_res->body.substr(0, 200));
+    }
+
+    try {
+        auto j = json::parse(http_res->body);
+        json result;
+        result["provider"] = provider_name;
+        result["balance"] = j;
+        return result;
+    } catch (const json::parse_error& e) {
+        throw std::runtime_error("Failed to parse balance response: " + std::string(e.what()));
     }
 }
 
