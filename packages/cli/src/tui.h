@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
-#include <atomic>
+#include <functional>
 #include <memory>
 
 namespace opencode {
@@ -23,17 +23,19 @@ struct TuiState {
     std::string status_msg;
 
     std::mutex mutex;
-    std::atomic<bool> dirty{false};
+
+    // 由 TuiClient::run() 设置，指向 screen.Post
+    std::function<void()> notify_;
 
     void add_line(const std::string& line) {
         std::lock_guard lk(mutex);
         lines.push_back(line);
-        dirty = true;
+        if (notify_) notify_();
     }
     void append_pending(const std::string& delta) {
         std::lock_guard lk(mutex);
         pending += delta;
-        dirty = true;
+        if (notify_) notify_();
     }
     void flush_pending() {
         std::lock_guard lk(mutex);
@@ -43,7 +45,7 @@ struct TuiState {
             pending.clear();
         }
         processing = false;
-        dirty = true;
+        if (notify_) notify_();
     }
 };
 
@@ -65,6 +67,7 @@ private:
     std::string session_arg_;
     AcpClient acp_;
     std::shared_ptr<TuiState> state_;
+    std::function<void()> post_job_;
 
     // Session overlay
     bool sessions_visible_ = false;

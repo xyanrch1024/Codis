@@ -5,8 +5,6 @@
 #include <ftxui/screen/screen.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
-#include <thread>
-#include <chrono>
 #include <cstdlib>
 #include <sstream>
 
@@ -42,6 +40,7 @@ int TuiClient::run() {
     }
 
     // SSE 连接
+    state_->notify_ = [&screen] { screen.Post([] {}); };
     connect_sse();
 
     // 输入组件
@@ -155,20 +154,8 @@ int TuiClient::run() {
         return false;
     });
 
-    // 后台线程：SSE 有新数据时触发 FTXUI 重绘
-    std::atomic<bool> refresh_running{true};
-    std::thread refresh_thread([&] {
-        while (refresh_running) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            if (state_->dirty.exchange(false))
-                screen.Post([&] {});
-        }
-    });
-
     screen.Loop(component);
 
-    refresh_running = false;
-    if (refresh_thread.joinable()) refresh_thread.join();
     acp_.disconnect();
     return 0;
 }
@@ -198,7 +185,7 @@ void TuiClient::send_message(const std::string& text) {
 
     state_->add_line("You: " + text);
     state_->processing = true;
-    state_->dirty = true;
+    post_job_();
 
     state_->history.push_back({"user", text});
 
@@ -221,13 +208,14 @@ void TuiClient::cmd_clear() {
     state_->lines.clear();
     state_->pending.clear();
     state_->history.clear();
-    state_->dirty = true;
+    if (post_job_) post_job_();
 }
 
 void TuiClient::cmd_delete_all() {
     acp_.delete_all_sessions();
     cmd_clear();
     state_->add_line("[All sessions deleted]");
+    if (post_job_) post_job_();
 }
 
 void TuiClient::cmd_balance(const std::string& line) {
@@ -248,7 +236,6 @@ void TuiClient::cmd_balance(const std::string& line) {
     auto http_res = client.Get(("/api/v1/balance/" + prov).c_str());
     if (!http_res) {
         state_->add_line("[Error] Server unreachable: " + httplib::to_string(http_res.error()));
-        state_->dirty = true;
         return;
     }
     if (http_res->status != 200) {
@@ -258,7 +245,6 @@ void TuiClient::cmd_balance(const std::string& line) {
         } catch (...) {
             state_->add_line("[Error] HTTP " + std::to_string(http_res->status) + ": " + http_res->body.substr(0, 200));
         }
-        state_->dirty = true;
         return;
     }
 
@@ -283,7 +269,6 @@ void TuiClient::cmd_balance(const std::string& line) {
     } catch (const std::exception& e) {
         state_->add_line("[Error] Parse failed: " + std::string(e.what()));
     }
-    state_->dirty = true;
 }
 
 AcpClient::Callbacks TuiClient::build_callbacks() {
@@ -303,7 +288,6 @@ AcpClient::Callbacks TuiClient::build_callbacks() {
         .on_error = [this](std::string_view msg) {
             state_->add_line("[Error: " + std::string(msg) + "]");
             state_->processing = false;
-            state_->dirty = true;
         },
         .on_done = [this]() {
             state_->flush_pending();
@@ -322,7 +306,7 @@ void TuiClient::switch_session(const SessionInfo& s) {
     state_->history.clear();
     state_->current_session = s.id;
     sessions_visible_ = false;
-    state_->dirty = true;
+    if (post_job_) post_job_();
     // 通知服务端 SSE 切换到新 session，服务端推新历史
     acp_.switch_session(s.id);
 }
