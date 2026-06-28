@@ -78,12 +78,10 @@ int TuiClient::run() {
                     el = el | color(Color::Yellow);
                 else if (line.starts_with("[Error"))
                     el = el | color(Color::Red);
-                if (i == state_->lines.size() - 1 && state_->pending.empty())
-                    el = el | focus;
                 els.push_back(std::move(el));
             }
             if (!state_->pending.empty())
-                els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight) | focus);
+                els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight));
         }
         return vbox(std::move(els)) | frame | flex;
     });
@@ -99,7 +97,7 @@ int TuiClient::run() {
                 text(" Model: " + model_ + status) | dim,
                 text(" S: " + state_->current_session) | dim,
                 flex(text("")),
-                text("/exit /clear /sessions /balance") | dim,
+                text("/exit /clear /sessions /newsession /balance") | dim,
             }),
             separator(),
             main_container->Render() | flex,
@@ -120,8 +118,8 @@ int TuiClient::run() {
             auto overlay = window(text(" Sessions "), vbox({
                 vbox(std::move(rows)) | frame | flex,
                 separator(),
-                text(" " + std::to_string(session_selected_ + 1) + "/" +
-                     std::to_string(session_list_.size()) + "  ↑↓  Enter  ESC ") | dim | center,
+                 text(" " + std::to_string(session_selected_ + 1) + "/" +
+                     std::to_string(session_list_.size()) + "  ↑↓  Enter(del)  ESC ") | dim | center,
             })) | clear_under | center | border;
 
             return dbox({vbox(std::move(header)) | border, overlay});
@@ -140,6 +138,36 @@ int TuiClient::run() {
                 session_selected_++;
                 return true;
             }
+            if ((event == Event::d || event == Event::D) && !session_list_.empty()) {
+                auto& s = session_list_[session_selected_];
+                bool was_current = (s.id == state_->current_session);
+                acp_.delete_session(s.id);
+                session_list_ = acp_.list_sessions();
+                if (session_list_.empty()) {
+                    sessions_visible_ = false;
+                    state_->add_line("[Last session deleted, creating new...]");
+                    auto sid = acp_.create_session();
+                    if (sid) {
+                        state_->lines.clear();
+                        state_->pending.clear();
+                        state_->history.clear();
+                        state_->current_session = *sid;
+                    }
+                } else {
+                    session_selected_ = std::min(session_selected_, (int)session_list_.size() - 1);
+                    if (was_current) {
+                        auto sid = acp_.create_session();
+                        if (sid) {
+                            state_->lines.clear();
+                            state_->pending.clear();
+                            state_->history.clear();
+                            state_->current_session = *sid;
+                            state_->add_line("[Session " + s.id + " deleted, new session created]");
+                        }
+                    }
+                }
+                return true;
+            }
             if (event == Event::Return && !session_list_.empty()) {
                 switch_session(session_list_[session_selected_]);
                 return true;
@@ -148,6 +176,13 @@ int TuiClient::run() {
                 sessions_visible_ = false;
                 return true;
             }
+            return true;
+        }
+
+        if (event == Event::CtrlS) {
+            session_list_ = acp_.list_sessions();
+            session_selected_ = 0;
+            sessions_visible_ = true;
             return true;
         }
 
@@ -180,6 +215,17 @@ void TuiClient::send_message(const std::string& text) {
     }
     if (text == "/clearsessions") {
         cmd_delete_all();
+        return;
+    }
+    if (text.starts_with("/newsession")) {
+        auto sid = acp_.create_session();
+        if (sid) {
+            state_->lines.clear();
+            state_->pending.clear();
+            state_->history.clear();
+            state_->current_session = *sid;
+            state_->add_line("[New session created: " + *sid + "]");
+        }
         return;
     }
     if (text.starts_with("/balance")) {
@@ -304,10 +350,13 @@ void TuiClient::connect_sse() {
 }
 
 void TuiClient::switch_session(const SessionInfo& s) {
-    std::lock_guard lk(state_->mutex);
-    state_->lines.clear();
-    state_->pending.clear();
-    state_->history.clear();
+    {
+        std::lock_guard lk(state_->mutex);
+        state_->lines.clear();
+        state_->pending.clear();
+        state_->history.clear();
+        state_->lines.push_back("[Switching to session " + s.id + "...]");
+    }
     state_->current_session = s.id;
     sessions_visible_ = false;
     if (post_job_) post_job_();
