@@ -343,18 +343,6 @@ void OpenCodeServer::handle_acp_stream(const httplib::Request& req, httplib::Res
     // 首帧：告知客户端其 conn_id
     queue->push(acp::connected_frame(conn_id));
 
-    // 推历史消息（skip_history=1 时不推）
-    bool skip_history = req.has_param("skip_history");
-    if (!skip_history) {
-        auto history = session_store_.load_messages(sid);
-        for (auto& m : history) {
-            if (m.role == "user")
-                queue->push(acp::assistant_frame("\n[User] " + m.content));
-            else if (m.role == "assistant" && !m.content.empty())
-                queue->push(acp::assistant_frame(m.content));
-        }
-    }
-
     bool keepalive = req.has_param("keepalive");
 
     LOG_INFO("SSE stream attached to session {} conn_id={} keepalive={}",
@@ -394,7 +382,6 @@ void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Res
         auto body = json::parse(req.body);
         auto conn_id = body.value("conn_id", "");
         auto new_sid = body.value("session_id", "");
-        bool skip_history = body.value("skip_history", false);
 
         if (conn_id.empty() || new_sid.empty()) {
             res.status = 400;
@@ -430,16 +417,6 @@ void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Res
         }
 
         queue->push(acp::connected_frame(conn_id));
-
-        if (!skip_history) {
-            auto history = session_store_.load_messages(new_sid);
-            for (auto& m : history) {
-                if (m.role == "user")
-                    queue->push(acp::assistant_frame("\n[User] " + m.content));
-                else if (m.role == "assistant" && !m.content.empty())
-                    queue->push(acp::assistant_frame(m.content));
-            }
-        }
 
         res.set_content(R"({"status":"ok"})", "application/json");
     } catch (const std::exception& e) {

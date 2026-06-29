@@ -51,7 +51,7 @@ bool AcpClient::send(const ChatRequest& request, Callbacks callbacks) {
         return false;
     }
 
-    // Step 2: GET /api/v1/acp/stream/{sid}?skip_history=1 — 阻塞读 SSE 推送
+    // Step 2: GET /api/v1/acp/stream/{sid} — 阻塞读 SSE 推送
     httplib::Client stream_client(host_, port_);
     stream_client.set_connection_timeout(5, 0);
     stream_client.set_read_timeout(300, 0);
@@ -59,7 +59,7 @@ bool AcpClient::send(const ChatRequest& request, Callbacks callbacks) {
     std::string sse_buf;
     bool got_done = false;
 
-    stream_client.Get(("/api/v1/acp/stream/" + sid + "?skip_history=1").c_str(),
+    stream_client.Get(("/api/v1/acp/stream/" + sid).c_str(),
         [&](const char* data, size_t len) {
             sse_buf.append(data, len);
             std::size_t pos;
@@ -140,7 +140,7 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
             // read_timeout 不设 — keepalive SSE 永不超时
 
             // 只发一次 GET，服务端 keepalive 模式不主动断开，数据持续推送
-            client.Get(("/api/v1/acp/stream/" + session_id + "?keepalive=1&skip_history=1").c_str(),
+            client.Get(("/api/v1/acp/stream/" + session_id + "?keepalive=1").c_str(),
                 [&](const char* data, size_t len) {
                     if (!connected_) return false;
                     static thread_local std::string buf;
@@ -270,7 +270,7 @@ std::string AcpClient::get_last_session() {
 }
 
 bool AcpClient::switch_session(const std::string& session_id) {
-    json body = {{"conn_id", conn_id_}, {"session_id", session_id}, {"skip_history", true}};
+    json body = {{"conn_id", conn_id_}, {"session_id", session_id}};
     httplib::Headers headers = {{"Content-Type", "application/json"}};
     auto res = http_->Post("/api/v1/acp/switch", headers, body.dump(), "application/json");
     return res && res->status == 200;

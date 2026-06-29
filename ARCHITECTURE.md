@@ -53,7 +53,7 @@ Client                                    Server
   │                                         │
   │  GET /api/v1/acp/stream/{id}           │  allocate conn_id
   │    ?keepalive=1                        │  push connected frame
-  │                                        │  push history (if no skip_history)
+  │                                        │
   │  ←── {"type":"connected","conn_id":"x"}  │
   │  ←── history frames ─────────────────  │
   │                                        │
@@ -76,7 +76,6 @@ Client                                    Server
 | 参数 | 效果 |
 |------|------|
 | `?keepalive=1` | done 后不关闭连接，持续等下一轮 |
-| `?skip_history=1` | 不推送历史消息（`send()` 使用） |
 | 无参数 | done 后关闭连接（`send()` 使用） |
 
 ### 端点
@@ -215,7 +214,7 @@ opencode-cpp/
 |------|------|
 | `connect(sid, cbs)` | `GET /stream/{sid}?keepalive=1` → SSE → 后台线程接收推送 |
 | `send_async(req)` | `POST /acp` (带 conn_id) → 202 → 无阻塞 |
-| `send(req, cbs)` | `POST /acp` → 拿 session_id → `GET /stream/{sid}?skip_history=1` → 阻塞读 SSE 直到 done → 返回 |
+| `send(req, cbs)` | `POST /acp` → 拿 session_id → `GET /stream/{sid}` → 阻塞读 SSE 直到 done → 返回 |
 
 ## LLM 并发控制
 

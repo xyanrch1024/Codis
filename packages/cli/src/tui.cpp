@@ -44,7 +44,7 @@ int TuiClient::run() {
     post_job_ = state_->notify_;
     connect_sse();
 
-    // 如果恢复已有 session，通过 REST 拉历史（skip_history=1，SSE 不推历史）
+    // 如果恢复已有 session，通过 REST 拉历史（SSE 长连接不推历史）
     if (!session_arg_.empty()) {
         auto info = acp_.get_session(state_->current_session);
         if (info) {
@@ -418,7 +418,7 @@ void TuiClient::switch_session(const SessionInfo& s) {
     state_->current_session = s.id;
     sessions_visible_ = false;
 
-    // 切换到新 session 的 SSE（skip_history=true，不走 SSE 推历史）
+    // 切换到新 session 的 SSE（历史通过 REST 加载）
     acp_.switch_session(s.id);
 
     // 通过 REST API 拉历史

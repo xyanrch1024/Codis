@@ -85,7 +85,7 @@ def feishu_send_message(chat_id: str, text: str):
 
 
 def codis_acp_chat(chat_id: str, text: str) -> str | None:
-    """ACP 多轮对话：POST /api/v1/acp → GET /api/v1/acp/stream/{sid}?skip_history=1"""
+    """ACP 多轮对话：POST /api/v1/acp → GET /api/v1/acp/stream/{sid}"""
 
     # 每个 chat_id 绑定一个 session，实现多轮上下文
     sid = CHAT_SESSIONS.get(chat_id)
@@ -120,7 +120,7 @@ def codis_acp_chat(chat_id: str, text: str) -> str | None:
         # Step 2: GET SSE stream → 阻塞读直到 done
         with httpx.Client(timeout=120, trust_env=False) as sse_cli:
             content_parts = []
-            url = urljoin(CODIS_SERVER, f"/api/v1/acp/stream/{sid}?skip_history=1")
+            url = urljoin(CODIS_SERVER, f"/api/v1/acp/stream/{sid}")
 
             with sse_cli.stream("GET", url) as sse:
                 for line in sse.iter_lines():
