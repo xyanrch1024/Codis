@@ -546,14 +546,38 @@ std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& cont
     auto pos = content.find("\"tool_calls\"");
     if (pos == std::string::npos) return calls;
 
-    std::string json_str = content;
-    // 尝试从 markdown 代码块中提取
+    std::string json_str;
+
+    // 优先从 markdown 代码块中提取
     auto md_start = content.find("```json");
     if (md_start != std::string::npos) {
-        md_start += 7; // skip "```json"
+        md_start += 7;
         auto md_end = content.find("```", md_start);
         if (md_end != std::string::npos)
             json_str = content.substr(md_start, md_end - md_start);
+    } else {
+        // LLM 可能在 tool_calls JSON 前输出文本，找到包含 "tool_calls" 的最外层 JSON 对象
+        // 使用字符串感知的括号匹配，避免 JSON 字符串值中的 `{` 干扰
+        auto brace = content.rfind('{', pos);
+        if (brace == std::string::npos) return calls;
+        int depth = 0;
+        bool in_string = false;
+        bool escaped = false;
+        auto end = brace;
+        for (; end < content.size(); end++) {
+            char c = content[end];
+            if (escaped) { escaped = false; continue; }
+            if (c == '\\') { escaped = true; continue; }
+            if (c == '"') { in_string = !in_string; continue; }
+            if (in_string) continue;
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0) { end++; break; }
+            }
+        }
+        if (depth != 0) return calls;
+        json_str = content.substr(brace, end - brace);
     }
 
     try {
