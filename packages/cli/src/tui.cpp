@@ -44,6 +44,26 @@ int TuiClient::run() {
     post_job_ = state_->notify_;
     connect_sse();
 
+    // 如果恢复已有 session，通过 REST 拉历史（skip_history=1，SSE 不推历史）
+    if (!session_arg_.empty()) {
+        auto info = acp_.get_session(state_->current_session);
+        if (info) {
+            std::lock_guard lk(state_->mutex);
+            for (auto& m : info->messages) {
+                if (m.role == "user") {
+                    state_->lines.push_back("You: " + m.content);
+                    state_->history.push_back(m);
+                } else if (m.role == "assistant") {
+                    state_->lines.push_back("AI: " + m.content);
+                    state_->history.push_back(m);
+                }
+            }
+        }
+        // 首次 TUI 渲染时自动滚动到底部
+        auto_scroll_ = true;
+        scroll_line_ = -1;
+    }
+
     // 输入组件
     std::string input_text;
     auto input = Input(&input_text, "> ");
@@ -82,17 +102,23 @@ int TuiClient::run() {
             }
             if (!state_->pending.empty())
                 els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight));
-
-            // 焦点控制：frame 将滚动到带 focus 的元素
-            if (!els.empty()) {
-                if (auto_scroll_) {
-                    els.back() = els.back() | focus;
-                } else if (scroll_line_ >= 0 && scroll_line_ < (int)els.size()) {
-                    els[scroll_line_] = els[scroll_line_] | focus;
-                }
-            }
         }
-        return vbox(std::move(els)) | frame | flex | vscroll_indicator;
+
+        int total = (int)els.size();
+        Element content = vbox(std::move(els));
+
+        // focusPositionRelative 控制 frame 滚动到内容的指定比例位置
+        // focus() 对单行 text() 元素无效（focused.box.y_min 始终为 0，dy=0）
+        // focusPositionRelative(0, 1) 滚动到底部（auto-scroll）
+        // focusPositionRelative(0, scroll_line_/N) 滚动到指定行（手动滚动）
+        if (auto_scroll_ || scroll_line_ < 0) {
+            content = content | focusPositionRelative(0.f, 1.f);
+        } else {
+            float frac = (float)scroll_line_ / std::max(1, total);
+            content = content | focusPositionRelative(0.f, frac);
+        }
+
+        return content | frame | flex | vscroll_indicator;
     });
 
     auto main_container = Container::Vertical({conversation_view, input_bar});
@@ -414,6 +440,8 @@ void TuiClient::switch_session(const SessionInfo& s) {
             }
         }
     }
+    auto_scroll_ = true;
+    scroll_line_ = -1;
     state_->add_line("[Session: " + s.id + "]");
     if (post_job_) post_job_();
 }
