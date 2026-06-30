@@ -64,9 +64,7 @@ int main(int argc, char** argv) {
 
     std::string model         = "glm-4.5-flash";
     std::string provider      = "glm";
-    std::string prompt_arg;
     std::string system_prompt = "You are a helpful AI coding assistant.";
-    bool interactive = false;
     int  max_tokens  = 4096;
     double temperature = 0.7;
     int  server_port = 8711;
@@ -86,8 +84,6 @@ int main(int argc, char** argv) {
     app.add_option("-s,--system",      system_prompt, "System prompt");
     app.add_option("-t,--max-tokens",  max_tokens,    "Max tokens");
     app.add_option("--temperature",    temperature,   "Temperature");
-    app.add_option("prompt",           prompt_arg,    "User prompt");
-    app.add_flag("-i,--interactive",   interactive,   "Interactive mode");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -168,8 +164,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ---- 交互模式 ----
-    if (interactive || prompt_arg.empty()) {
+    // ---- 交互模式（单次模式已移除，始终走交互模式）----
+    {
         std::vector<Message> conversation;
         conversation.push_back({"system", system_prompt});
 
@@ -402,22 +398,6 @@ int main(int argc, char** argv) {
 
             acp.send_async(req);
         }
-    }
-    // ---- 单次模式 ----
-    else {
-        auto req = build_req(std::vector<Message>{{"user", prompt_arg}});
-
-        AcpClient::Callbacks cbs{
-            .on_assistant = [](std::string_view delta) {
-                std::cout << delta << std::flush;
-            },
-            .on_error = [](std::string_view msg) {
-                std::cerr << "Error: " << msg << std::endl;
-            }
-        };
-
-        if (!acp.send(req, cbs)) return 1;
-        std::cout << std::endl;
     }
 
     return 0;
