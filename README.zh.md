@@ -1,6 +1,6 @@
 # Codis — C++ AI 编程助手
 
-基于 C++20 的 AI 编程助手：多 Provider、多客户端共享 Session、飞书 Bot、终端 TUI，一套服务端 + 多种客户端。
+基于 C++20 的 AI 编程助手：多 Provider、多客户端共享 Session、终端 TUI，一套服务端 + 多种客户端。
 
 > 🇺🇸 [English README](./README.md)
 
@@ -10,13 +10,12 @@
 
 - **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置文件驱动，可随时切换
 - **全双工 WebSocket** — 一条连接既发请求又收流式推送，内容按 token 实时输出
-- **多客户端共享会话** — CLI / TUI / 飞书 Bot 共用同一 session，互不干扰
+- **多客户端共享会话** — CLI / TUI 共用同一 session，互不干扰
 - **消息不丢失** — 处理中到达的消息排队补跑；断线期间发送的请求重连后自动补发
 - **实时流式输出** — 模型回复按字/按 token 实时显示（含思维链，默认不折叠）
 - **工具调用** — bash / read / write / edit / glob / grep，支持 C ABI 插件动态扩展
 - **会话持久化** — SQLite 存储，支持恢复历史、切换、删除、搜索
 - **终端 TUI** — FTXUI 界面：颜色区分消息、滚轮滚动、双击 ESC 取消当前任务
-- **飞书 Bot** — WebSocket 长连接，无需公网 IP
 - **Docker 一键部署** — 单容器运行
 
 ## 编译
@@ -107,8 +106,6 @@ API Key 通过环境变量设置，不要在配置文件中写明文。
 docker build -t codis .
 docker run -d --name codis \
   -e GLM_API_KEY="xxx" \
-  -e FEISHU_APP_ID="cli_xxx" \
-  -e FEISHU_APP_SECRET="xxx" \
   -p 8711:8711 \
   codis
 docker logs -f codis
@@ -126,7 +123,6 @@ docker logs -f codis
 | 异步 IO | standalone asio |
 | 数据库 | SQLite3 |
 | TUI | FTXUI |
-| 飞书 SDK | lark-oapi (Python) |
 | 构建 | CMake / vcpkg |
 
 ## 项目结构
