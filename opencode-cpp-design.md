@@ -12,22 +12,24 @@
 | 6 | v0.5.0 | SQLite + SystemContext | 完成 |
 | 7 | v0.6.0 | Session CLI | 完成 |
 | 8 | v0.7.0 | Multi-client | 完成 |
-| 9 | v0.8.0 | **长 TCP: SSE stream + fire-and-forget** | 完成 |
-| 10 | v0.9.0 | ReAct + RAG | 规划中 |
+| 9 | v0.8.0 | **长 TCP: WebSocket + fire-and-forget** | 完成 |
+| 10 | v0.9.0 | 并发控制 + pending 排队 | 完成 |
+| 11 | v0.10.0 | Plugin 系统 (C ABI) | 完成 |
+| 12 | v0.11.0 | ReAct + RAG | 规划中 |
 
-## 通信架构 (v0.8.0)
+## 通信架构 (v0.8.0+)
 
 ```
-1 SSE 长连接 + N REST fire-and-forget
+1 WebSocket 长连接 + N REST fire-and-forget
 
-  GET  /api/v1/acp/stream/{id}   SSE 长连接 (持久)
-  POST /api/v1/acp               fire-and-forget (202)
+  WS   /api/v1/acp/ws/{id}   WebSocket 长连接 (持久, JSON 帧)
+  POST /api/v1/acp           fire-and-forget (202)
 ```
 
 | Client API | 说明 |
 |------------|------|
-| `connect(sid, cbs)` | 建立 SSE 长连接，后台线程接收所有推送 |
-| `send_async(req)` | 非阻塞发送消息，回复通过 SSE stream 到达 |
+| `connect(sid, cbs)` | 建立 WebSocket 长连接，后台线程接收所有推送，断线自动重连 |
+| `send_async(req)` | 非阻塞发送消息，回复通过 WS 到达 |
 
 ## 技术选型
 

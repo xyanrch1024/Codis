@@ -5,62 +5,63 @@
 ```
 ┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────────────┐
 │  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  SSE long-lived stream   │  (后台守护进程)                  │
+│  (CLI/TUI)   │  WebSocket 推送          │  (后台守护进程)                  │
 │              │                          │                                 │
-│  send()      │  POST /api/v1/acp        │  ├─ SessionState (per session)  │
+│  send_async()│  POST /api/v1/acp        │  ├─ SessionState (per session)  │
 │  connect()   │  ──────────────────────► │  │   conns: map<conn_id, queue> │
-│  后台SSE线程  │  GET /api/v1/acp/stream   │  │   processing: atomic<bool>   │
-│  send_async()│ ◄══ SSE keep-alive ═════ │  ├─ ProviderRegistry           │
-│              │                          │  ├─ ToolRegistry (6)           │
-│  交互命令:    │                          │  ├─ SystemContext (6)          │
-│  /sessions   │                          │  ├─ SessionStore (SQLite)      │
-│  /session id │                          │  └─ Logger                     │
-│  /clear      │                          │                                 │
+│  后台WS线程   │  WS /api/v1/acp/ws/{id}  │  │   processing: atomic<bool>   │
+│              │ ◄══ keep-alive WS ═════  │  │   pending: deque<ChatRequest>│
+│              │                          │  ├─ ProviderRegistry           │
+│  交互命令:    │                          │  ├─ ToolRegistry (6)           │
+│  /sessions   │                          │  ├─ SystemContext (6)          │
+│  /session id │                          │  ├─ SessionStore (SQLite)      │
+│  /clear      │                          │  └─ Logger                     │
 │  /clearsessions                         │                                 │
 └──────────────┘                          └─────────────────────────────────┘
 ```
 
-## 通信架构 (v0.10.0)
+## 通信架构 (v0.10.0+)
 
 ### SessionState — 每 session 的直接队列广播
 
-EventBus 已从 SSE 路径移除，改为 SessionState 管理每个 session 下的所有连接队列：
+EventBus 已从推送路径移除，改为 SessionState 管理每个 session 下的所有连接队列：
 
 ```
                      SessionState (per session_id)
                  ┌──────────────────────────────────────┐
-                 │  conns: map<conn_id, SseFrameQueue>  │
-                 │  processing: atomic<bool>             │
-                 │  mutex                                │
+                 │  conns: map<conn_id, FrameQueue>     │
+                 │  processing: atomic<bool>            │
+                 │  pending: deque<ChatRequest>         │
+                 │  mutex                               │
                  │                                      │
-LLM Worker ─────┤  broadcast(frame, conn_id)             │
+LLM Worker ─────┤  broadcast(frame, conn_id)            │
   (run_acp_    │                                      │
-   loop_       │  conn_id 非空 → push target queue      │──→ SSE A
-   broadcast)  │  conn_id 为空 → push all queues        │──→ SSE B
+   loop_       │  conn_id 非空 → push target queue     │──→ WS A
+   broadcast)  │  conn_id 为空 → push all queues       │──→ WS B
                  │                                      │
                  └──────────────────────────────────────┘
 ```
 
-- 每个 SSE 连接分配唯一 `conn_id`
+- 每个 WS 连接分配唯一 `conn_id`
 - ACP 请求可携带 `conn_id` 精确路由 LLM 输出
 - `conn_id` 为空时广播到该 session 的所有连接（向后兼容）
-- 断开时自动清理：`sink.write()` 失败触发 `cleanup_connection()`
+- 断开时自动清理：`ws.read()` 返回 Fail 触发 `cleanup_connection()`
+- **in-flight 排队**：LLM 处理期间新消息进入 `pending`，当前轮 `done` 后按序自动补跑，避免静默丢弃
 
-### SSE 长连接 (keepalive)
+### WebSocket 长连接 (keepalive)
 
 ```
 Client                                    Server
   │                                         │
-  │  GET /api/v1/acp/stream/{id}           │  allocate conn_id
-  │    ?keepalive=1                        │  push connected frame
-  │                                        │
+  │  WS /api/v1/acp/ws/{id}               │  allocate conn_id
+  │                                        │  push connected frame
   │  ←── {"type":"connected","conn_id":"x"}  │
-  │  ←── history frames ─────────────────  │
   │                                        │
   │  POST /api/v1/acp                      │  fire-and-forget → LLM
   │  {"session_id","messages","conn_id"}   │  → 202 Accepted
   │                                        │  → run_acp_loop_broadcast()
   │  ←── assistant frames ──────────────  │  → broadcast to conns[conn_id]
+  │  ←── reasoning frames ──────────────  │
   │  ←── tool_call ──────────────────────  │
   │  ←── tool_result ────────────────────  │
   │  ←── {"type":"done"} ────────────────  │
@@ -69,37 +70,36 @@ Client                                    Server
   │  ←── assistant frames ──────────────  │
   │  ←── done ───────────────────────────  │
   │                                        │
-  │  disconnect                             │  sink.write() fail
+  │  disconnect                             │  ws.read() fail
   │                                        │  → cleanup_connection()
 ```
 
-| 参数 | 效果 |
-|------|------|
-| `?keepalive=1` | done 后不关闭连接，持续等下一轮 |
-| 无参数 | done 后关闭连接（`send()` 使用） |
+WS 连接不会因空闲断开（`read_timeout` 不设，心跳由 httplib 处理）。一个连接持续复用，逐轮接收 ACP 推送。
 
 ### 端点
 
 | 端点 | 方法 | 连接 | 说明 |
 |------|------|------|------|
-| `/api/v1/acp/stream/{id}` | GET | 长连接 | SSE stream，分配 conn_id |
+| `/api/v1/acp/ws/{id}` | WS | 长连接 | WebSocket 推送，分配 conn_id |
 | `/api/v1/acp` | POST | 短连接 | fire-and-forget，传 conn_id 精准路由 |
+| `/api/v1/acp/switch` | POST | 短连接 | conn_id 切换到其它 session |
 | `/api/v1/chat` | POST | 短连接 | 同步聊天，无 tool 执行 |
 
-### ACP 协议帧
+### ACP 协议帧 (WebSocket，裸 JSON，无 SSE 信封)
 
-| Event | SSE 帧 |
+| Event | WS 帧 |
 |-------|--------|
-| `connected` | `data: {"type":"connected","data":{"conn_id":"xxx"}}` |
-| `assistant` | `data: {"type":"assistant","data":{"delta":"..."}}` |
-| `tool_call` | `data: {"type":"tool_call","data":{"id":"x","name":"bash",...}}` |
-| `tool_result` | `data: {"type":"tool_result","data":{"id":"x","success":true,...}}` |
-| `error` | `data: {"type":"error","data":{"message":"..."}}` |
-| `done` | `data: {"type":"done","data":{}}` |
+| `connected` | `{"type":"connected","data":{"conn_id":"xxx"}}` |
+| `assistant` | `{"type":"assistant","data":{"delta":"..."}}` |
+| `reasoning` | `{"type":"reasoning","data":{"delta":"..."}}` |
+| `tool_call` | `{"type":"tool_call","data":{"id":"x","name":"bash",...}}` |
+| `tool_result` | `{"type":"tool_result","data":{"id":"x","success":true,...}}` |
+| `error` | `{"type":"error","data":{"message":"..."}}` |
+| `done` | `{"type":"done","data":{}}` |
 
 `done` 帧标志一次 ACP 请求的 LLM 处理完全结束（含 tool 多轮对话）。
 
-## SessionState / conn_id / SseFrameQueue 关系
+## SessionState / conn_id / FrameQueue 关系
 
 ### 数据结构
 
@@ -107,35 +107,39 @@ Client                                    Server
 unordered_map<string, SessionState> sessions_;  // session_id → SessionState
 
 struct SessionState {
-    unordered_map<string, shared_ptr<SseFrameQueue>> conns;  // conn_id → queue
-    atomic<bool> processing;                                   // LLM 并发锁
+    unordered_map<string, shared_ptr<FrameQueue>> conns;  // conn_id → queue
+    atomic<bool> processing{false};                       // LLM 并发锁
+    deque<ChatRequest> pending;                           // 处理期间到达的请求
 };
 ```
 
-- **session** ↔ **conn_id**：一对多（一个 session 多个 SSE 连接）
-- **conn_id** ↔ **SseFrameQueue**：一对一
+- **session** ↔ **conn_id**：一对多（一个 session 多个 WS 连接）
+- **conn_id** ↔ **FrameQueue**：一对一
 
 ### 生命周期
 
 ```
-1. SSE 连接建立
-   handle_acp_stream("session_A"):
-     → queue = make_shared<SseFrameQueue>()
+1. WS 连接建立
+   handle_acp_ws("session_A"):
+     → queue = make_shared<FrameQueue>()
      → conn_id = generate_conn_id()
      → sessions_["session_A"].conns[conn_id] = queue
      → queue->push(connected_frame)      // 告知客户端 conn_id
-     → 进入 chunked provider 循环等待:
+     → 启动 sender 线程:
          while (true):
            auto frame = queue->pop()     // 阻塞等待
-           sink.write(frame)             // 写到 TCP
+           ws.send(frame)                // 写到 TCP
+     → 进入 ws.read() 循环等待断开
 
 2. ACP 请求处理
    handle_acp("session_A", conn_id):
-     run_acp_loop_broadcast → broadcast(frame):
-       sessions_["session_A"].conns[conn_id]->push(frame)
-       → 唤醒 SSE 线程 pop() → sink.write() → 客户端
+     → processing.exchange(true) 为 false 则启动 run_acp_loop_broadcast
+     → 若为 true，请求入 pending 队列，当前轮结束后补跑
+   run_acp_loop_broadcast → broadcast(frame):
+     sessions_["session_A"].conns[conn_id]->push(frame)
+     → 唤醒 sender 线程 pop() → ws.send() → 客户端
 
-3. 切换 session（不断开 SSE）
+3. 切换 session（不断开 WS）
    handle_acp_switch({conn_id, new_session}):
      → conn_id 从旧 session 移除
      → 插入 sessions_[new_session].conns[conn_id] = queue
@@ -150,16 +154,32 @@ struct SessionState {
 ### 线程模型
 
 ```
-  ACP 线程 (detached)                 SSE 线程 (httplib)
+  ACP 线程 (detached)                 WS sender 线程
      │                                      │
      │ broadcast(frame)                     │
      │   ↓                                  │  queue->pop()
      │   sessions_[sid].conns[cid]->push()  │    → cv_.wait(lock)
      │   → lock → 入队 → notify_one() ──────►    → lock → 取出 → unlock
-     │   → unlock                          │    → sink.write() → TCP
+     │   → unlock                          │    → ws.send() → TCP
 ```
 
 ACP 线程不直接写 TCP，只入队。mutex + condition_variable 同步。
+
+## 端口冲突保护
+
+httplib 默认 socket 选项使用 `SO_REUSEPORT`，会导致两个 server 进程同时绑定同一端口，
+内核把新连接分发给不同进程 —— WS 长连接和 HTTP POST 落在不同进程时消息会静默丢失。
+
+`OpenCodeServer` 构造函数中覆盖 socket 选项为仅 `SO_REUSEADDR`：
+
+```cpp
+server_->set_socket_options([](int sock) {
+    int one = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+});
+```
+
+第二个实例 bind 直接失败并 `_Exit(1)`（日志打印明确错误），不再静默共享端口。
 
 ## 技术选型
 
@@ -184,14 +204,14 @@ opencode-cpp/
 ├── ARCHITECTURE.md / opencode-cpp-design.md / plan.md
 │
 ├── packages/
-│   ├── cli/src/main.cpp           # connect() + send_async() + send()
+│   ├── cli/src/main.cpp           # connect() + send_async()
 │   │       tui.h/cpp              # FTXUI TUI + session overlay
 │   ├── server/src/
-│   │   ├── server.h/cpp             # handle_acp_stream (conn_id), handle_acp_switch
+│   │   ├── server.h/cpp             # handle_acp_ws (conn_id), handle_acp_switch
 │   │   └── main.cpp                 # handle_acp (conn_id routing)
 │   ├── llm/src/
 │   │   ├── types.h / acp.h          # ACP 协议帧定义 + connected 事件
-│   │   ├── acp_client.h/cpp         # send() / connect() / send_async()
+│   │   ├── acp_client.h/cpp         # connect() / send_async()
 │   │   ├── session_store.h/cpp
 │   │   ├── context_source.h/cpp
 │   │   ├── tool.h / tool_registry.h / tools/
@@ -212,23 +232,24 @@ opencode-cpp/
 
 | 方法 | 行为 |
 |------|------|
-| `connect(sid, cbs)` | `GET /stream/{sid}?keepalive=1` → SSE → 后台线程接收推送 |
-| `send_async(req)` | `POST /acp` (带 conn_id) → 202 → 无阻塞 |
-| `send(req, cbs)` | `POST /acp` → 拿 session_id → `GET /stream/{sid}` → 阻塞读 SSE 直到 done → 返回 |
+| `connect(sid, cbs)` | `WS /api/v1/acp/ws/{sid}` → 后台线程接收推送，断线自动重连（指数退避，最多 10 次） |
+| `send_async(req)` | `POST /acp` (带 conn_id) → 202 → 无阻塞，回复通过 WS 到达 |
 
 ## LLM 并发控制
 
 ```cpp
 struct SessionState {
-    map<string, shared_ptr<SseFrameQueue>> conns;
+    map<string, shared_ptr<FrameQueue>> conns;
+    deque<ChatRequest> pending;        // 处理期间到达的请求
     mutex mutex;
-    atomic<bool> processing{false};  // 防止同一 session 并发 LLM 运行
+    atomic<bool> processing{false};    // 防止同一 session 并发 LLM 运行
 };
 ```
 
 - `handle_acp` 中检查 `processing.exchange(true)`
-- 已有 LLM 在处理则跳过新的 ACP 请求
-- `run_acp_loop_broadcast` 完成后 `processing = false`
+- 已有 LLM 在处理则将新请求入 `pending` 队列（不再跳过）
+- `run_acp_loop_broadcast` 完成后，若 `pending` 非空则保持 `processing` 并用新请求立即补跑下一轮；否则置 `processing = false`
+- `broadcast` 中目标 conn_id 在 session 中不存在时打 WARN，便于诊断"服务端有消息但客户端收不到"
 
 ## SessionStore (SQLite)
 

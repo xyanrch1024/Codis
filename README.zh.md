@@ -12,7 +12,7 @@ docker run -d --name codis \
   -e FEISHU_APP_ID="cli_xxx" \
   -e FEISHU_APP_SECRET="xxx" \
   -e GLM_API_KEY="xxx" \
-  -e LOG_LEVEL=info \
+  -e OPENCODE_LOG_LEVEL=info \
   -p 8711:8711 \
   codis
 docker logs -f codis
@@ -34,27 +34,36 @@ cmake --build build -j$(nproc)
 export GLM_API_KEY="your-api-key"
 ./build/packages/server/opencode-server -c config/config.toml
 
-# 终端 2: 交互 CLI
-./build/packages/cli/opencode -i
+# 终端 2: 交互 CLI (默认模式)
+./build/packages/cli/opencode
 
 # 或启动 TUI
 ./build/packages/cli/opencode --tui
 
-# 单次查询
-./build/packages/cli/opencode "什么是C++20?"
+# 继续上次 session
+./build/packages/cli/opencode --tui -c
 ```
+
+### 日志
+
+日志由环境变量控制：
+
+| 环境变量 | 默认值 | 说明 |
+|------|------|------|
+| `OPENCODE_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
+| `OPENCODE_LOG_FILE` | 未设 | 设置后日志只写文件（保持全屏 TUI 干净）；否则输出到 stderr |
 
 ## 架构
 
 ```
 ┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────────────┐
 │  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  SSE long-lived stream   │  (后台守护进程)                  │
+│  (CLI/TUI)   │  WebSocket 推送          │  (后台守护进程)                  │
 │              │                          │                                 │
-│  send()      │  POST /api/v1/acp        │  ├─ SessionState (per session)  │
+│  send_async()│  POST /api/v1/acp        │  ├─ SessionState (per session)  │
 │  connect()   │  ──────────────────────► │  │   conn_id → queue 直接广播    │
-│              │  GET /api/v1/acp/stream   │  ├─ ProviderRegistry           │
-│  交互命令:    │ ◄══ SSE keep-alive ════ │  │   OpenAI/DeepSeek/GLM        │
+│              │  WS /api/v1/acp/ws/{id}  │  ├─ ProviderRegistry           │
+│  交互命令:    │ ◄══ keep-alive WS ════ │  │   OpenAI/DeepSeek/GLM        │
 │  /sessions   │                          │  ├─ ToolRegistry (6)           │
 │  /session id │                          │  ├─ SystemContext (6)          │
 │  /clear      │                          │  ├─ SessionStore (SQLite)      │
@@ -77,8 +86,9 @@ export GLM_API_KEY="your-api-key"
 - **C/S 架构** — Server 守护进程 + CLI / Python Bot 客户端
 - **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置驱动
 - **SessionState 广播** — 每 session 独立管理连接队列，conn_id 精准路由
-- **长 TCP 连接** — SSE stream keepalive + fire-and-forget ACP
+- **长 TCP 连接** — WebSocket 推送 + fire-and-forget ACP
 - **多 Client 共享** — 同 session 多客户端独立通道，无交叉干扰
+- **处理中排队** — LLM 处理期间到达的消息排队，当前轮结束后按序补跑（不静默丢弃）
 - **Tool Registry** — bash, read, write, edit, glob, grep
 - **System Context** — date, platform, git_status, AGENTS.md
 - **SQLite 持久化** — 会话/消息/Context 快照
@@ -86,7 +96,7 @@ export GLM_API_KEY="your-api-key"
 - **Plugin 系统** — C ABI dlopen，动态加载自定义工具
 - **日志系统** — 5 级，环境变量控制
 - **飞书 Bot** — Python lark-oapi SDK，WebSocket 长连接，无需公网 IP
-- **FTXUI TUI** — 终端界面，对话视图 + 输入栏 + SSE 实时推送
+- **FTXUI TUI** — 终端界面，颜色区分消息、输入栏 + WS 实时推送
 - **Docker 一键部署** — 单容器运行，零手动配置
 
 ## CLI 命令
@@ -96,8 +106,10 @@ export GLM_API_KEY="your-api-key"
 | `/sessions` | 表格列出所有 session |
 | `/session <id> use` | 恢复会话 |
 | `/session <id> del` | 删除会话 |
+| `/newsession` | 新建 session (TUI) |
 | `/clear` | 清空当前上下文 |
 | `/clearsessions` | 删除所有会话 |
+| `/balance [provider]` | 查询 provider 余额 |
 
 ## 配置
 
@@ -118,12 +130,18 @@ API Key 通过环境变量设置，不在配置文件中写明文。
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/health` | 健康检查 |
+| `GET` | `/api/v1/info` | 服务信息（providers/tools/版本） |
 | `POST` | `/api/v1/chat` | 同步聊天 |
 | `POST` | `/api/v1/acp` | fire-and-forget 带 conn_id |
-| `GET` | `/api/v1/acp/stream/{id}` | SSE 长连接 |
+| `POST` | `/api/v1/acp/switch` | conn_id 切换到其它 session |
+| `WS` | `/api/v1/acp/ws/{id}` | 长连接 WebSocket 推送（JSON 帧） |
+| `POST` | `/api/v1/sessions` | 新建 session |
 | `GET` | `/api/v1/sessions` | 列出会话 |
+| `GET` | `/api/v1/sessions/:id` | 获取 session 及消息 |
 | `DELETE` | `/api/v1/sessions` | 删除所有会话 |
 | `DELETE` | `/api/v1/sessions/:id` | 删除会话 |
+| `POST` | `/api/v1/sessions/:id/messages` | 追加消息 |
+| `GET` | `/api/v1/balance/:provider` | 查询 provider 余额 |
 
 ## 技术栈
 

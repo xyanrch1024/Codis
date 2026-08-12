@@ -12,7 +12,7 @@ docker run -d --name codis \
   -e FEISHU_APP_ID="cli_xxx" \
   -e FEISHU_APP_SECRET="xxx" \
   -e GLM_API_KEY="xxx" \
-  -e LOG_LEVEL=info \
+  -e OPENCODE_LOG_LEVEL=info \
   -p 8711:8711 \
   codis
 docker logs -f codis
@@ -34,27 +34,36 @@ cmake --build build -j$(nproc)
 export GLM_API_KEY="your-api-key"
 ./build/packages/server/opencode-server -c config/config.toml
 
-# Terminal 2: interactive CLI
-./build/packages/cli/opencode -i
+# Terminal 2: interactive CLI (default)
+./build/packages/cli/opencode
 
 # Or launch the TUI
 ./build/packages/cli/opencode --tui
 
-# One-shot query
-./build/packages/cli/opencode "What is C++20?"
+# Continue the last session
+./build/packages/cli/opencode --tui -c
 ```
+
+### Logging
+
+Logs are controlled by environment variables:
+
+| Env | Default | Description |
+|------|---------|------|
+| `OPENCODE_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
+| `OPENCODE_LOG_FILE` | unset | When set, logs go to the file only (keeps the fullscreen TUI clean); otherwise they go to stderr |
 
 ## Architecture
 
 ```
 ┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────────────┐
 │  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  SSE long-lived stream   │  (daemon)                       │
+│  (CLI/TUI)   │  WebSocket push          │  (daemon)                       │
 │              │                          │                                 │
-│  send()      │  POST /api/v1/acp        │  ├─ SessionState (per session)  │
+│  send_async()│  POST /api/v1/acp        │  ├─ SessionState (per session)  │
 │  connect()   │  ──────────────────────► │  │   conn_id → queue broadcast  │
-│              │  GET /api/v1/acp/stream   │  ├─ ProviderRegistry           │
-│  commands:    │ ◄══ SSE keep-alive ════ │  │   OpenAI/DeepSeek/GLM       │
+│              │  WS /api/v1/acp/ws/{id}  │  ├─ ProviderRegistry           │
+│  commands:    │ ◄══ keep-alive WS ═════ │  │   OpenAI/DeepSeek/GLM       │
 │  /sessions   │                          │  ├─ ToolRegistry (6)           │
 │  /session id │                          │  ├─ SystemContext (6)          │
 │  /clear      │                          │  ├─ SessionStore (SQLite)      │
@@ -77,8 +86,9 @@ export GLM_API_KEY="your-api-key"
 - **C/S Architecture** — Server daemon + CLI / Python Bot clients
 - **Multi-Provider** — OpenAI / DeepSeek / GLM / Groq, config-driven
 - **SessionState** — Per-session connection queues with conn_id routing
-- **Long-lived TCP** — SSE stream keepalive + fire-and-forget ACP
+- **Long-lived TCP** — WebSocket push + fire-and-forget ACP
 - **Multi-Client** — Independent channels per session, no cross-talk
+- **In-flight queueing** — Messages arriving during LLM processing are queued and re-run after the current turn (no silent drops)
 - **Tool Registry** — bash, read, write, edit, glob, grep
 - **System Context** — date, platform, git_status, AGENTS.md
 - **SQLite Persistence** — Sessions, messages, context snapshots
@@ -86,7 +96,7 @@ export GLM_API_KEY="your-api-key"
 - **Plugin System** — C ABI dlopen, dynamic tool loading
 - **Logging** — 5 levels, env-var controlled
 - **Feishu Bot** — Python lark-oapi SDK, WebSocket, no public IP needed
-- **FTXUI TUI** — Terminal UI with conversation view, input bar, live SSE updates
+- **FTXUI TUI** — Terminal UI with color-coded messages, input bar, live WS updates
 - **Docker** — One-container deployment, zero manual config
 
 ## CLI Commands
@@ -96,8 +106,10 @@ export GLM_API_KEY="your-api-key"
 | `/sessions` | List all sessions in a table |
 | `/session <id> use` | Resume a session |
 | `/session <id> del` | Delete a session |
+| `/newsession` | Create a new session (TUI) |
 | `/clear` | Clear current context |
 | `/clearsessions` | Delete all sessions |
+| `/balance [provider]` | Query provider account balance |
 
 ## Configuration
 
@@ -118,12 +130,18 @@ API keys are set via environment variables — never in the config file.
 | Method | Path | Description |
 |------|------|------|
 | `GET` | `/api/v1/health` | Health check |
+| `GET` | `/api/v1/info` | Server info (providers, tools, version) |
 | `POST` | `/api/v1/chat` | Synchronous chat |
 | `POST` | `/api/v1/acp` | Fire-and-forget with conn_id |
-| `GET` | `/api/v1/acp/stream/{id}` | SSE long-lived stream |
+| `POST` | `/api/v1/acp/switch` | Move a conn_id to another session |
+| `WS` | `/api/v1/acp/ws/{id}` | Long-lived WebSocket push (JSON frames) |
+| `POST` | `/api/v1/sessions` | Create a session |
 | `GET` | `/api/v1/sessions` | List sessions |
+| `GET` | `/api/v1/sessions/:id` | Get a session with messages |
 | `DELETE` | `/api/v1/sessions` | Delete all sessions |
 | `DELETE` | `/api/v1/sessions/:id` | Delete a session |
+| `POST` | `/api/v1/sessions/:id/messages` | Append a message |
+| `GET` | `/api/v1/balance/:provider` | Provider account balance |
 
 ## Tech Stack
 
