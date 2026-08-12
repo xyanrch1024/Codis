@@ -11,6 +11,7 @@
 #include <mutex>
 #include <functional>
 #include <memory>
+#include <chrono>
 
 namespace opencode {
 
@@ -194,6 +195,9 @@ private:
     // Conversation scrolling（按 item 索引）
     int scroll_item_ = -1;  // -1 = auto-scroll to bottom
     bool auto_scroll_ = true;
+
+    // 双击 ESC 取消当前任务（非退出）
+    std::chrono::steady_clock::time_point last_escape_;
 };
 
 } // namespace opencode

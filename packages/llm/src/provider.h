@@ -6,6 +6,7 @@
 #include <string_view>
 #include <functional>
 #include <memory>
+#include <atomic>
 
 namespace opencode {
 
@@ -18,7 +19,8 @@ public:
     virtual std::string name() const = 0;
     virtual ChatResponse chat(const ChatRequest& req) = 0;
     virtual ChatResponse stream_chat(const ChatRequest& req, TokenCallback on_token,
-                                     ReasoningCallback on_reasoning = nullptr) = 0;
+                                     ReasoningCallback on_reasoning = nullptr,
+                                     std::atomic<bool>* abort_flag = nullptr) = 0;
 };
 
 } // namespace opencode

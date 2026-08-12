@@ -70,6 +70,9 @@ struct SessionState {
     std::unordered_map<std::string, std::shared_ptr<FrameQueue>> conns;
     std::mutex mutex;
     std::atomic<bool> processing{false};
+    // 客户端取消当前任务 — 用 shared_ptr 持有，保证 run 线程在 session 条目被
+    // 清除后仍能安全读写该标志
+    std::shared_ptr<std::atomic<bool>> cancel_requested{std::make_shared<std::atomic<bool>>(false)};
     std::deque<ChatRequest> pending;  // 处理期间到达的请求，当前轮结束后按序补跑
 };
 

@@ -19,6 +19,7 @@ enum class EventType {
     connected,    // WS 连接建立，携带 conn_id
     request,      // 客户端 → 服务端：发送一次对话请求（全双工）
     switch_session, // 客户端 → 服务端：切换 conn 到其它 session
+    cancel,       // 客户端 → 服务端：取消当前正在执行的任务（LLM 流/工具循环）
     assistant,    // 模型回复增量文本
     reasoning,    // 模型思维链增量文本（reasoning_content）
     tool_call,    // 模型请求调用工具
@@ -32,6 +33,7 @@ inline std::string to_string(EventType t) {
         case EventType::connected:  return "connected";
         case EventType::request:    return "request";
         case EventType::switch_session: return "switch";
+        case EventType::cancel:     return "cancel";
         case EventType::assistant:  return "assistant";
         case EventType::reasoning:  return "reasoning";
         case EventType::tool_call:  return "tool_call";
@@ -126,6 +128,11 @@ inline std::string switch_frame(const std::string& session_id) {
     return to_frame(EventType::switch_session, {{"session_id", session_id}});
 }
 
+// 客户端 → 服务端：取消当前任务（LLM 流 + 工具循环）
+inline std::string cancel_frame(const std::string& session_id) {
+    return to_frame(EventType::cancel, {{"session_id", session_id}});
+}
+
 // =============================================================================
 // ACP 帧解析（输入为裸 JSON，如 {"type":"assistant","data":{"delta":"..."}}）
 // =============================================================================
@@ -144,6 +151,7 @@ inline std::optional<ParsedEvent> parse_frame(const std::string& payload) {
         if (type_str == "connected")   type = EventType::connected;
         else if (type_str == "request") type = EventType::request;
         else if (type_str == "switch")  type = EventType::switch_session;
+        else if (type_str == "cancel")  type = EventType::cancel;
         else if (type_str == "assistant")   type = EventType::assistant;
         else if (type_str == "reasoning")   type = EventType::reasoning;
         else if (type_str == "tool_call")   type = EventType::tool_call;

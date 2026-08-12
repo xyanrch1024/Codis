@@ -79,6 +79,7 @@ struct ChatResponse {
     std::string content;
     std::string reasoning_content;  // 思维链（GLM 等模型），解析层透传
     bool success = false;
+    bool canceled = false;          // 被客户端取消（LLM 流被中断）
     std::string error;
 };
 

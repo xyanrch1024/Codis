@@ -62,6 +62,7 @@ public:
     bool delete_session(const std::string& id);
     bool delete_all_sessions();
     bool switch_session(const std::string& session_id);
+    void cancel_session(const std::string& session_id);
     std::string get_last_session();
 
 private:

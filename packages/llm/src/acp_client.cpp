@@ -267,6 +267,22 @@ bool AcpClient::delete_all_sessions() {
     return res && res->status == 200;
 }
 
+void AcpClient::cancel_session(const std::string& session_id) {
+    auto frame = acp::cancel_frame(session_id);
+    {
+        std::lock_guard lock(ws_mutex_);
+        if (ws_ && ws_->is_open()) {
+            ws_->send(frame);
+            return;
+        }
+    }
+    LOG_WARN("cancel_session queued (WS not ready) session={}", session_id.substr(0, 8));
+    {
+        std::lock_guard lock(pending_mutex_);
+        pending_outbound_.push_back(std::move(frame));
+    }
+}
+
 std::string AcpClient::get_last_session() {
     auto res = http_->Get("/api/v1/sessions");
     if (!res || res->status != 200) return "";

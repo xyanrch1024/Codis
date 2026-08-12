@@ -367,7 +367,8 @@ void OpenCodeServer::handle_acp_ws(const httplib::Request& req, httplib::ws::Web
             continue;
         }
         if (event->type != acp::EventType::request &&
-            event->type != acp::EventType::switch_session) {
+            event->type != acp::EventType::switch_session &&
+            event->type != acp::EventType::cancel) {
             LOG_WARN("WS unexpected frame type: {}", acp::to_string(event->type));
             ws.send(acp::error_frame("unsupported frame type"));
             continue;
@@ -387,6 +388,22 @@ void OpenCodeServer::handle_acp_ws(const httplib::Request& req, httplib::ws::Web
                 } else {
                     LOG_INFO("WS switch conn={} -> session={}",
                              conn_id.substr(0, 8), target_sid.substr(0, 8));
+                }
+                continue;
+            }
+            if (event->type == acp::EventType::cancel) {
+                // 取消当前 session 正在执行的任务（LLM 流 + 工具循环）
+                std::string target_sid = event->data.value("session_id", "");
+                if (target_sid.empty()) target_sid = sid;
+                {
+                    std::lock_guard lock(sessions_mutex_);
+                    auto it = sessions_.find(target_sid);
+                    if (it != sessions_.end()) {
+                        it->second.cancel_requested->store(true);
+                        it->second.pending.clear();  // 取消后排队消息一并清空
+                        LOG_INFO("session {} cancel requested by conn {}",
+                                 target_sid.substr(0, 8), conn_id.substr(0, 8));
+                    }
                 }
                 continue;
             }
@@ -519,9 +536,26 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
     auto turn = std::make_shared<int>(0);
     bool is_first_turn = true;
 
+    // 取消标志：从 session 状态取共享指针，保证跨线程安全
+    std::shared_ptr<std::atomic<bool>> cancel_flag;
+    {
+        std::lock_guard lock(sessions_mutex_);
+        cancel_flag = sessions_[session_id].cancel_requested;
+    }
+    cancel_flag->store(false);  // 本轮任务开始时清掉旧的取消标记
+
+    auto is_canceled = [&] {
+        return cancel_flag->load();
+    };
+
     while (*turn < MAX_TURNS) {
         (*turn)++;
         LOG_DEBUG("ACP loop turn {}/{}", *turn, MAX_TURNS);
+
+        if (is_canceled()) {
+            broadcast(acp::error_frame("canceled"));
+            break;
+        }
 
         if (!is_first_turn) {
             auto update = system_context_.reconcile(session_id, session_store_);
@@ -544,10 +578,18 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
             },
             [&](std::string_view delta) {
                 broadcast(acp::reasoning_frame(delta));
-            });
+            },
+            cancel_flag.get());
 
         auto llm_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
+
+        // 客户端取消：LLM 流被中断，结束本轮，不执行工具
+        if (llm_result.canceled || cancel_flag->load()) {
+            LOG_INFO("session {} task canceled after {}ms", session_id.substr(0, 8), llm_ms);
+            broadcast(acp::done_frame());
+            break;
+        }
 
         if (!llm_result.success) {
             LOG_ERROR("LLM call failed after {}ms: {}", llm_ms, llm_result.error);

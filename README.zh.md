@@ -1,121 +1,96 @@
 # Codis — C++ AI 编程助手
 
-基于 C++20 的 AI 编程助手，支持多 Provider、多 Client 共享 Session、飞书 Bot 接入和 TUI 界面。
+基于 C++20 的 AI 编程助手：多 Provider、多客户端共享 Session、飞书 Bot、终端 TUI，一套服务端 + 多种客户端。
 
 > 🇺🇸 [English README](./README.md)
 
-## 快速开始 (Docker)
+![Codis](docs/codis.png)
+
+## 特点
+
+- **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置文件驱动，可随时切换
+- **全双工 WebSocket** — 一条连接既发请求又收流式推送，内容按 token 实时输出
+- **多客户端共享会话** — CLI / TUI / 飞书 Bot 共用同一 session，互不干扰
+- **消息不丢失** — 处理中到达的消息排队补跑；断线期间发送的请求重连后自动补发
+- **实时流式输出** — 模型回复按字/按 token 实时显示（含思维链，默认不折叠）
+- **工具调用** — bash / read / write / edit / glob / grep，支持 C ABI 插件动态扩展
+- **会话持久化** — SQLite 存储，支持恢复历史、切换、删除、搜索
+- **终端 TUI** — FTXUI 界面：颜色区分消息、滚轮滚动、双击 ESC 取消当前任务
+- **飞书 Bot** — WebSocket 长连接，无需公网 IP
+- **Docker 一键部署** — 单容器运行
+
+## 编译
+
+依赖：CMake 3.20+、vcpkg、C++20 编译器。
 
 ```bash
-docker build -t codis .
-docker run -d --name codis \
-  -e FEISHU_APP_ID="cli_xxx" \
-  -e FEISHU_APP_SECRET="xxx" \
-  -e GLM_API_KEY="xxx" \
-  -e OPENCODE_LOG_LEVEL=info \
-  -p 8711:8711 \
-  codis
-docker logs -f codis
-```
+# 1. 安装依赖（vcpkg 已在系统上时跳过）
+#    vcpkg install cpp-httplib nlohmann-json cli11 tomlplusplus openssl sqlite3 ftxui asio
 
-## 快速开始 (原生)
-
-### 编译
-
-```bash
+# 2. 配置 + 编译
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
 cmake --build build -j$(nproc)
 ```
 
-### 运行
+## 运行
 
 ```bash
-# 终端 1: 启动 server
-export GLM_API_KEY="your-api-key"
+# 终端 1: 启动服务端
+export GLM_API_KEY="你的-api-key"
 ./build/packages/server/opencode-server -c config/config.toml
 
-# 终端 2: 交互 CLI (默认模式)
+# 终端 2: 交互式 CLI（默认）
 ./build/packages/cli/opencode
 
-# 或启动 TUI
+# 启动 TUI（推荐）
 ./build/packages/cli/opencode --tui
 
-# 继续上次 session
+# 继续上次会话
 ./build/packages/cli/opencode --tui -c
+
+# 指定端口 / 指定 provider
+./build/packages/cli/opencode --tui -p 8711 -m glm-4.5-flash
 ```
 
-### 日志
+也可以不用手动启动服务端：CLI 检测到服务端未运行时会自动拉起。
 
-日志由环境变量控制：
+### 常用快捷键（TUI）
+
+| 按键 | 功能 |
+|------|------|
+| `↑` `↓` / 鼠标滚轮 | 滚动对话区 |
+| 双击 `ESC` | 取消当前正在执行的任务 |
+| `Ctrl+S` | 打开会话列表 |
+| `Ctrl+C` | 退出 |
+
+### 常用命令
+
+| 命令 | 功能 |
+|------|------|
+| `/sessions` | 列出所有会话 |
+| `/session <id> use` | 恢复指定会话 |
+| `/session <id> del` | 删除指定会话 |
+| `/newsession` | 新建会话 |
+| `/clear` | 清空当前上下文 |
+| `/clearsessions` | 删除所有会话 |
+| `/balance [provider]` | 查询 Provider 余额 |
+| `/exit` | 退出 |
+
+### 日志
 
 | 环境变量 | 默认值 | 说明 |
 |------|------|------|
 | `OPENCODE_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
 | `OPENCODE_LOG_FILE` | 未设 | 设置后日志只写文件（保持全屏 TUI 干净）；否则输出到 stderr |
 
-## 架构
-
-```
-┌──────────────┐  全双工 WebSocket       ┌─────────────────────────────────┐
-│  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  request + 流式推送      │  (后台守护进程)                  │
-│              │                          │                                 │
-│  send_async()│  WS /api/v1/acp/ws/{id}  │  ├─ SessionState (per session)  │
-│  connect()   │  ── request 帧 ────────► │  │   conn_id → queue 直接广播    │
-│              │  ◄══ stream 帧 ════════ │  ├─ ProviderRegistry           │
-│  交互命令:    │                          │  │   OpenAI/DeepSeek/GLM        │
-│  /sessions   │                          │  ├─ ToolRegistry (6)           │
-│  /session id │                          │  ├─ SystemContext (6)          │
-│  /clear      │                          │  ├─ SessionStore (SQLite)      │
-│  /clearsessions                         │  └─ Logger                     │
-└──────────────┘                          └─────────────────────────────────┘
-                                                   ▲
-                                                   │ HTTP REST
-                                                   │
-┌──────────────────┐                              │
-│  Python Bot       │◄─────────────────────────────┘
-│                   │
-│  feishu_bot.py    │── WebSocket ──► 飞书服务器
-│                   │
-│  80 行 Python     │  lark-oapi SDK
-└──────────────────┘
-```
-
-## 特性
-
-- **C/S 架构** — Server 守护进程 + CLI / Python Bot 客户端
-- **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置驱动
-- **SessionState 广播** — 每 session 独立管理连接队列，conn_id 精准路由
-- **长 TCP 连接** — 全双工 WebSocket（同一连接发送请求 + 接收推送）
-- **多 Client 共享** — 同 session 多客户端独立通道，无交叉干扰
-- **处理中排队** — LLM 处理期间到达的消息排队，当前轮结束后按序补跑（不静默丢弃）
-- **客户端缓冲** — 断线期间发送的请求排队，重连成功后自动补发（不丢消息）
-- **Tool Registry** — bash, read, write, edit, glob, grep
-- **System Context** — date, platform, git_status, AGENTS.md
-- **SQLite 持久化** — 会话/消息/Context 快照
-- **Session 管理** — list / restore / delete / search
-- **Plugin 系统** — C ABI dlopen，动态加载自定义工具
-- **日志系统** — 5 级，环境变量控制
-- **飞书 Bot** — Python lark-oapi SDK，WebSocket 长连接，无需公网 IP
-- **FTXUI TUI** — 终端界面，颜色区分消息、输入栏 + WS 实时推送
-- **Docker 一键部署** — 单容器运行，零手动配置
-
-## CLI 命令
-
-| 命令 | 功能 |
-|------|------|
-| `/sessions` | 表格列出所有 session |
-| `/session <id> use` | 恢复会话 |
-| `/session <id> del` | 删除会话 |
-| `/newsession` | 新建 session (TUI) |
-| `/clear` | 清空当前上下文 |
-| `/clearsessions` | 删除所有会话 |
-| `/balance [provider]` | 查询 provider 余额 |
-
 ## 配置
 
 ```toml
 default_provider = "glm"
+
+[llm]
+max_tokens = 4096
+temperature = 0.7
 
 [[providers]]
 name = "glm"
@@ -124,37 +99,41 @@ model = "glm-4.5-flash"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
 ```
 
-API Key 通过环境变量设置，不在配置文件中写明文。
+API Key 通过环境变量设置，不要在配置文件中写明文。
 
-## REST API
+## Docker
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/health` | 健康检查 |
-| `GET` | `/api/v1/info` | 服务信息（providers/tools/版本） |
-| `POST` | `/api/v1/chat` | 同步聊天 |
-| `POST` | `/api/v1/acp/switch` | conn_id 切换到其它 session（兼容，客户端已走 WS switch 帧） |
-| `WS` | `/api/v1/acp/ws/{id}` | 全双工 WebSocket：`request`/`switch` 帧发送，stream 帧接收推送 |
-| `POST` | `/api/v1/sessions` | 新建 session |
-| `GET` | `/api/v1/sessions` | 列出会话 |
-| `GET` | `/api/v1/sessions/:id` | 获取 session 及消息 |
-| `DELETE` | `/api/v1/sessions` | 删除所有会话 |
-| `DELETE` | `/api/v1/sessions/:id` | 删除会话 |
-| `POST` | `/api/v1/sessions/:id/messages` | 追加消息 |
-| `GET` | `/api/v1/balance/:provider` | 查询 provider 余额 |
+```bash
+docker build -t codis .
+docker run -d --name codis \
+  -e GLM_API_KEY="xxx" \
+  -e FEISHU_APP_ID="cli_xxx" \
+  -e FEISHU_APP_SECRET="xxx" \
+  -p 8711:8711 \
+  codis
+docker logs -f codis
+```
 
 ## 技术栈
 
-| 模块 | 库 | 版本 |
-|------|-----|------|
-| HTTP | cpp-httplib | 0.47.0 (OpenSSL) |
-| JSON | nlohmann/json | 3.12.0 |
-| CLI | CLI11 | 2.6.2 |
-| 配置 | toml++ | 3.4.0 |
-| SSL | OpenSSL | 3.6.3 |
-| 异步 IO | standalone asio | 1.32.0 |
-| 数据库 | SQLite3 | 3.45.1 |
-| TUI | FTXUI | 7.0.0 |
-| 飞书 SDK | lark-oapi | (Python) |
-| 构建 | CMake 3.20+ / vcpkg | |
-| 语言 | C++20 | |
+| 模块 | 库 |
+|------|-----|
+| HTTP / WebSocket | cpp-httplib |
+| JSON | nlohmann/json |
+| CLI 参数 | CLI11 |
+| 配置 | toml++ |
+| SSL | OpenSSL |
+| 异步 IO | standalone asio |
+| 数据库 | SQLite3 |
+| TUI | FTXUI |
+| 飞书 SDK | lark-oapi (Python) |
+| 构建 | CMake / vcpkg |
+
+## 项目结构
+
+```
+packages/
+├── server/   # 服务端守护进程（HTTP + WebSocket + LLM 调度 + 工具执行）
+└── cli/      # 客户端（交互 CLI + FTXUI TUI）
+└── llm/      # Provider 封装 / 会话存储 / 工具注册（server 与 cli 共用）
+```

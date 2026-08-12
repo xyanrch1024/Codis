@@ -16,7 +16,8 @@ void LLMHttpClient::stream_post(const std::string& url,
                                 int timeout_seconds,
                                 bool non_stream,
                                 std::string* reasoning_out,
-                                ReasoningCallback on_reasoning)
+                                ReasoningCallback on_reasoning,
+                                std::atomic<bool>* abort_flag)
 {
     httplib::Headers headers = {
         {"Authorization", "Bearer " + api_key},
@@ -110,6 +111,9 @@ void LLMHttpClient::stream_post(const std::string& url,
     auto res = client.Post(
         path, headers, req_body, "application/json",
         [&](const char* data, size_t len) -> bool {
+            // 客户端取消：立即停止接收，让 Post 尽快返回（httplib 记为 Canceled）
+            if (abort_flag && abort_flag->load()) return false;
+
             line_buf.append(data, len);
 
             std::size_t pos;
@@ -128,20 +132,22 @@ void LLMHttpClient::stream_post(const std::string& url,
             return true;
         });
 
-    // 正常收到 [DONE] 时，httplib 会把主动停止记为 Canceled（"Connection handling canceled"），
-    // 这是预期的完成信号，不是错误
-    if (!res) {
-        if (stream_done) {
-            LOG_TRACE("HTTP POST {} stream completed ([DONE])", path);
+    // 正常收到 [DONE] 或客户端取消（abort_flag）时，httplib 会把主动停止记为
+    // Canceled（"Connection handling canceled"），这是预期的完成信号，不是错误
+    if (!res || res->status != 200) {
+        bool ok = stream_done || (abort_flag && abort_flag->load());
+        if (res && res->status != 200 && !ok) {
+            LOG_WARN("HTTP POST {} returned status {}", path, res->status);
+            if (on_done) on_done("", false, "HTTP " + std::to_string(res->status));
+            return;
+        }
+        if (ok) {
+            LOG_TRACE("HTTP POST {} stream completed ([DONE]{}cancel)", path,
+                      stream_done ? "/" : " or ");
             goto done;
         }
         LOG_ERROR("HTTP POST {} failed: {}", path, httplib::to_string(res.error()));
         if (on_done) on_done("", false, "HTTP error: " + httplib::to_string(res.error()));
-        return;
-    }
-    if (res->status != 200) {
-        LOG_WARN("HTTP POST {} returned status {}", path, res->status);
-        if (on_done) on_done("", false, "HTTP " + std::to_string(res->status));
         return;
     }
 
@@ -164,7 +170,13 @@ done:
     }
 
     if (reasoning_out) *reasoning_out = std::move(reasoning);
-    if (on_done) on_done("", true, "");
+    // 取消时用保留字 "canceled" 标记，provider 侧据此设 result.canceled。
+    // 注意加花括号：else 必须绑定外层 if（abort），否则正常完成时 on_done 不会被调用。
+    if (abort_flag && abort_flag->load()) {
+        if (on_done) on_done("", true, "__canceled__");
+    } else if (on_done) {
+        on_done("", true, "");
+    }
 }
 
 bool LLMHttpClient::parse_sse_line(const std::string& line,

@@ -1,121 +1,96 @@
-# Codis — C++ AI Coding Agent
+# Codis — C++ AI Coding Assistant
 
-A C++20 AI coding assistant with multi-provider support, multi-client shared sessions, Feishu bot, and a TUI interface.
+A C++20 AI coding assistant with multi-provider support, multi-client shared sessions, a Feishu bot, and a terminal TUI. One server, many clients.
 
 > 🇨🇳 [中文 README](./README.zh.md)
 
-## Quick Start (Docker)
+![Codis](docs/codis.png)
+
+## Features
+
+- **Multi-Provider** — OpenAI / DeepSeek / GLM / Groq, config-driven, switchable at runtime
+- **Full-duplex WebSocket** — one connection for both requests and streamed responses; tokens arrive in real time
+- **Shared sessions across clients** — CLI / TUI / Feishu bot use the same session without cross-talk
+- **No lost messages** — requests arriving mid-processing are queued and re-run; requests sent while disconnected are flushed on reconnect
+- **Real-time streaming** — assistant output (including reasoning) streams token-by-token
+- **Tool calls** — bash / read / write / edit / glob / grep, plus C-ABI plugins for custom tools
+- **Session persistence** — SQLite-backed history with restore / switch / delete / search
+- **Terminal TUI** — FTXUI: color-coded messages, mouse-wheel scrolling, double-ESC cancels the running task
+- **Feishu bot** — WebSocket long connection, no public IP required
+- **Docker** — single-container deployment
+
+## Build
+
+Requirements: CMake 3.20+, vcpkg, a C++20 compiler.
 
 ```bash
-docker build -t codis .
-docker run -d --name codis \
-  -e FEISHU_APP_ID="cli_xxx" \
-  -e FEISHU_APP_SECRET="xxx" \
-  -e GLM_API_KEY="xxx" \
-  -e OPENCODE_LOG_LEVEL=info \
-  -p 8711:8711 \
-  codis
-docker logs -f codis
-```
+# 1. Install dependencies (skip if vcpkg is already set up)
+#    vcpkg install cpp-httplib nlohmann-json cli11 tomlplusplus openssl sqlite3 ftxui asio
 
-## Quick Start (Native)
-
-### Build
-
-```bash
+# 2. Configure and build
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
 cmake --build build -j$(nproc)
 ```
 
-### Run
+## Run
 
 ```bash
-# Terminal 1: start server
+# Terminal 1: start the server
 export GLM_API_KEY="your-api-key"
 ./build/packages/server/opencode-server -c config/config.toml
 
 # Terminal 2: interactive CLI (default)
 ./build/packages/cli/opencode
 
-# Or launch the TUI
+# Launch the TUI (recommended)
 ./build/packages/cli/opencode --tui
 
 # Continue the last session
 ./build/packages/cli/opencode --tui -c
+
+# Custom port / provider
+./build/packages/cli/opencode --tui -p 8711 -m glm-4.5-flash
 ```
 
-### Logging
+No need to start the server manually — the CLI auto-starts it if it isn't running.
 
-Logs are controlled by environment variables:
+### TUI shortcuts
 
-| Env | Default | Description |
-|------|---------|------|
-| `OPENCODE_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
-| `OPENCODE_LOG_FILE` | unset | When set, logs go to the file only (keeps the fullscreen TUI clean); otherwise they go to stderr |
+| Key | Action |
+|------|------|
+| `↑` `↓` / mouse wheel | Scroll the conversation |
+| Double `ESC` | Cancel the running task |
+| `Ctrl+S` | Open the session list |
+| `Ctrl+C` | Quit |
 
-## Architecture
-
-```
-┌──────────────┐  full-duplex WebSocket   ┌─────────────────────────────────┐
-│  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  request + push frames   │  (daemon)                       │
-│              │                          │                                 │
-│  send_async()│  WS /api/v1/acp/ws/{id}  │  ├─ SessionState (per session)  │
-│  connect()   │  ── request frame ─────► │  │   conn_id → queue broadcast  │
-│              │  ◄══ stream frames ════  │  ├─ ProviderRegistry           │
-│  commands:    │                          │  │   OpenAI/DeepSeek/GLM       │
-│  /sessions   │                          │  ├─ ToolRegistry (6)           │
-│  /session id │                          │  ├─ SystemContext (6)          │
-│  /clear      │                          │  ├─ SessionStore (SQLite)      │
-│  /clearsessions                         │  └─ Logger                     │
-└──────────────┘                          └─────────────────────────────────┘
-                                                   ▲
-                                                   │ HTTP REST
-                                                   │
-┌──────────────────┐                              │
-│  Python Bot       │◄─────────────────────────────┘
-│                   │
-│  feishu_bot.py    │── WebSocket ──► Feishu Server
-│                   │
-│  80 lines Python  │  lark-oapi SDK
-└──────────────────┘
-```
-
-## Features
-
-- **C/S Architecture** — Server daemon + CLI / Python Bot clients
-- **Multi-Provider** — OpenAI / DeepSeek / GLM / Groq, config-driven
-- **SessionState** — Per-session connection queues with conn_id routing
-- **Long-lived TCP** — Full-duplex WebSocket (send requests + receive push over one connection)
-- **Multi-Client** — Independent channels per session, no cross-talk
-- **In-flight queueing** — Messages arriving during LLM processing are queued and re-run after the current turn (no silent drops)
-- **Client-side buffering** — Requests sent while disconnected are queued and flushed on reconnect (no lost messages)
-- **Tool Registry** — bash, read, write, edit, glob, grep
-- **System Context** — date, platform, git_status, AGENTS.md
-- **SQLite Persistence** — Sessions, messages, context snapshots
-- **Session Management** — list / restore / delete / search
-- **Plugin System** — C ABI dlopen, dynamic tool loading
-- **Logging** — 5 levels, env-var controlled
-- **Feishu Bot** — Python lark-oapi SDK, WebSocket, no public IP needed
-- **FTXUI TUI** — Terminal UI with color-coded messages, input bar, live WS updates
-- **Docker** — One-container deployment, zero manual config
-
-## CLI Commands
+### Commands
 
 | Command | Description |
 |------|------|
-| `/sessions` | List all sessions in a table |
+| `/sessions` | List all sessions |
 | `/session <id> use` | Resume a session |
 | `/session <id> del` | Delete a session |
-| `/newsession` | Create a new session (TUI) |
-| `/clear` | Clear current context |
+| `/newsession` | Create a new session |
+| `/clear` | Clear the current context |
 | `/clearsessions` | Delete all sessions |
-| `/balance [provider]` | Query provider account balance |
+| `/balance [provider]` | Query provider balance |
+| `/exit` | Quit |
+
+### Logging
+
+| Env | Default | Description |
+|------|------|------|
+| `OPENCODE_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
+| `OPENCODE_LOG_FILE` | unset | When set, logs go to the file only (keeps the fullscreen TUI clean); otherwise to stderr |
 
 ## Configuration
 
 ```toml
 default_provider = "glm"
+
+[llm]
+max_tokens = 4096
+temperature = 0.7
 
 [[providers]]
 name = "glm"
@@ -126,35 +101,39 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 
 API keys are set via environment variables — never in the config file.
 
-## REST API
+## Docker
 
-| Method | Path | Description |
-|------|------|------|
-| `GET` | `/api/v1/health` | Health check |
-| `GET` | `/api/v1/info` | Server info (providers, tools, version) |
-| `POST` | `/api/v1/chat` | Synchronous chat |
-| `POST` | `/api/v1/acp/switch` | Move a conn_id to another session (compat; client uses WS `switch` frame) |
-| `WS` | `/api/v1/acp/ws/{id}` | Full-duplex WebSocket: `request`/`switch` frames to send, stream frames to receive |
-| `POST` | `/api/v1/sessions` | Create a session |
-| `GET` | `/api/v1/sessions` | List sessions |
-| `GET` | `/api/v1/sessions/:id` | Get a session with messages |
-| `DELETE` | `/api/v1/sessions` | Delete all sessions |
-| `DELETE` | `/api/v1/sessions/:id` | Delete a session |
-| `POST` | `/api/v1/sessions/:id/messages` | Append a message |
-| `GET` | `/api/v1/balance/:provider` | Provider account balance |
+```bash
+docker build -t codis .
+docker run -d --name codis \
+  -e GLM_API_KEY="xxx" \
+  -e FEISHU_APP_ID="cli_xxx" \
+  -e FEISHU_APP_SECRET="xxx" \
+  -p 8711:8711 \
+  codis
+docker logs -f codis
+```
 
 ## Tech Stack
 
-| Category | Library | Version |
-|------|------|------|
-| HTTP Server | cpp-httplib | 0.47.0 (OpenSSL) |
-| JSON | nlohmann/json | 3.12.0 |
-| CLI Parsing | CLI11 | 2.6.2 |
-| Config | toml++ | 3.4.0 |
-| SSL | OpenSSL | 3.6.3 |
-| Async I/O | standalone asio | 1.32.0 |
-| Database | SQLite3 | 3.45.1 |
-| TUI | FTXUI | 7.0.0 |
-| Feishu SDK | lark-oapi | (Python) |
-| Build | CMake 3.20+ / vcpkg | |
-| Language | C++20 | |
+| Module | Library |
+|------|------|
+| HTTP / WebSocket | cpp-httplib |
+| JSON | nlohmann/json |
+| CLI parsing | CLI11 |
+| Config | toml++ |
+| SSL | OpenSSL |
+| Async I/O | standalone asio |
+| Database | SQLite3 |
+| TUI | FTXUI |
+| Feishu SDK | lark-oapi (Python) |
+| Build | CMake / vcpkg |
+
+## Project Layout
+
+```
+packages/
+├── server/   # Server daemon (HTTP + WebSocket + LLM scheduling + tool execution)
+├── cli/      # Clients (interactive CLI + FTXUI TUI)
+└── llm/      # Provider wrappers / session storage / tool registry (shared)
+```

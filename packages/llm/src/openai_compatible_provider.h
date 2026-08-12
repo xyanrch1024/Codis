@@ -52,7 +52,8 @@ public:
     }
 
     ChatResponse stream_chat(const ChatRequest& req, TokenCallback on_token,
-                             ReasoningCallback on_reasoning = nullptr) override {
+                             ReasoningCallback on_reasoning = nullptr,
+                             std::atomic<bool>* abort_flag = nullptr) override {
         ChatResponse result;
         LOG_DEBUG("{}::stream_chat model={}", name_, req.model);
 
@@ -68,12 +69,18 @@ public:
             std::move(on_token),
             [&](std::string, bool success, std::string error) {
                 result.success = success;
-                result.error = std::move(error);
+                if (error == "__canceled__") {
+                    result.canceled = true;
+                    result.error.clear();
+                } else {
+                    result.error = std::move(error);
+                }
             },
             120,
             false,
             &result.reasoning_content,
-            std::move(on_reasoning)
+            std::move(on_reasoning),
+            abort_flag
         );
 
         return result;

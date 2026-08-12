@@ -181,6 +181,21 @@ int TuiClient::run() {
     });
 
     auto component = main_renderer | CatchEvent([&](Event event) {
+        // 双击 ESC（400ms 内两次）：取消正在执行的任务（不退程序）
+        if (event == Event::Escape) {
+            auto now = std::chrono::steady_clock::now();
+            if (state_->processing &&
+                now - last_escape_ <= std::chrono::milliseconds(400)) {
+                last_escape_ = std::chrono::steady_clock::time_point{};
+                acp_.cancel_session(state_->current_session);
+                state_->processing = false;
+                state_->add_item(ItemKind::Status, "[任务已取消]");
+                post_job_();
+                return true;
+            }
+            last_escape_ = now;
+        }
+
         if (sessions_visible_) {
             if (event == Event::ArrowUp && session_selected_ > 0) {
                 session_selected_--;

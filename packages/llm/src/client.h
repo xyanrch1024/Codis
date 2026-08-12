@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <map>
+#include <atomic>
 
 #include <nlohmann/json.hpp>
 #include <httplib.h>
@@ -29,7 +30,8 @@ public:
                      int timeout_seconds = 60,
                      bool non_stream = false,
                      std::string* reasoning_out = nullptr,
-                     ReasoningCallback on_reasoning = nullptr);
+                     ReasoningCallback on_reasoning = nullptr,
+                     std::atomic<bool>* abort_flag = nullptr);
 
 private:
     // 解析一条 SSE 行；遇到 [DONE] 返回 false。delta 实时回调。
