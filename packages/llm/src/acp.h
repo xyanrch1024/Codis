@@ -16,7 +16,9 @@ using json = nlohmann::json;
 // =============================================================================
 
 enum class EventType {
-    connected,    // SSE 连接建立，携带 conn_id
+    connected,    // WS 连接建立，携带 conn_id
+    request,      // 客户端 → 服务端：发送一次对话请求（全双工）
+    switch_session, // 客户端 → 服务端：切换 conn 到其它 session
     assistant,    // 模型回复增量文本
     reasoning,    // 模型思维链增量文本（reasoning_content）
     tool_call,    // 模型请求调用工具
@@ -28,6 +30,8 @@ enum class EventType {
 inline std::string to_string(EventType t) {
     switch (t) {
         case EventType::connected:  return "connected";
+        case EventType::request:    return "request";
+        case EventType::switch_session: return "switch";
         case EventType::assistant:  return "assistant";
         case EventType::reasoning:  return "reasoning";
         case EventType::tool_call:  return "tool_call";
@@ -110,6 +114,18 @@ inline std::string connected_frame(const std::string& conn_id) {
     return to_frame(EventType::connected, {{"conn_id", conn_id}});
 }
 
+// 客户端 → 服务端：全双工对话请求帧
+inline std::string request_frame(const ChatRequest& req) {
+    json data = req.to_json();
+    if (!req.session_id.empty()) data["session_id"] = req.session_id;
+    return to_frame(EventType::request, data);
+}
+
+// 客户端 → 服务端：切换 conn 到其它 session（conn_id 由服务端从 WS 连接获取）
+inline std::string switch_frame(const std::string& session_id) {
+    return to_frame(EventType::switch_session, {{"session_id", session_id}});
+}
+
 // =============================================================================
 // ACP 帧解析（输入为裸 JSON，如 {"type":"assistant","data":{"delta":"..."}}）
 // =============================================================================
@@ -126,6 +142,8 @@ inline std::optional<ParsedEvent> parse_frame(const std::string& payload) {
 
         EventType type;
         if (type_str == "connected")   type = EventType::connected;
+        else if (type_str == "request") type = EventType::request;
+        else if (type_str == "switch")  type = EventType::switch_session;
         else if (type_str == "assistant")   type = EventType::assistant;
         else if (type_str == "reasoning")   type = EventType::reasoning;
         else if (type_str == "tool_call")   type = EventType::tool_call;

@@ -56,14 +56,14 @@ Logs are controlled by environment variables:
 ## Architecture
 
 ```
-┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────────────┐
+┌──────────────┐  full-duplex WebSocket   ┌─────────────────────────────────┐
 │  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  WebSocket push          │  (daemon)                       │
+│  (CLI/TUI)   │  request + push frames   │  (daemon)                       │
 │              │                          │                                 │
-│  send_async()│  POST /api/v1/acp        │  ├─ SessionState (per session)  │
-│  connect()   │  ──────────────────────► │  │   conn_id → queue broadcast  │
-│              │  WS /api/v1/acp/ws/{id}  │  ├─ ProviderRegistry           │
-│  commands:    │ ◄══ keep-alive WS ═════ │  │   OpenAI/DeepSeek/GLM       │
+│  send_async()│  WS /api/v1/acp/ws/{id}  │  ├─ SessionState (per session)  │
+│  connect()   │  ── request frame ─────► │  │   conn_id → queue broadcast  │
+│              │  ◄══ stream frames ════  │  ├─ ProviderRegistry           │
+│  commands:    │                          │  │   OpenAI/DeepSeek/GLM       │
 │  /sessions   │                          │  ├─ ToolRegistry (6)           │
 │  /session id │                          │  ├─ SystemContext (6)          │
 │  /clear      │                          │  ├─ SessionStore (SQLite)      │
@@ -86,9 +86,10 @@ Logs are controlled by environment variables:
 - **C/S Architecture** — Server daemon + CLI / Python Bot clients
 - **Multi-Provider** — OpenAI / DeepSeek / GLM / Groq, config-driven
 - **SessionState** — Per-session connection queues with conn_id routing
-- **Long-lived TCP** — WebSocket push + fire-and-forget ACP
+- **Long-lived TCP** — Full-duplex WebSocket (send requests + receive push over one connection)
 - **Multi-Client** — Independent channels per session, no cross-talk
 - **In-flight queueing** — Messages arriving during LLM processing are queued and re-run after the current turn (no silent drops)
+- **Client-side buffering** — Requests sent while disconnected are queued and flushed on reconnect (no lost messages)
 - **Tool Registry** — bash, read, write, edit, glob, grep
 - **System Context** — date, platform, git_status, AGENTS.md
 - **SQLite Persistence** — Sessions, messages, context snapshots
@@ -132,9 +133,8 @@ API keys are set via environment variables — never in the config file.
 | `GET` | `/api/v1/health` | Health check |
 | `GET` | `/api/v1/info` | Server info (providers, tools, version) |
 | `POST` | `/api/v1/chat` | Synchronous chat |
-| `POST` | `/api/v1/acp` | Fire-and-forget with conn_id |
-| `POST` | `/api/v1/acp/switch` | Move a conn_id to another session |
-| `WS` | `/api/v1/acp/ws/{id}` | Long-lived WebSocket push (JSON frames) |
+| `POST` | `/api/v1/acp/switch` | Move a conn_id to another session (compat; client uses WS `switch` frame) |
+| `WS` | `/api/v1/acp/ws/{id}` | Full-duplex WebSocket: `request`/`switch` frames to send, stream frames to receive |
 | `POST` | `/api/v1/sessions` | Create a session |
 | `GET` | `/api/v1/sessions` | List sessions |
 | `GET` | `/api/v1/sessions/:id` | Get a session with messages |

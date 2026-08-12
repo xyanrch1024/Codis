@@ -98,10 +98,43 @@ void LLMHttpClient::stream_post(const std::string& url,
     }
 
     // ====================================================================
-    // 流式 SSE — POST 请求 (body 中 "stream":true)，解析 SSE 响应行
+    // 流式 SSE — POST 请求 (body 中 "stream":true)，用 ContentReceiver 逐块
+    // 接收，按行实时解析并回调 on_token（不等整个响应收完）
     // ====================================================================
-    auto res = client.Post(path, headers, req_body, "application/json");
+    // 收集 API 原生 tool_calls（按 index 分组）
+    std::map<int, json> tool_calls;
+    std::string reasoning;  // 思维链增量（GLM 等），不计入 content
+    std::string line_buf;   // 跨块残留的半行
+    bool stream_done = false;
+
+    auto res = client.Post(
+        path, headers, req_body, "application/json",
+        [&](const char* data, size_t len) -> bool {
+            line_buf.append(data, len);
+
+            std::size_t pos;
+            while ((pos = line_buf.find('\n')) != std::string::npos) {
+                auto line = line_buf.substr(0, pos);
+                line_buf.erase(0, pos + 1);
+
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.empty()) continue;
+
+                if (!parse_sse_line(line, tool_calls, reasoning, on_token, on_reasoning)) {
+                    stream_done = true;  // [DONE]：主动停止接收，其余忽略
+                    return false;
+                }
+            }
+            return true;
+        });
+
+    // 正常收到 [DONE] 时，httplib 会把主动停止记为 Canceled（"Connection handling canceled"），
+    // 这是预期的完成信号，不是错误
     if (!res) {
+        if (stream_done) {
+            LOG_TRACE("HTTP POST {} stream completed ([DONE])", path);
+            goto done;
+        }
         LOG_ERROR("HTTP POST {} failed: {}", path, httplib::to_string(res.error()));
         if (on_done) on_done("", false, "HTTP error: " + httplib::to_string(res.error()));
         return;
@@ -112,66 +145,7 @@ void LLMHttpClient::stream_post(const std::string& url,
         return;
     }
 
-    LOG_TRACE("SSE response {} bytes, parsing...", res->body.size());
-
-    // 收集 API 原生 tool_calls（按 index 分组）
-    std::map<int, json> tool_calls;
-    std::string reasoning;  // 思维链增量（GLM 等），不计入 content
-
-    // 逐行解析 SSE
-    std::string_view body_view = res->body;
-    std::size_t pos;
-    while ((pos = body_view.find('\n')) != std::string_view::npos) {
-        auto line = body_view.substr(0, pos);
-        body_view.remove_prefix(pos + 1);
-
-        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-        if (line.empty()) continue;
-
-        if (line.starts_with("data: ")) {
-            auto payload = line.substr(6);
-            if (payload == "[DONE]") break;
-
-            try {
-                auto j = json::parse(payload);
-                if (j.contains("choices") && !j["choices"].empty()) {
-                    auto& choice = j["choices"][0];
-                    if (choice.contains("delta") && choice["delta"].contains("content")) {
-                        auto& c = choice["delta"]["content"];
-                        if (c.is_string() && on_token) on_token(c.get<std::string>());
-                    }
-                    if (choice.contains("delta") && choice["delta"].contains("reasoning_content")) {
-                        auto& rc = choice["delta"]["reasoning_content"];
-                        if (rc.is_string()) {
-                            auto delta = rc.get<std::string>();
-                            reasoning += delta;
-                            if (on_reasoning) on_reasoning(delta);
-                        }
-                    }
-                    if (choice.contains("delta") && choice["delta"].contains("tool_calls")) {
-                        for (auto& tc : choice["delta"]["tool_calls"]) {
-                            int idx = tc.value("index", 0);
-                            auto& entry = tool_calls[idx];
-                            if (tc.contains("id")) entry["id"] = tc["id"];
-                            if (tc.contains("type")) entry["type"] = tc["type"];
-                            if (tc.contains("function")) {
-                                auto& func = tc["function"];
-                                if (func.contains("name")) entry["name"] = func["name"];
-                                if (func.contains("arguments")) {
-                                    std::string prev = entry.value("arguments", "");
-                                    entry["arguments"] = prev + func["arguments"].get<std::string>();
-                                }
-                            }
-                        }
-                    }
-                }
-                if (j.contains("delta") && j["delta"].contains("text")) {
-                    if (on_token) on_token(j["delta"]["text"].get<std::string>());
-                }
-            } catch (const json::parse_error&) {}
-        }
-    }
-
+done:
     // 拼装 tool_calls JSON 追加到 content
     if (!tool_calls.empty()) {
         json tc_list = json::array();
@@ -191,6 +165,58 @@ void LLMHttpClient::stream_post(const std::string& url,
 
     if (reasoning_out) *reasoning_out = std::move(reasoning);
     if (on_done) on_done("", true, "");
+}
+
+bool LLMHttpClient::parse_sse_line(const std::string& line,
+                                   std::map<int, json>& tool_calls,
+                                   std::string& reasoning,
+                                   TokenCallback& on_token,
+                                   ReasoningCallback& on_reasoning) {
+    if (!line.starts_with("data: ")) return true;
+    auto payload = line.substr(6);
+    if (payload == "[DONE]") return false;
+
+    try {
+        auto j = json::parse(payload);
+        if (j.contains("choices") && !j["choices"].empty()) {
+            auto& choice = j["choices"][0];
+            if (choice.contains("delta")) {
+                auto& delta = choice["delta"];
+                if (delta.contains("content")) {
+                    auto& c = delta["content"];
+                    if (c.is_string() && on_token) on_token(c.get<std::string>());
+                }
+                if (delta.contains("reasoning_content")) {
+                    auto& rc = delta["reasoning_content"];
+                    if (rc.is_string()) {
+                        auto d = rc.get<std::string>();
+                        reasoning += d;
+                        if (on_reasoning) on_reasoning(d);
+                    }
+                }
+                if (delta.contains("tool_calls")) {
+                    for (auto& tc : delta["tool_calls"]) {
+                        int idx = tc.value("index", 0);
+                        auto& entry = tool_calls[idx];
+                        if (tc.contains("id")) entry["id"] = tc["id"];
+                        if (tc.contains("type")) entry["type"] = tc["type"];
+                        if (tc.contains("function")) {
+                            auto& func = tc["function"];
+                            if (func.contains("name")) entry["name"] = func["name"];
+                            if (func.contains("arguments")) {
+                                std::string prev = entry.value("arguments", "");
+                                entry["arguments"] = prev + func["arguments"].get<std::string>();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (j.contains("delta") && j["delta"].contains("text")) {
+            if (on_token) on_token(j["delta"]["text"].get<std::string>());
+        }
+    } catch (const json::parse_error&) {}
+    return true;
 }
 
 } // namespace opencode

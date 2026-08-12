@@ -56,14 +56,14 @@ export GLM_API_KEY="your-api-key"
 ## 架构
 
 ```
-┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────────────┐
+┌──────────────┐  全双工 WebSocket       ┌─────────────────────────────────┐
 │  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  WebSocket 推送          │  (后台守护进程)                  │
+│  (CLI/TUI)   │  request + 流式推送      │  (后台守护进程)                  │
 │              │                          │                                 │
-│  send_async()│  POST /api/v1/acp        │  ├─ SessionState (per session)  │
-│  connect()   │  ──────────────────────► │  │   conn_id → queue 直接广播    │
-│              │  WS /api/v1/acp/ws/{id}  │  ├─ ProviderRegistry           │
-│  交互命令:    │ ◄══ keep-alive WS ════ │  │   OpenAI/DeepSeek/GLM        │
+│  send_async()│  WS /api/v1/acp/ws/{id}  │  ├─ SessionState (per session)  │
+│  connect()   │  ── request 帧 ────────► │  │   conn_id → queue 直接广播    │
+│              │  ◄══ stream 帧 ════════ │  ├─ ProviderRegistry           │
+│  交互命令:    │                          │  │   OpenAI/DeepSeek/GLM        │
 │  /sessions   │                          │  ├─ ToolRegistry (6)           │
 │  /session id │                          │  ├─ SystemContext (6)          │
 │  /clear      │                          │  ├─ SessionStore (SQLite)      │
@@ -86,9 +86,10 @@ export GLM_API_KEY="your-api-key"
 - **C/S 架构** — Server 守护进程 + CLI / Python Bot 客户端
 - **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置驱动
 - **SessionState 广播** — 每 session 独立管理连接队列，conn_id 精准路由
-- **长 TCP 连接** — WebSocket 推送 + fire-and-forget ACP
+- **长 TCP 连接** — 全双工 WebSocket（同一连接发送请求 + 接收推送）
 - **多 Client 共享** — 同 session 多客户端独立通道，无交叉干扰
 - **处理中排队** — LLM 处理期间到达的消息排队，当前轮结束后按序补跑（不静默丢弃）
+- **客户端缓冲** — 断线期间发送的请求排队，重连成功后自动补发（不丢消息）
 - **Tool Registry** — bash, read, write, edit, glob, grep
 - **System Context** — date, platform, git_status, AGENTS.md
 - **SQLite 持久化** — 会话/消息/Context 快照
@@ -132,9 +133,8 @@ API Key 通过环境变量设置，不在配置文件中写明文。
 | `GET` | `/api/v1/health` | 健康检查 |
 | `GET` | `/api/v1/info` | 服务信息（providers/tools/版本） |
 | `POST` | `/api/v1/chat` | 同步聊天 |
-| `POST` | `/api/v1/acp` | fire-and-forget 带 conn_id |
-| `POST` | `/api/v1/acp/switch` | conn_id 切换到其它 session |
-| `WS` | `/api/v1/acp/ws/{id}` | 长连接 WebSocket 推送（JSON 帧） |
+| `POST` | `/api/v1/acp/switch` | conn_id 切换到其它 session（兼容，客户端已走 WS switch 帧） |
+| `WS` | `/api/v1/acp/ws/{id}` | 全双工 WebSocket：`request`/`switch` 帧发送，stream 帧接收推送 |
 | `POST` | `/api/v1/sessions` | 新建 session |
 | `GET` | `/api/v1/sessions` | 列出会话 |
 | `GET` | `/api/v1/sessions/:id` | 获取 session 及消息 |

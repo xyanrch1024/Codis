@@ -3,14 +3,14 @@
 ## 总体拓扑
 
 ```
-┌──────────────┐  fire-and-forget (REST)  ┌─────────────────────────────────┐
+┌──────────────┐  全双工 WebSocket       ┌─────────────────────────────────┐
 │  codis        │ ◄─────────────────────► │  codis-server                   │
-│  (CLI/TUI)   │  WebSocket 推送          │  (后台守护进程)                  │
+│  (CLI/TUI)   │  request + stream 帧     │  (后台守护进程)                  │
 │              │                          │                                 │
-│  send_async()│  POST /api/v1/acp        │  ├─ SessionState (per session)  │
-│  connect()   │  ──────────────────────► │  │   conns: map<conn_id, queue> │
-│  后台WS线程   │  WS /api/v1/acp/ws/{id}  │  │   processing: atomic<bool>   │
-│              │ ◄══ keep-alive WS ═════  │  │   pending: deque<ChatRequest>│
+│  send_async()│  WS /api/v1/acp/ws/{id}  │  ├─ SessionState (per session)  │
+│  connect()   │  ── request 帧 ────────► │  │   conns: map<conn_id, queue> │
+│  后台WS线程   │  ◄══ stream 帧 ═══════  │  │   processing: atomic<bool>   │
+│              │                          │  │   pending: deque<ChatRequest>│
 │              │                          │  ├─ ProviderRegistry           │
 │  交互命令:    │                          │  ├─ ToolRegistry (6)           │
 │  /sessions   │                          │  ├─ SystemContext (6)          │
@@ -43,12 +43,13 @@ LLM Worker ─────┤  broadcast(frame, conn_id)            │
 ```
 
 - 每个 WS 连接分配唯一 `conn_id`
-- ACP 请求可携带 `conn_id` 精确路由 LLM 输出
+- 客户端通过 WS 发送 `request` 帧触发 LLM 处理（全双工，无需额外 HTTP POST）
+- 断线重连期间客户端的请求进入本地待发队列，`connected` 帧到达后自动补发（不丢消息）
 - `conn_id` 为空时广播到该 session 的所有连接（向后兼容）
 - 断开时自动清理：`ws.read()` 返回 Fail 触发 `cleanup_connection()`
 - **in-flight 排队**：LLM 处理期间新消息进入 `pending`，当前轮 `done` 后按序自动补跑，避免静默丢弃
 
-### WebSocket 长连接 (keepalive)
+### WebSocket 长连接 (全双工)
 
 ```
 Client                                    Server
@@ -57,8 +58,8 @@ Client                                    Server
   │                                        │  push connected frame
   │  ←── {"type":"connected","conn_id":"x"}  │
   │                                        │
-  │  POST /api/v1/acp                      │  fire-and-forget → LLM
-  │  {"session_id","messages","conn_id"}   │  → 202 Accepted
+  │  ── {"type":"request","data":{...}} ──►│  全双工：走同一 WS 发送请求
+  │                                        │  → queue_chat_request()
   │                                        │  → run_acp_loop_broadcast()
   │  ←── assistant frames ──────────────  │  → broadcast to conns[conn_id]
   │  ←── reasoning frames ──────────────  │
@@ -66,7 +67,7 @@ Client                                    Server
   │  ←── tool_result ────────────────────  │
   │  ←── {"type":"done"} ────────────────  │
   │                                        │  keepalive: 不关闭连接
-  │  POST /api/v1/acp                      │  下一轮 ACP
+  │  ── request 帧 ──────────────────────► │  下一轮 ACP
   │  ←── assistant frames ──────────────  │
   │  ←── done ───────────────────────────  │
   │                                        │
@@ -74,15 +75,14 @@ Client                                    Server
   │                                        │  → cleanup_connection()
 ```
 
-WS 连接不会因空闲断开（`read_timeout` 不设，心跳由 httplib 处理）。一个连接持续复用，逐轮接收 ACP 推送。
+WS 连接不会因空闲断开（`read_timeout` 不设，心跳由 httplib 处理）。一个连接持续复用，同时承担请求上行与结果下行。
 
 ### 端点
 
 | 端点 | 方法 | 连接 | 说明 |
 |------|------|------|------|
-| `/api/v1/acp/ws/{id}` | WS | 长连接 | WebSocket 推送，分配 conn_id |
-| `/api/v1/acp` | POST | 短连接 | fire-and-forget，传 conn_id 精准路由 |
-| `/api/v1/acp/switch` | POST | 短连接 | conn_id 切换到其它 session |
+| `/api/v1/acp/ws/{id}` | WS | 长连接 | 全双工：`request` 帧上行 + stream 帧下行，分配 conn_id |
+| `/api/v1/acp/switch` | POST | 短连接 | conn_id 切换到其它 session（兼容，客户端已走 WS switch 帧） |
 | `/api/v1/chat` | POST | 短连接 | 同步聊天，无 tool 执行 |
 
 ### ACP 协议帧 (WebSocket，裸 JSON，无 SSE 信封)
@@ -90,6 +90,8 @@ WS 连接不会因空闲断开（`read_timeout` 不设，心跳由 httplib 处�
 | Event | WS 帧 |
 |-------|--------|
 | `connected` | `{"type":"connected","data":{"conn_id":"xxx"}}` |
+| `request` | `{"type":"request","data":{ChatRequest...}}`（客户端 → 服务端） |
+| `switch` | `{"type":"switch","data":{"session_id":"xxx"}}`（客户端 → 服务端，conn 切到目标 session） |
 | `assistant` | `{"type":"assistant","data":{"delta":"..."}}` |
 | `reasoning` | `{"type":"reasoning","data":{"delta":"..."}}` |
 | `tool_call` | `{"type":"tool_call","data":{"id":"x","name":"bash",...}}` |
@@ -129,21 +131,25 @@ struct SessionState {
          while (true):
            auto frame = queue->pop()     // 阻塞等待
            ws.send(frame)                // 写到 TCP
-     → 进入 ws.read() 循环等待断开
+     → 进入 ws.read() 循环（全双工）等待请求/断开
 
-2. ACP 请求处理
-   handle_acp("session_A", conn_id):
+2. ACP 请求处理（全双工，走同一 WS）
+   ws.read() 收到 request 帧:
+     → ChatRequest::from_json(data)
+     → queue_chat_request(session, conn_id, req)
      → processing.exchange(true) 为 false 则启动 run_acp_loop_broadcast
      → 若为 true，请求入 pending 队列，当前轮结束后补跑
    run_acp_loop_broadcast → broadcast(frame):
      sessions_["session_A"].conns[conn_id]->push(frame)
      → 唤醒 sender 线程 pop() → ws.send() → 客户端
 
-3. 切换 session（不断开 WS）
-   handle_acp_switch({conn_id, new_session}):
-     → conn_id 从旧 session 移除
-     → 插入 sessions_[new_session].conns[conn_id] = queue
-     → queue->push(connected_frame)       // 确认切换完毕
+3. 切换 session（不断开 WS，全双工 switch 帧）
+   ws.read() 收到 switch 帧:
+     → move_connection(conn_id, new_session):
+        → conn_id 从旧 session 移除
+        → 插入 sessions_[new_session].conns[conn_id] = queue
+        → queue->push(connected_frame)       // 确认切换完毕
+   （switch 帧与后续 request 帧同一条 WS，按序处理，先切后发）
 
 4. 断开
    cleanup_connection(sid, conn_id):
@@ -207,8 +213,8 @@ opencode-cpp/
 │   ├── cli/src/main.cpp           # connect() + send_async()
 │   │       tui.h/cpp              # FTXUI TUI + session overlay
 │   ├── server/src/
-│   │   ├── server.h/cpp             # handle_acp_ws (conn_id), handle_acp_switch
-│   │   └── main.cpp                 # handle_acp (conn_id routing)
+│   │   ├── server.h/cpp             # 路由注册 + handle_acp_ws (request 帧), handle_acp_switch, queue_chat_request
+│   │   └── main.cpp                 # 启动入口
 │   ├── llm/src/
 │   │   ├── types.h / acp.h          # ACP 协议帧定义 + connected 事件
 │   │   ├── acp_client.h/cpp         # connect() / send_async()
@@ -233,7 +239,8 @@ opencode-cpp/
 | 方法 | 行为 |
 |------|------|
 | `connect(sid, cbs)` | `WS /api/v1/acp/ws/{sid}` → 后台线程接收推送，断线自动重连（指数退避，最多 10 次） |
-| `send_async(req)` | `POST /acp` (带 conn_id) → 202 → 无阻塞，回复通过 WS 到达 |
+| `send_async(req)` | 构造 `request` 帧经 WS 发送（全双工）；WS 未就绪时入本地待发队列，`connected` 帧到达后补发 |
+| `switch_session(sid)` | 构造 `switch` 帧经 WS 发送；WS 未就绪时入待发队列，重连后按序补发 |
 
 ## LLM 并发控制
 
@@ -246,7 +253,7 @@ struct SessionState {
 };
 ```
 
-- `handle_acp` 中检查 `processing.exchange(true)`
+- `queue_chat_request`（由 WS request 帧触发）中检查 `processing.exchange(true)`
 - 已有 LLM 在处理则将新请求入 `pending` 队列（不再跳过）
 - `run_acp_loop_broadcast` 完成后，若 `pending` 非空则保持 `processing` 并用新请求立即补跑下一轮；否则置 `processing = false`
 - `broadcast` 中目标 conn_id 在 session 中不存在时打 WARN，便于诊断"服务端有消息但客户端收不到"

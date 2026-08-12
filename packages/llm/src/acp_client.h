@@ -10,6 +10,8 @@
 #include <optional>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <deque>
 #include <httplib.h>
 
 namespace opencode {
@@ -44,13 +46,12 @@ public:
 
     AcpClient(int server_port = 8711);
 
-    // fire-and-forget: 只发送消息，不等待回复
+    // fire-and-forget: 通过 WS 全双工发送消息，不等待回复
     bool send_async(const ChatRequest& request);
 
     // 长连接模式：打开 WebSocket 流，后台持续回调
     bool connect(const std::string& session_id, Callbacks callbacks);
     void disconnect();
-
     // 健康检查
     bool health_check();
 
@@ -64,6 +65,9 @@ public:
     std::string get_last_session();
 
 private:
+    // WS 就绪前/断线期间的待发请求，connect 成功后 flush
+    void flush_pending();
+
     std::string host_;
     int port_;
     std::unique_ptr<httplib::Client> http_;
@@ -74,6 +78,8 @@ private:
     std::unique_ptr<httplib::ws::WebSocketClient> ws_;
     Callbacks callbacks_;
     std::string conn_id_;
+    std::mutex pending_mutex_;
+    std::deque<std::string> pending_outbound_;
 };
 
 } // namespace opencode

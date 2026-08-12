@@ -228,7 +228,6 @@ void OpenCodeServer::register_routes() {
     server_->Get("/api/v1/health",       [this](auto& r, auto& s) { handle_health(r, s); });
     server_->Get("/api/v1/info",         [this](auto& r, auto& s) { handle_info(r, s); });
     server_->Post("/api/v1/chat",        [this](auto& r, auto& s) { handle_chat(r, s); });
-    server_->Post("/api/v1/acp",         [this](auto& r, auto& s) { handle_acp(r, s); });
     server_->Post("/api/v1/acp/switch",  [this](auto& r, auto& s) { handle_acp_switch(r, s); });
     server_->WebSocket(R"(/api/v1/acp/ws/([a-f0-9\-]+))", [this](auto& r, auto& ws) { handle_acp_ws(r, ws); });
     server_->Post("/api/v1/sessions",    [this](auto& r, auto& s) { handle_session_create(r, s); });
@@ -295,51 +294,38 @@ void OpenCodeServer::handle_chat(const httplib::Request& req, httplib::Response&
     }
 }
 
-void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& res) {
-    set_cors(res);
-    try {
-        auto body = json::parse(req.body);
-        auto chat_req = ChatRequest::from_json(body);
-        std::string sid = body.value("session_id", "");
-        std::string conn_id = body.value("conn_id", "");
+void OpenCodeServer::queue_chat_request(const std::string& session_id,
+                                        const std::string& conn_id, ChatRequest req) {
+    if (session_id.empty() || !session_store_.load_session(session_id))
+        throw std::runtime_error("session not found: " + session_id);
 
-        if (sid.empty() || !session_store_.load_session(sid))
-            sid = session_store_.create_session();
+    bool has_msg = false;
+    for (auto& m : req.messages)
+        if (m.role == "user" && !m.content.empty()) has_msg = true;
 
-        bool has_msg = false;
-        for (auto& m : chat_req.messages)
-            if (m.role == "user" && !m.content.empty()) has_msg = true;
-
-        if (has_msg) {
-            for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it) {
-                if (it->role == "user" && !it->content.empty()) {
-                    session_store_.append_message(sid, *it); break;
-                }
-            }
-
-            // 检查是否有 LLM 正在运行（按 session）
-            // 运行中则排队，当前轮结束后自动补跑，避免消息被静默丢弃
-            bool should_run = false;
-            {
-                std::lock_guard lock(sessions_mutex_);
-                auto& state = sessions_[sid];
-                if (!state.processing.exchange(true))
-                    should_run = true;
-                else
-                    state.pending.push_back(chat_req);
-            }
-            if (should_run) {
-                std::thread([this, sid, conn_id, req = std::move(chat_req)]() mutable {
-                    run_acp_loop_broadcast(sid, conn_id, std::move(req));
-                }).detach();
+    if (has_msg) {
+        for (auto it = req.messages.rbegin(); it != req.messages.rend(); ++it) {
+            if (it->role == "user" && !it->content.empty()) {
+                session_store_.append_message(session_id, *it); break;
             }
         }
 
-        res.status = 202;
-        res.set_content(json{{"session_id", sid, "accepted", has_msg}}.dump(), "application/json");
-    } catch (const std::exception& e) {
-        res.status = 400;
-        res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        // 检查是否有 LLM 正在运行（按 session）
+        // 运行中则排队，当前轮结束后自动补跑，避免消息被静默丢弃
+        bool should_run = false;
+        {
+            std::lock_guard lock(sessions_mutex_);
+            auto& state = sessions_[session_id];
+            if (!state.processing.exchange(true))
+                should_run = true;
+            else
+                state.pending.push_back(req);
+        }
+        if (should_run) {
+            std::thread([this, session_id, conn_id, req = std::move(req)]() mutable {
+                run_acp_loop_broadcast(session_id, conn_id, std::move(req));
+            }).detach();
+        }
     }
 }
 
@@ -371,10 +357,48 @@ void OpenCodeServer::handle_acp_ws(const httplib::Request& req, httplib::ws::Web
         }
     });
 
-    // 读循环：检测客户端断开（read 返回 Fail）；ping/pong 由 httplib 内部处理
+    // 读循环（全双工）：接收客户端 request 帧 + 检测断开（read 返回 Fail）
     std::string msg;
     while (ws.read(msg) != httplib::ws::ReadResult::Fail) {
-        // 预留：客户端 → 服务端控制消息（如切换 session）
+        auto event = acp::parse_frame(msg);
+        if (!event) {
+            LOG_WARN("WS request frame parse failed: {}", msg);
+            ws.send(acp::error_frame("invalid frame"));
+            continue;
+        }
+        if (event->type != acp::EventType::request &&
+            event->type != acp::EventType::switch_session) {
+            LOG_WARN("WS unexpected frame type: {}", acp::to_string(event->type));
+            ws.send(acp::error_frame("unsupported frame type"));
+            continue;
+        }
+        try {
+            if (event->type == acp::EventType::switch_session) {
+                std::string target_sid = event->data.value("session_id", "");
+                if (target_sid.empty()) {
+                    ws.send(acp::error_frame("switch requires session_id"));
+                    continue;
+                }
+                if (!session_store_.load_session(target_sid))
+                    session_store_.create_session_with_id(target_sid);
+                if (!move_connection(conn_id, target_sid)) {
+                    LOG_ERROR("WS switch failed: conn {} not found", conn_id);
+                    ws.send(acp::error_frame("conn not found"));
+                } else {
+                    LOG_INFO("WS switch conn={} -> session={}",
+                             conn_id.substr(0, 8), target_sid.substr(0, 8));
+                }
+                continue;
+            }
+            auto chat_req = ChatRequest::from_json(event->data);
+            // 客户端可能已通过 switch 切到其它 session，优先用帧内 session_id
+            std::string target_sid = event->data.value("session_id", "");
+            if (target_sid.empty()) target_sid = sid;
+            queue_chat_request(target_sid, conn_id, std::move(chat_req));
+        } catch (const std::exception& e) {
+            LOG_ERROR("WS request processing failed: {}", e.what());
+            ws.send(acp::error_frame(e.what()));
+        }
     }
 
     queue->close();
@@ -383,8 +407,32 @@ void OpenCodeServer::handle_acp_ws(const httplib::Request& req, httplib::ws::Web
 }
 
 // =============================================================================
-// handle_acp_switch — 切换 session 不断开 SSE
+// handle_acp_switch — 切换 session 不断开 WS
 // =============================================================================
+
+bool OpenCodeServer::move_connection(const std::string& conn_id, const std::string& new_sid) {
+    std::shared_ptr<FrameQueue> queue;
+
+    {
+        std::lock_guard lock(sessions_mutex_);
+        for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
+            auto qit = it->second.conns.find(conn_id);
+            if (qit != it->second.conns.end()) {
+                queue = qit->second;
+                it->second.conns.erase(qit);
+                if (it->second.conns.empty())
+                    sessions_.erase(it);
+                break;
+            }
+        }
+        if (queue)
+            sessions_[new_sid].conns[conn_id] = queue;
+    }
+
+    if (!queue) return false;
+    queue->push(acp::connected_frame(conn_id));
+    return true;
+}
 
 void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
@@ -402,31 +450,11 @@ void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Res
         if (!session_store_.load_session(new_sid))
             session_store_.create_session_with_id(new_sid);
 
-        std::shared_ptr<FrameQueue> queue;
-
-        {
-            std::lock_guard lock(sessions_mutex_);
-            for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
-                auto qit = it->second.conns.find(conn_id);
-                if (qit != it->second.conns.end()) {
-                    queue = qit->second;
-                    it->second.conns.erase(qit);
-                    if (it->second.conns.empty())
-                        sessions_.erase(it);
-                    break;
-                }
-            }
-            if (queue)
-                sessions_[new_sid].conns[conn_id] = queue;
-        }
-
-        if (!queue) {
+        if (!move_connection(conn_id, new_sid)) {
             res.status = 400;
             res.set_content(R"({"error":"conn_id not found"})", "application/json");
             return;
         }
-
-        queue->push(acp::connected_frame(conn_id));
 
         res.set_content(R"({"status":"ok"})", "application/json");
     } catch (const std::exception& e) {

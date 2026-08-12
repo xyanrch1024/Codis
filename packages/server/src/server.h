@@ -94,7 +94,6 @@ private:
     void handle_health(const httplib::Request& req, httplib::Response& res);
     void handle_info(const httplib::Request& req, httplib::Response& res);
     void handle_chat(const httplib::Request& req, httplib::Response& res);
-    void handle_acp(const httplib::Request& req, httplib::Response& res);
     void handle_acp_ws(const httplib::Request& req, httplib::ws::WebSocket& ws);
     void handle_acp_switch(const httplib::Request& req, httplib::Response& res);
     void handle_balance(const httplib::Request& req, httplib::Response& res);
@@ -110,6 +109,11 @@ private:
     std::shared_ptr<LLMProvider> resolve_provider(const ChatRequest& req);
     std::vector<ToolCall> extract_tool_calls(const std::string& content);
 
+    // 全双工入口：追加 user 消息 → processing/pending 检查 → 启动 ACP 循环
+    void queue_chat_request(const std::string& session_id,
+                            const std::string& conn_id, ChatRequest req);
+    // 把 conn_id 从当前 session 移到目标 session，返回是否成功
+    bool move_connection(const std::string& conn_id, const std::string& new_sid);
     void run_acp_loop_broadcast(const std::string& session_id,
                                  const std::string& conn_id, ChatRequest req);
     void cleanup_connection(const std::string& session_id, const std::string& conn_id);

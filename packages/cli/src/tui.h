@@ -181,6 +181,7 @@ private:
     AcpClient acp_;
     std::shared_ptr<TuiState> state_;
     std::function<void()> post_job_;
+    std::function<void()> exit_loop_;  // run() 内设置为 screen.ExitLoopClosure()
 
     // Session overlay
     bool sessions_visible_ = false;

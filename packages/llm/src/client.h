@@ -4,6 +4,7 @@
 #include <string_view>
 #include <functional>
 #include <memory>
+#include <map>
 
 #include <nlohmann/json.hpp>
 #include <httplib.h>
@@ -31,7 +32,12 @@ public:
                      ReasoningCallback on_reasoning = nullptr);
 
 private:
-    void parse_sse_line(const std::string& line, TokenCallback& on_token);
+    // 解析一条 SSE 行；遇到 [DONE] 返回 false。delta 实时回调。
+    bool parse_sse_line(const std::string& line,
+                        std::map<int, json>& tool_calls,
+                        std::string& reasoning,
+                        TokenCallback& on_token,
+                        ReasoningCallback& on_reasoning);
 };
 
 } // namespace opencode

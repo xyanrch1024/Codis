@@ -100,8 +100,7 @@ int TuiClient::run() {
                          (item.streaming ? color(Color::GreenLight) : color(Color::Green));
                     break;
                 case ItemKind::Reasoning: {
-                    auto txt = opencode::truncate_tool_output(item.text, 8, 300);
-                    el = text("· " + txt) | color(Color::GrayDark) | dim;
+                    el = text("· " + item.text) | color(Color::GrayDark) | dim;
                     break;
                 }
                 case ItemKind::ToolCall:
@@ -250,6 +249,29 @@ int TuiClient::run() {
             return true;
         }
 
+        // 鼠标滚轮滚动（与 ↑↓ 同语义）
+        if (event.is_mouse() && event.mouse().button == Mouse::WheelUp) {
+            if (auto_scroll_) {
+                auto_scroll_ = false;
+                scroll_item_ = std::max(0, (int)state_->items.size() - 1);
+            } else if (scroll_item_ > 0) {
+                scroll_item_--;
+            }
+            post_job_();
+            return true;
+        }
+        if (event.is_mouse() && event.mouse().button == Mouse::WheelDown) {
+            if (scroll_item_ >= 0) {
+                scroll_item_++;
+                if (scroll_item_ >= (int)state_->items.size()) {
+                    scroll_item_ = -1;
+                    auto_scroll_ = true;
+                }
+            }
+            post_job_();
+            return true;
+        }
+
         if (event == Event::CtrlS) {
             session_list_ = acp_.list_sessions();
             session_selected_ = 0;
@@ -265,6 +287,8 @@ int TuiClient::run() {
     });
 
     input->TakeFocus();
+    screen.TrackMouse(true);  // 开启鼠标追踪：滚轮滚动生效；复制改用 Shift+拖拽
+    exit_loop_ = screen.ExitLoopClosure();
     screen.Loop(component);
 
     acp_.disconnect();
@@ -273,7 +297,10 @@ int TuiClient::run() {
 
 void TuiClient::send_message(const std::string& text) {
     if (text == "/exit") {
-        std::exit(0);
+        // 退出 FTXUI 事件循环，让 run() 走完 acp_.disconnect() + 终端恢复，
+        // 而非 std::exit() 直接杀掉进程（后者会留下 raw 终端/挂起线程）
+        if (exit_loop_) exit_loop_();
+        return;
     }
     if (text == "/clear") {
         cmd_clear();

@@ -1,5 +1,6 @@
 #include "acp_client.h"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <chrono>
@@ -23,20 +24,59 @@ bool AcpClient::health_check() {
 }
 
 bool AcpClient::send_async(const ChatRequest& request) {
-    httplib::Headers headers = {{"Content-Type", "application/json"}};
-    auto req_json = request.to_json();
-    if (!request.session_id.empty()) req_json["session_id"] = request.session_id;
-    if (!conn_id_.empty()) req_json["conn_id"] = conn_id_;
-    auto res = http_->Post("/api/v1/acp", headers, req_json.dump(), "application/json");
-    LOG_INFO("send_async session={} conn={} status={}",
-             request.session_id.substr(0, 8), conn_id_.empty() ? "(none)" : conn_id_.substr(0, 8),
-             res ? std::to_string(res->status) : "no-response");
-    return res && (res->status == 200 || res->status == 202);
+    auto frame = acp::request_frame(request);
+
+    {
+        std::lock_guard lock(ws_mutex_);
+        if (ws_ && ws_->is_open()) {
+            bool ok = ws_->send(frame);
+            LOG_DEBUG("send_async over WS session={} conn={} ok={}",
+                      request.session_id.substr(0, 8), conn_id_.empty() ? "(none)" : conn_id_.substr(0, 8), ok);
+            return ok;
+        }
+    }
+
+    // WS 未就绪（未连接/重连中）：入队，connect 成功后 flush，不丢消息
+    LOG_INFO("send_async queued (WS not ready) session={} conn={}",
+             request.session_id.substr(0, 8), conn_id_.empty() ? "(none)" : conn_id_.substr(0, 8));
+    {
+        std::lock_guard lock(pending_mutex_);
+        pending_outbound_.push_back(std::move(frame));
+    }
+    return true;
 }
 
 // =============================================================================
 // 长连接模式 — 后台 WebSocket 线程, 实时接收广播
 // =============================================================================
+
+void AcpClient::flush_pending() {
+    std::deque<std::string> queued;
+    {
+        std::lock_guard lock(pending_mutex_);
+        queued.swap(pending_outbound_);
+    }
+    if (queued.empty()) return;
+
+    std::lock_guard lock(ws_mutex_);
+    if (!ws_ || !ws_->is_open()) {
+        // 仍未就绪：放回队首，等下一次 flush
+        std::lock_guard plock(pending_mutex_);
+        for (auto it = queued.rbegin(); it != queued.rend(); ++it)
+            pending_outbound_.push_front(*it);
+        return;
+    }
+    for (auto& frame : queued) {
+        LOG_INFO("flush pending request ({} bytes)", frame.size());
+        if (!ws_->send(frame)) {
+            LOG_WARN("flush pending request failed, requeueing");
+            std::lock_guard plock(pending_mutex_);
+            for (auto it = std::find(queued.begin(), queued.end(), frame); it != queued.end(); ++it)
+                pending_outbound_.push_front(*it);
+            return;
+        }
+    }
+}
 
 bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
     if (connected_) return false;
@@ -97,6 +137,12 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                 case acp::EventType::connected:
                     conn_id_ = event->data.value("conn_id", "");
                     LOG_INFO("WS connected, conn_id={}", conn_id_);
+                    flush_pending();
+                    break;
+                case acp::EventType::request:
+                case acp::EventType::switch_session:
+                    // 客户端不会收到这两类帧（上行专用）
+                    LOG_WARN("WS received uplink-only frame: {}", acp::to_string(event->type));
                     break;
                 case acp::EventType::assistant:
                     LOG_DEBUG("WS assistant delta ({} bytes)", event->data.value("delta", "").size());
@@ -232,10 +278,24 @@ std::string AcpClient::get_last_session() {
 }
 
 bool AcpClient::switch_session(const std::string& session_id) {
-    json body = {{"conn_id", conn_id_}, {"session_id", session_id}};
-    httplib::Headers headers = {{"Content-Type", "application/json"}};
-    auto res = http_->Post("/api/v1/acp/switch", headers, body.dump(), "application/json");
-    return res && res->status == 200;
+    auto frame = acp::switch_frame(session_id);
+
+    {
+        std::lock_guard lock(ws_mutex_);
+        if (ws_ && ws_->is_open()) {
+            bool ok = ws_->send(frame);
+            LOG_DEBUG("switch_session over WS target={} ok={}", session_id.substr(0, 8), ok);
+            return ok;
+        }
+    }
+
+    // WS 未就绪：入队，connect 成功后按序补发
+    LOG_INFO("switch_session queued (WS not ready) target={}", session_id.substr(0, 8));
+    {
+        std::lock_guard lock(pending_mutex_);
+        pending_outbound_.push_back(std::move(frame));
+    }
+    return true;
 }
 
 } // namespace opencode
