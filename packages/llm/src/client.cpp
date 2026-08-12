@@ -14,7 +14,9 @@ void LLMHttpClient::stream_post(const std::string& url,
                                 TokenCallback on_token,
                                 DoneCallback on_done,
                                 int timeout_seconds,
-                                bool non_stream)
+                                bool non_stream,
+                                std::string* reasoning_out,
+                                ReasoningCallback on_reasoning)
 {
     httplib::Headers headers = {
         {"Authorization", "Bearer " + api_key},
@@ -70,12 +72,15 @@ void LLMHttpClient::stream_post(const std::string& url,
         try {
             auto j = json::parse(res->body);
             std::string content;
+            std::string reasoning;
 
             // OpenAI 格式
             if (j.contains("choices") && !j["choices"].empty()) {
                 auto& msg = j["choices"][0]["message"];
                 if (msg.contains("content") && msg["content"].is_string())
                     content = msg["content"].get<std::string>();
+                if (msg.contains("reasoning_content") && msg["reasoning_content"].is_string())
+                    reasoning = msg["reasoning_content"].get<std::string>();
             }
             // Anthropic 格式
             if (j.contains("content") && j["content"].is_array() && !j["content"].empty()) {
@@ -84,6 +89,7 @@ void LLMHttpClient::stream_post(const std::string& url,
                     content = c["text"].get<std::string>();
             }
 
+            if (reasoning_out) *reasoning_out = std::move(reasoning);
             if (on_done) on_done(content, true, "");
         } catch (const json::parse_error& e) {
             if (on_done) on_done("", false, "JSON parse error: " + std::string(e.what()));
@@ -110,6 +116,7 @@ void LLMHttpClient::stream_post(const std::string& url,
 
     // 收集 API 原生 tool_calls（按 index 分组）
     std::map<int, json> tool_calls;
+    std::string reasoning;  // 思维链增量（GLM 等），不计入 content
 
     // 逐行解析 SSE
     std::string_view body_view = res->body;
@@ -132,6 +139,14 @@ void LLMHttpClient::stream_post(const std::string& url,
                     if (choice.contains("delta") && choice["delta"].contains("content")) {
                         auto& c = choice["delta"]["content"];
                         if (c.is_string() && on_token) on_token(c.get<std::string>());
+                    }
+                    if (choice.contains("delta") && choice["delta"].contains("reasoning_content")) {
+                        auto& rc = choice["delta"]["reasoning_content"];
+                        if (rc.is_string()) {
+                            auto delta = rc.get<std::string>();
+                            reasoning += delta;
+                            if (on_reasoning) on_reasoning(delta);
+                        }
                     }
                     if (choice.contains("delta") && choice["delta"].contains("tool_calls")) {
                         for (auto& tc : choice["delta"]["tool_calls"]) {
@@ -174,6 +189,7 @@ void LLMHttpClient::stream_post(const std::string& url,
         if (on_token) on_token(wrapper.dump());
     }
 
+    if (reasoning_out) *reasoning_out = std::move(reasoning);
     if (on_done) on_done("", true, "");
 }
 

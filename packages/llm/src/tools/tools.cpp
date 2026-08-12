@@ -91,7 +91,12 @@ ToolResult BashTool::execute(const ToolCall& call) {
                  output.substr(output.size() - 32000);
     }
 
-    bool success = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    bool success = WIFEXITED(status) && exit_code == 0;
+    // 无输出时给出明确反馈，避免 LLM 无法判断成败而重复执行
+    if (output.empty())
+        output = "(exit code: " + std::to_string(exit_code) +
+                 (success ? ", no output)" : ")");
     return {call.id, success, output};
 }
 

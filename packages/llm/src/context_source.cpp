@@ -197,7 +197,11 @@ ContextSource tools_source(std::function<std::vector<ToolSchema>()> tool_fn) {
             oss << "Do NOT describe what you will do — just output the tool call JSON directly.\n";
             oss << "Format:\n";
             oss << "```json\n{\"tool_calls\": [{\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}}]\n```\n";
-            oss << "After receiving the result, continue the conversation.";
+            oss << "Rules for finishing:\n";
+            oss << "- Use a tool only when an action is required (running commands, reading/writing files, searching).\n";
+            oss << "- After receiving a tool result, continue the next action, or if the task is done, reply to the user in plain text.\n";
+            oss << "- NEVER call a tool just to send a message, summary, or final answer — final answers must be normal text.\n";
+            oss << "- If the user's request has already been fulfilled, stop calling tools and write the final answer directly.";
             return {.raw = arr, .rendered = oss.str()};
         },
         .render = [](const ContextValue& v) { return v.rendered; }

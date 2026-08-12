@@ -43,14 +43,16 @@ public:
                 result.error = std::move(error);
             },
             60,
-            true
+            true,
+            &result.reasoning_content
         );
 
         LOG_DEBUG("{}::chat result success={} content_len={}", name_, result.success, result.content.size());
         return result;
     }
 
-    ChatResponse stream_chat(const ChatRequest& req, TokenCallback on_token) override {
+    ChatResponse stream_chat(const ChatRequest& req, TokenCallback on_token,
+                             ReasoningCallback on_reasoning = nullptr) override {
         ChatResponse result;
         LOG_DEBUG("{}::stream_chat model={}", name_, req.model);
 
@@ -68,7 +70,10 @@ public:
                 result.success = success;
                 result.error = std::move(error);
             },
-            120
+            120,
+            false,
+            &result.reasoning_content,
+            std::move(on_reasoning)
         );
 
         return result;
@@ -86,10 +91,12 @@ private:
             if (m.tool_call_id) {
                 msg["tool_call_id"] = *m.tool_call_id;
                 if (m.tool_name) {
+                    std::string args_str = "{}";
+                    if (m.tool_arguments) args_str = m.tool_arguments->dump();
                     msg["tool_calls"] = json::array({{
                         {"id", *m.tool_call_id},
                         {"type", "function"},
-                        {"function", {{"name", *m.tool_name}, {"arguments", "{}"}}}
+                        {"function", {{"name", *m.tool_name}, {"arguments", args_str}}}
                     }});
                 }
             }

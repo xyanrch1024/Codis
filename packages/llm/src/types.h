@@ -38,7 +38,7 @@ struct Message {
 };
 
 struct ChatRequest {
-    std::string provider = "openai";
+    std::string provider;            // 空 = 使用 server 配置的 default_provider
     std::string model = "gpt-4o";
     std::string session_id;
     std::vector<Message> messages;
@@ -49,7 +49,7 @@ struct ChatRequest {
 
     json to_json() const {
         json j;
-        j["provider"] = provider;
+        if (!provider.empty()) j["provider"] = provider;
         j["model"] = model;
         j["messages"] = json::array();
         for (auto& m : messages) j["messages"].push_back(m.to_json());
@@ -62,7 +62,7 @@ struct ChatRequest {
 
     static ChatRequest from_json(const json& j) {
         ChatRequest r;
-        r.provider    = j.value("provider", "openai");
+        if (j.contains("provider")) r.provider = j["provider"].get<std::string>();
         r.model       = j.value("model", "gpt-4o");
         r.max_tokens  = j.contains("max_tokens")  ? std::optional(j["max_tokens"].get<int>())  : std::nullopt;
         r.temperature = j.contains("temperature") ? std::optional(j["temperature"].get<double>()) : std::nullopt;
@@ -77,6 +77,7 @@ struct ChatRequest {
 
 struct ChatResponse {
     std::string content;
+    std::string reasoning_content;  // 思维链（GLM 等模型），解析层透传
     bool success = false;
     std::string error;
 };

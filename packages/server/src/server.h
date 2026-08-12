@@ -28,10 +28,10 @@
 namespace opencode {
 
 // =============================================================================
-// SSE 帧缓冲队列
+// 每连接帧缓冲队列（ACP 循环 push，WS 发送线程 pop）
 // =============================================================================
 
-class SseFrameQueue {
+class FrameQueue {
 public:
     void push(std::string frame);
     std::string pop();
@@ -66,7 +66,7 @@ private:
 // =============================================================================
 
 struct SessionState {
-    std::unordered_map<std::string, std::shared_ptr<SseFrameQueue>> conns;
+    std::unordered_map<std::string, std::shared_ptr<FrameQueue>> conns;
     std::mutex mutex;
     std::atomic<bool> processing{false};
 };
@@ -93,7 +93,7 @@ private:
     void handle_info(const httplib::Request& req, httplib::Response& res);
     void handle_chat(const httplib::Request& req, httplib::Response& res);
     void handle_acp(const httplib::Request& req, httplib::Response& res);
-    void handle_acp_stream(const httplib::Request& req, httplib::Response& res);
+    void handle_acp_ws(const httplib::Request& req, httplib::ws::WebSocket& ws);
     void handle_acp_switch(const httplib::Request& req, httplib::Response& res);
     void handle_balance(const httplib::Request& req, httplib::Response& res);
     void handle_session_create(const httplib::Request& req, httplib::Response& res);

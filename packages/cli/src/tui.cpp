@@ -1,5 +1,6 @@
 #include "tui.h"
 #include "log.h"
+#include "tool_format.h"
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
@@ -48,20 +49,19 @@ int TuiClient::run() {
     if (!session_arg_.empty()) {
         auto info = acp_.get_session(state_->current_session);
         if (info) {
-            std::lock_guard lk(state_->mutex);
             for (auto& m : info->messages) {
                 if (m.role == "user") {
-                    state_->lines.push_back("You: " + m.content);
+                    state_->add_item(ItemKind::User, m.content);
                     state_->history.push_back(m);
                 } else if (m.role == "assistant") {
-                    state_->lines.push_back("AI: " + m.content);
+                    state_->add_item(ItemKind::Assistant, m.content);
                     state_->history.push_back(m);
                 }
             }
         }
         // 首次 TUI 渲染时自动滚动到底部
         auto_scroll_ = true;
-        scroll_line_ = -1;
+        scroll_item_ = -1;
     }
 
     // 输入组件
@@ -82,26 +82,43 @@ int TuiClient::run() {
 
     // 对话区
     auto conversation_view = Renderer([&] {
+        // 单线程消费 WS 事件：先吞队列，再构建视图
+        state_->drain_events();
+
         Elements els;
         {
-            std::lock_guard lk(state_->mutex);
-            for (size_t i = 0; i < state_->lines.size(); i++) {
-                auto& line = state_->lines[i];
-                Element el = text(line);
-                if (line.starts_with("You: "))
-                    el = el | color(Color::Cyan);
-                else if (line.starts_with("AI: "))
-                    el = el | color(Color::Green);
-                else if (line.starts_with("[Tool"))
-                    el = el | color(Color::Yellow) | dim;
-                else if (line.starts_with("[Result"))
-                    el = el | color(Color::Yellow);
-                else if (line.starts_with("[Error"))
-                    el = el | color(Color::Red);
+            for (auto& item : state_->items) {
+                Element el;
+                switch (item.kind) {
+                case ItemKind::User:
+                    el = paragraph("You: " + item.text) | color(Color::Cyan);
+                    break;
+                case ItemKind::Assistant:
+                    el = paragraph("AI: " + item.text) |
+                         (item.streaming ? color(Color::GreenLight) : color(Color::Green));
+                    break;
+                case ItemKind::Reasoning: {
+                    auto txt = opencode::truncate_tool_output(item.text, 8, 300);
+                    el = text("· " + txt) | color(Color::GrayDark) | dim;
+                    break;
+                }
+                case ItemKind::ToolCall:
+                    el = text("▸ " + item.text) | color(Color::Yellow);
+                    break;
+                case ItemKind::ToolResult: {
+                    auto txt = opencode::truncate_tool_output(item.text);
+                    el = text(txt) | color(Color::GrayLight);
+                    break;
+                }
+                case ItemKind::Error:
+                    el = text(item.text) | color(Color::Red);
+                    break;
+                case ItemKind::Status:
+                    el = text(item.text) | dim;
+                    break;
+                }
                 els.push_back(std::move(el));
             }
-            if (!state_->pending.empty())
-                els.push_back(text("AI: " + state_->pending) | color(Color::GreenLight));
         }
 
         int total = (int)els.size();
@@ -110,11 +127,10 @@ int TuiClient::run() {
         // focusPositionRelative 控制 frame 滚动到内容的指定比例位置
         // focus() 对单行 text() 元素无效（focused.box.y_min 始终为 0，dy=0）
         // focusPositionRelative(0, 1) 滚动到底部（auto-scroll）
-        // focusPositionRelative(0, scroll_line_/N) 滚动到指定行（手动滚动）
-        if (auto_scroll_ || scroll_line_ < 0) {
+        if (auto_scroll_ || scroll_item_ < 0) {
             content = content | focusPositionRelative(0.f, 1.f);
         } else {
-            float frac = (float)scroll_line_ / std::max(1, total);
+            float frac = (float)scroll_item_ / std::max(1, total);
             content = content | focusPositionRelative(0.f, frac);
         }
 
@@ -180,12 +196,9 @@ int TuiClient::run() {
                 session_list_ = acp_.list_sessions();
                 if (session_list_.empty()) {
                     sessions_visible_ = false;
-                    state_->add_line("[Last session deleted, creating new...]");
                     auto sid = acp_.create_session();
                     if (sid) {
-                        state_->lines.clear();
-                        state_->pending.clear();
-                        state_->history.clear();
+                        state_->clear_all();
                         state_->current_session = *sid;
                     }
                 } else {
@@ -193,11 +206,9 @@ int TuiClient::run() {
                     if (was_current) {
                         auto sid = acp_.create_session();
                         if (sid) {
-                            state_->lines.clear();
-                            state_->pending.clear();
-                            state_->history.clear();
+                            state_->clear_all();
                             state_->current_session = *sid;
-                            state_->add_line("[Session " + s.id + " deleted, new session created]");
+                            state_->add_item(ItemKind::Status, "[Session " + s.id + " deleted, new session created]");
                         }
                     }
                 }
@@ -214,26 +225,22 @@ int TuiClient::run() {
             return true;
         }
 
-        // 对话区上下滚动
+        // 对话区上下滚动（按 item 索引）
         if (event == Event::ArrowUp) {
             if (auto_scroll_) {
                 auto_scroll_ = false;
-                scroll_line_ = (int)state_->lines.size();
-                if (!state_->pending.empty()) scroll_line_++;
-                scroll_line_ = std::max(0, scroll_line_ - 1);
-            } else if (scroll_line_ > 0) {
-                scroll_line_--;
+                scroll_item_ = std::max(0, (int)state_->items.size() - 1);
+            } else if (scroll_item_ > 0) {
+                scroll_item_--;
             }
             post_job_();
             return true;
         }
         if (event == Event::ArrowDown) {
-            if (scroll_line_ >= 0) {
-                scroll_line_++;
-                int max_line = (int)state_->lines.size();
-                if (!state_->pending.empty()) max_line++;
-                if (scroll_line_ >= max_line) {
-                    scroll_line_ = -1;
+            if (scroll_item_ >= 0) {
+                scroll_item_++;
+                if (scroll_item_ >= (int)state_->items.size()) {
+                    scroll_item_ = -1;
                     auto_scroll_ = true;
                 }
             }
@@ -282,11 +289,9 @@ void TuiClient::send_message(const std::string& text) {
     if (text.starts_with("/newsession")) {
         auto sid = acp_.create_session();
         if (sid) {
-            state_->lines.clear();
-            state_->pending.clear();
-            state_->history.clear();
+            state_->clear_all();
             state_->current_session = *sid;
-            state_->add_line("[New session created: " + *sid + "]");
+            state_->add_item(ItemKind::Status, "[New session created: " + *sid + "]");
         }
         return;
     }
@@ -295,10 +300,10 @@ void TuiClient::send_message(const std::string& text) {
         return;
     }
 
-    state_->add_line("You: " + text);
+    state_->add_item(ItemKind::User, text);
     state_->processing = true;
     auto_scroll_ = true;
-    scroll_line_ = -1;
+    scroll_item_ = -1;
     post_job_();
 
     state_->history.push_back({"user", text});
@@ -318,17 +323,14 @@ void TuiClient::send_message(const std::string& text) {
 }
 
 void TuiClient::cmd_clear() {
-    std::lock_guard lk(state_->mutex);
-    state_->lines.clear();
-    state_->pending.clear();
-    state_->history.clear();
+    state_->clear_all();
     if (post_job_) post_job_();
 }
 
 void TuiClient::cmd_delete_all() {
     acp_.delete_all_sessions();
     cmd_clear();
-    state_->add_line("[All sessions deleted]");
+    state_->add_item(ItemKind::Status, "[All sessions deleted]");
     if (post_job_) post_job_();
 }
 
@@ -349,15 +351,15 @@ void TuiClient::cmd_balance(const std::string& line) {
 
     auto http_res = client.Get(("/api/v1/balance/" + prov).c_str());
     if (!http_res) {
-        state_->add_line("[Error] Server unreachable: " + httplib::to_string(http_res.error()));
+        state_->add_item(ItemKind::Status, "[Error] Server unreachable: " + httplib::to_string(http_res.error()));
         return;
     }
     if (http_res->status != 200) {
         try {
             auto j = opencode::json::parse(http_res->body);
-            state_->add_line("[Error] " + j.value("error", http_res->body));
+            state_->add_item(ItemKind::Status, "[Error] " + j.value("error", http_res->body));
         } catch (...) {
-            state_->add_line("[Error] HTTP " + std::to_string(http_res->status) + ": " + http_res->body.substr(0, 200));
+            state_->add_item(ItemKind::Status, "[Error] HTTP " + std::to_string(http_res->status) + ": " + http_res->body.substr(0, 200));
         }
         return;
     }
@@ -365,23 +367,23 @@ void TuiClient::cmd_balance(const std::string& line) {
     try {
         auto j = opencode::json::parse(http_res->body);
         auto& bal = j["balance"];
-        state_->add_line("--- " + prov + " Balance ---");
+        state_->add_item(ItemKind::Status, "--- " + prov + " Balance ---");
 
         if (bal.contains("balance_infos") && !bal["balance_infos"].empty()) {
             for (auto& bi : bal["balance_infos"]) {
-                state_->add_line("  Total:   " + bi.value("total_balance", "N/A"));
-                state_->add_line("  Topped:  " + bi.value("topped_up_balance", "N/A"));
-                state_->add_line("  Granted: " + bi.value("granted_balance", "N/A"));
+                state_->add_item(ItemKind::Status, "  Total:   " + bi.value("total_balance", "N/A"));
+                state_->add_item(ItemKind::Status, "  Topped:  " + bi.value("topped_up_balance", "N/A"));
+                state_->add_item(ItemKind::Status, "  Granted: " + bi.value("granted_balance", "N/A"));
             }
         } else {
-            state_->add_line("  Response: " + bal.dump(2));
+            state_->add_item(ItemKind::Status, "  Response: " + bal.dump(2));
         }
 
         if (bal.contains("is_available")) {
-            state_->add_line("  Active:  " + std::string(bal["is_available"].get<bool>() ? "Yes" : "No"));
+            state_->add_item(ItemKind::Status, "  Active:  " + std::string(bal["is_available"].get<bool>() ? "Yes" : "No"));
         }
     } catch (const std::exception& e) {
-        state_->add_line("[Error] Parse failed: " + std::string(e.what()));
+        state_->add_item(ItemKind::Status, "[Error] Parse failed: " + std::string(e.what()));
     }
 }
 
@@ -389,23 +391,42 @@ AcpClient::Callbacks TuiClient::build_callbacks() {
     return {
         .on_assistant = [this](std::string_view delta) {
             LOG_DEBUG("SSE delta: {}", delta);
-            state_->append_pending(std::string(delta));
-            //state_->flush_pending();
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::AssistantDelta;
+            ev.text = std::string(delta);
+            state_->push_event(ev);
+        },
+        .on_reasoning = [this](std::string_view delta) {
+            LOG_DEBUG("SSE reasoning delta: {}", delta);
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::ReasoningDelta;
+            ev.text = std::string(delta);
+            state_->push_event(ev);
         },
         .on_tool_call = [this](const acp::ToolCallEvent& tc) {
             LOG_DEBUG("SSE tool_call: {}", tc.name);
-            state_->add_line("[Tool: " + tc.name + "]");
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::ToolCall;
+            ev.tool_call = tc;
+            state_->push_event(ev);
         },
         .on_tool_result = [this](const acp::ToolResultEvent& tr) {
             LOG_DEBUG("SSE tool_result: {} success={}", tr.content.substr(0, 100), tr.success);
-            state_->add_line("[Result: " + std::string(tr.success ? "ok" : "fail") + "]");
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::ToolResult;
+            ev.tool_result = tr;
+            state_->push_event(ev);
         },
         .on_error = [this](std::string_view msg) {
-            state_->add_line("[Error: " + std::string(msg) + "]");
-            state_->processing = false;
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::Error;
+            ev.text = std::string(msg);
+            state_->push_event(ev);
         },
         .on_done = [this]() {
-            state_->flush_pending();
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::Done;
+            state_->push_event(ev);
         }
     };
 }
@@ -423,26 +444,21 @@ void TuiClient::switch_session(const SessionInfo& s) {
 
     // 通过 REST API 拉历史
     auto info = acp_.get_session(s.id);
-    {
-        std::lock_guard lk(state_->mutex);
-        state_->lines.clear();
-        state_->pending.clear();
-        state_->history.clear();
-        if (info) {
-            for (auto& m : info->messages) {
-                if (m.role == "user") {
-                    state_->lines.push_back("You: " + m.content);
-                    state_->history.push_back(m);
-                } else if (m.role == "assistant") {
-                    state_->lines.push_back("AI: " + m.content);
-                    state_->history.push_back(m);
-                }
+    state_->clear_all();
+    if (info) {
+        for (auto& m : info->messages) {
+            if (m.role == "user") {
+                state_->add_item(ItemKind::User, m.content);
+                state_->history.push_back(m);
+            } else if (m.role == "assistant") {
+                state_->add_item(ItemKind::Assistant, m.content);
+                state_->history.push_back(m);
             }
         }
     }
     auto_scroll_ = true;
-    scroll_line_ = -1;
-    state_->add_line("[Session: " + s.id + "]");
+    scroll_item_ = -1;
+    state_->add_item(ItemKind::Status, "[Session: " + s.id + "]");
     if (post_job_) post_job_();
 }
 

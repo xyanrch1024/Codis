@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "acp_client.h"
+#include "tool_format.h"
 #include "tui.h"
 #include "log.h"
 
@@ -212,13 +213,18 @@ int main(int argc, char** argv) {
                 std::cout << delta << std::flush;
                 shared_assistant_content.append(delta);
             },
+            .on_reasoning = [&](std::string_view delta) {
+                std::lock_guard lock(cout_mtx);
+                std::cout << "\033[90m" << delta << "\033[0m" << std::flush;
+            },
             .on_tool_call = [&](const acp::ToolCallEvent& tc) {
                 std::lock_guard lock(cout_mtx);
-                std::cout << "\n[Tool: " << tc.name << "]\n";
+                std::cout << "\n" << format_tool_call(tc.name, tc.arguments) << "\n";
             },
             .on_tool_result = [&](const acp::ToolResultEvent& tr) {
                 std::lock_guard lock(cout_mtx);
-                std::cout << "[Result: " << (tr.success ? "ok" : "fail") << "]\n";
+                auto txt = truncate_tool_output(tr.content);
+                if (!txt.empty()) std::cout << txt << "\n";
             },
             .on_error = [&](std::string_view msg) {
                 std::lock_guard lock(cout_mtx);
@@ -238,7 +244,7 @@ int main(int argc, char** argv) {
         std::string line;
         while (true) {
             std::cout << "> " << std::flush;
-            if (!std::getline(std::cin, line)) break;
+            if (!std::getline(std::cin, line)) { acp.disconnect(); break; }
             if (line.empty()) continue;
 
             // ---- 特殊命令 ----

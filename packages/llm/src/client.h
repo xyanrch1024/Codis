@@ -14,8 +14,9 @@ using json = nlohmann::json;
 
 class LLMHttpClient {
 public:
-    using TokenCallback = std::function<void(std::string_view delta)>;
-    using DoneCallback  = std::function<void(std::string content, bool success, std::string error)>;
+    using TokenCallback    = std::function<void(std::string_view delta)>;
+    using ReasoningCallback = std::function<void(std::string_view delta)>;
+    using DoneCallback     = std::function<void(std::string content, bool success, std::string error)>;
 
     LLMHttpClient();
 
@@ -25,7 +26,9 @@ public:
                      TokenCallback on_token,
                      DoneCallback on_done,
                      int timeout_seconds = 60,
-                     bool non_stream = false);
+                     bool non_stream = false,
+                     std::string* reasoning_out = nullptr,
+                     ReasoningCallback on_reasoning = nullptr);
 
 private:
     void parse_sse_line(const std::string& line, TokenCallback& on_token);

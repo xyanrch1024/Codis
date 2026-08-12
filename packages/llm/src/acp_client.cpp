@@ -32,7 +32,7 @@ bool AcpClient::send_async(const ChatRequest& request) {
 }
 
 // =============================================================================
-// 长连接模式 — 后台 SSE 线程, 实时接收广播
+// 长连接模式 — 后台 WebSocket 线程, 实时接收广播
 // =============================================================================
 
 bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
@@ -40,70 +40,88 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
     callbacks_ = std::move(callbacks);
 
     connected_ = true;
+    thread_done_ = false;
     sse_thread_ = std::thread([this, session_id]() {
         int retry_delay = 1;
         int retry_count = 0;
 
         while (connected_) {
             if (retry_count >= 10) {
-                LOG_ERROR("SSE reconnect failed after {} attempts", retry_count);
+                LOG_ERROR("WS reconnect failed after {} attempts", retry_count);
                 if (callbacks_.on_error)
                     callbacks_.on_error("Connection lost, max reconnection attempts reached");
                 break;
             }
-            httplib::Client client(host_, port_);
-            client.set_connection_timeout(5, 0);
-            // read_timeout 不设 — keepalive SSE 永不超时
 
-            // 只发一次 GET，服务端 keepalive 模式不主动断开，数据持续推送
-            client.Get(("/api/v1/acp/stream/" + session_id + "?keepalive=1").c_str(),
-                [&](const char* data, size_t len) {
-                    if (!connected_) return false;
-                    static thread_local std::string buf;
-                    buf.append(data, len);
-                    std::size_t pos;
-                    while ((pos = buf.find('\n')) != std::string::npos) {
-                        auto line = buf.substr(0, pos);
-                        buf.erase(0, pos + 1);
-                        if (line.empty() || line.back() == '\r') line.pop_back();
-                        if (line.empty()) continue;
-                        if (line.starts_with("data: ")) {
-                            auto event = acp::parse_frame(line);
-                            if (!event) continue;
-                            switch (event->type) {
-                            case acp::EventType::connected:
-                                conn_id_ = event->data.value("conn_id", "");
-                                LOG_DEBUG("SSE connected, conn_id={}", conn_id_);
-                                break;
-                            case acp::EventType::assistant:
-                                if (callbacks_.on_assistant) callbacks_.on_assistant(event->data.value("delta", ""));
-                                break;
-                            case acp::EventType::tool_call:
-                                if (callbacks_.on_tool_call) callbacks_.on_tool_call({
-                                    event->data.value("id",""), event->data.value("name",""),
-                                    event->data.value("arguments", acp::json::object())});
-                                break;
-                            case acp::EventType::tool_result:
-                                if (callbacks_.on_tool_result) callbacks_.on_tool_result({
-                                    event->data.value("id",""), event->data.value("success",false),
-                                    event->data.value("content","")});
-                                break;
-                            case acp::EventType::error:
-                                if (callbacks_.on_error) callbacks_.on_error(event->data.value("message",""));
-                                break;
-                            case acp::EventType::done:
-                                if (callbacks_.on_done) callbacks_.on_done();
-                                break;
-                            }
-                        }
-                    }
-                    return true;
-                });
+            auto ws = std::make_unique<httplib::ws::WebSocketClient>(
+                "ws://" + host_ + ":" + std::to_string(port_) +
+                "/api/v1/acp/ws/" + session_id);
+            ws->set_connection_timeout(5, 0);
+            // read_timeout 不设 — keepalive WS 永不超时（心跳由 httplib 处理）
+
+            if (!ws->connect()) {
+                retry_count++;
+                LOG_WARN("WS connect failed ({}/{}), reconnecting in {}s...",
+                         retry_count, 10, retry_delay);
+                if (callbacks_.on_error)
+                    callbacks_.on_error("Connection lost, reconnecting...");
+                std::this_thread::sleep_for(std::chrono::seconds(retry_delay));
+                retry_delay = std::min(retry_delay * 2, 30);
+                continue;
+            }
+
+            {
+                std::lock_guard lock(ws_mutex_);
+                ws_ = std::move(ws);
+            }
+
+            LOG_DEBUG("WS connected, session={}", session_id.substr(0, 8));
+
+            std::string msg;
+            while (connected_) {
+                auto r = ws_->read(msg);
+                if (r == httplib::ws::ReadResult::Fail) break;
+                auto event = acp::parse_frame(msg);
+                if (!event) continue;
+                switch (event->type) {
+                case acp::EventType::connected:
+                    conn_id_ = event->data.value("conn_id", "");
+                    LOG_DEBUG("WS connected, conn_id={}", conn_id_);
+                    break;
+                case acp::EventType::assistant:
+                    if (callbacks_.on_assistant) callbacks_.on_assistant(event->data.value("delta", ""));
+                    break;
+                case acp::EventType::reasoning:
+                    if (callbacks_.on_reasoning) callbacks_.on_reasoning(event->data.value("delta", ""));
+                    break;
+                case acp::EventType::tool_call:
+                    if (callbacks_.on_tool_call) callbacks_.on_tool_call({
+                        event->data.value("id",""), event->data.value("name",""),
+                        event->data.value("arguments", acp::json::object())});
+                    break;
+                case acp::EventType::tool_result:
+                    if (callbacks_.on_tool_result) callbacks_.on_tool_result({
+                        event->data.value("id",""), event->data.value("success",false),
+                        event->data.value("content","")});
+                    break;
+                case acp::EventType::error:
+                    if (callbacks_.on_error) callbacks_.on_error(event->data.value("message",""));
+                    break;
+                case acp::EventType::done:
+                    if (callbacks_.on_done) callbacks_.on_done();
+                    break;
+                }
+            }
+
+            {
+                std::lock_guard lock(ws_mutex_);
+                ws_.reset();
+            }
 
             if (!connected_) break;
 
             retry_count++;
-            LOG_WARN("SSE disconnected, reconnecting ({}/{}) in {}s...",
+            LOG_WARN("WS disconnected, reconnecting ({}/{}) in {}s...",
                      retry_count, 10, retry_delay);
             if (callbacks_.on_error)
                 callbacks_.on_error("Connection lost, reconnecting...");
@@ -111,6 +129,8 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
             std::this_thread::sleep_for(std::chrono::seconds(retry_delay));
             retry_delay = std::min(retry_delay * 2, 30);
         }
+
+        thread_done_ = true;
     });
 
     return true;
@@ -118,7 +138,20 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
 
 void AcpClient::disconnect() {
     connected_ = false;
-    if (sse_thread_.joinable()) sse_thread_.join();
+    {
+        // 关闭 WS 使阻塞的 read() 返回，唤醒后台线程
+        std::lock_guard lock(ws_mutex_);
+        if (ws_) ws_->close();
+    }
+    if (sse_thread_.joinable()) {
+        // 有界等待：httplib close() 跨线程有读竞争，超时则 detach，避免挂死
+        for (int i = 0; i < 80 && !thread_done_.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (thread_done_.load())
+            sse_thread_.join();
+        else
+            sse_thread_.detach();
+    }
 }
 
 std::optional<std::string> AcpClient::create_session() {

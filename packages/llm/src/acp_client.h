@@ -27,6 +27,7 @@ class AcpClient {
 public:
     // 事件回调
     using AssistantCallback = std::function<void(std::string_view delta)>;
+    using ReasoningCallback = std::function<void(std::string_view delta)>;
     using ToolCallCallback  = std::function<void(const acp::ToolCallEvent&)>;
     using ToolResultCallback= std::function<void(const acp::ToolResultEvent&)>;
     using ErrorCallback     = std::function<void(std::string_view message)>;
@@ -34,6 +35,7 @@ public:
 
     struct Callbacks {
         AssistantCallback   on_assistant;
+        ReasoningCallback   on_reasoning;
         ToolCallCallback    on_tool_call;
         ToolResultCallback  on_tool_result;
         ErrorCallback       on_error;
@@ -45,7 +47,7 @@ public:
     // fire-and-forget: 只发送消息，不等待回复
     bool send_async(const ChatRequest& request);
 
-    // 长连接模式：打开 SSE 流，后台持续回调
+    // 长连接模式：打开 WebSocket 流，后台持续回调
     bool connect(const std::string& session_id, Callbacks callbacks);
     void disconnect();
 
@@ -62,13 +64,14 @@ public:
     std::string get_last_session();
 
 private:
-    void parse_and_dispatch(const std::string& sse_data, Callbacks& cbs);
-
     std::string host_;
     int port_;
     std::unique_ptr<httplib::Client> http_;
     std::thread sse_thread_;
     std::atomic<bool> connected_{false};
+    std::atomic<bool> thread_done_{true};
+    std::mutex ws_mutex_;
+    std::unique_ptr<httplib::ws::WebSocketClient> ws_;
     Callbacks callbacks_;
     std::string conn_id_;
 };
