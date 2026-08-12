@@ -75,7 +75,9 @@ public:
             file, line, msg);
 
         std::lock_guard lock(mutex_);
-        std::cerr << line_str;
+        // 配置了 OPENCODE_LOG_FILE 时只写文件不写 stderr，
+        // 避免全屏 TUI（备用屏幕缓冲）被日志文字污染
+        if (!file_.is_open()) std::cerr << line_str;
         if (file_.is_open()) file_ << line_str << std::flush;
     }
 

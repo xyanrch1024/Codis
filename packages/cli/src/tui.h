@@ -3,6 +3,7 @@
 #include "acp_client.h"
 #include "types.h"
 #include "tool_format.h"
+#include "log.h"
 
 #include <string>
 #include <vector>
@@ -45,6 +46,18 @@ struct AcpEvent {
     acp::ToolResultEvent tool_result;         // Kind == ToolResult
 };
 
+inline const char* acp_event_kind_str(AcpEvent::Kind k) {
+    switch (k) {
+        case AcpEvent::Kind::AssistantDelta: return "AssistantDelta";
+        case AcpEvent::Kind::ReasoningDelta: return "ReasoningDelta";
+        case AcpEvent::Kind::ToolCall:       return "ToolCall";
+        case AcpEvent::Kind::ToolResult:     return "ToolResult";
+        case AcpEvent::Kind::Error:          return "Error";
+        case AcpEvent::Kind::Done:           return "Done";
+    }
+    return "?";
+}
+
 struct TuiState {
     std::vector<ConvItem> items;     // 仅 UI 线程修改
     std::vector<Message> history;    // 用于构建请求
@@ -79,6 +92,8 @@ struct TuiState {
         {
             std::lock_guard lk(mutex);
             queue_.push_back(ev);
+            LOG_DEBUG("push_event queued kind={} queue_size={}",
+                      acp_event_kind_str(ev.kind), queue_.size());
         }
         if (notify_) notify_();
     }
@@ -90,6 +105,7 @@ struct TuiState {
             std::lock_guard lk(mutex);
             batch.swap(queue_);
         }
+        LOG_DEBUG("drain_events batch={}", batch.size());
         for (auto& ev : batch) apply_event(ev);
     }
 
@@ -98,6 +114,7 @@ private:
     bool pending_streaming_ = false;
 
     void apply_event(const AcpEvent& ev) {
+        LOG_DEBUG("apply_event kind={} items={}", acp_event_kind_str(ev.kind), items.size());
         switch (ev.kind) {
         case AcpEvent::Kind::AssistantDelta:
             if (pending_streaming_ && !items.empty()) {

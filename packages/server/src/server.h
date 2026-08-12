@@ -21,6 +21,7 @@
 #include <format>
 #include <shared_mutex>
 #include <queue>
+#include <deque>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
@@ -69,6 +70,7 @@ struct SessionState {
     std::unordered_map<std::string, std::shared_ptr<FrameQueue>> conns;
     std::mutex mutex;
     std::atomic<bool> processing{false};
+    std::deque<ChatRequest> pending;  // 处理期间到达的请求，当前轮结束后按序补跑
 };
 
 // =============================================================================

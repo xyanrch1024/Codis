@@ -8,6 +8,7 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <sys/socket.h>
 
 namespace opencode {
 
@@ -96,6 +97,14 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
     // SSE 长连接不能因为空闲被断
     server_->set_keep_alive_timeout(0);
 
+    // 默认 socket 选项用 SO_REUSEPORT，会让两个进程同端口共存并把新连接分流——
+    // WS 长连接和 HTTP 请求被分到不同进程时消息会静默丢失。
+    // 只保留 SO_REUSEADDR（允许 TIME_WAIT 重用），第二个实例 bind 时直接失败。
+    server_->set_socket_options([](int sock) {
+        int one = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    });
+
     if (config_path && !config_path->empty()) {
         config_ = AppConfig::load(*config_path);
     }
@@ -172,7 +181,12 @@ void OpenCodeServer::start() {
         for (auto& p : provider_registry_.list()) LOG_INFO("  provider: {}", p);
         for (auto& t : tool_registry_.list()) LOG_INFO("  tool: {}", t);
         LOG_INFO("  default provider: {}", provider_registry_.default_name());
-        server_->listen("127.0.0.1", port_);
+        if (!server_->listen("127.0.0.1", port_)) {
+            // bind 失败（端口被占用）：错误退出而非静默空转
+            LOG_ERROR("Failed to bind port {} — address already in use? "
+                      "Another opencode-server may already be listening. Exiting.", port_);
+            std::_Exit(1);
+        }
     });
 }
 void OpenCodeServer::stop() {
@@ -304,12 +318,15 @@ void OpenCodeServer::handle_acp(const httplib::Request& req, httplib::Response& 
             }
 
             // 检查是否有 LLM 正在运行（按 session）
+            // 运行中则排队，当前轮结束后自动补跑，避免消息被静默丢弃
             bool should_run = false;
             {
                 std::lock_guard lock(sessions_mutex_);
                 auto& state = sessions_[sid];
                 if (!state.processing.exchange(true))
                     should_run = true;
+                else
+                    state.pending.push_back(chat_req);
             }
             if (should_run) {
                 std::thread([this, sid, conn_id, req = std::move(chat_req)]() mutable {
@@ -438,8 +455,14 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
                 q->push(frame);
         } else {
             auto qit = it->second.conns.find(conn_id);
-            if (qit != it->second.conns.end())
+            if (qit != it->second.conns.end()) {
                 qit->second->push(frame);
+            } else {
+                // 帧发不出去：目标 conn 不存在（已断连/换了端口/请求被其它实例接收）
+                // 打日志以便诊断"服务端有消息但客户端收不到"
+                LOG_WARN("broadcast drop: conn {} not in session {} ({} conns attached)",
+                         conn_id, session_id.substr(0, 8), it->second.conns.size());
+            }
         }
     };
 
@@ -558,11 +581,25 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
 
     broadcast(acp::done_frame());
 
-    // 标记完成
+    // 标记完成；若有排队请求则保持 processing 并立即补跑下一轮
+    std::optional<ChatRequest> next;
     {
         std::lock_guard lock(sessions_mutex_);
         auto it = sessions_.find(session_id);
-        if (it != sessions_.end()) it->second.processing = false;
+        if (it != sessions_.end()) {
+            if (!it->second.pending.empty()) {
+                next = std::move(it->second.pending.front());
+                it->second.pending.pop_front();
+            } else {
+                it->second.processing = false;
+            }
+        }
+    }
+    if (next) {
+        std::thread([this, session_id, conn_id, req = std::move(*next)]() mutable {
+            run_acp_loop_broadcast(session_id, conn_id, std::move(req));
+        }).detach();
+        LOG_DEBUG("session {} rerun for queued message", session_id.substr(0, 8));
     }
     LOG_DEBUG("session {} completed", session_id.substr(0, 8));
 }

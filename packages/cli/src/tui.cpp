@@ -41,7 +41,9 @@ int TuiClient::run() {
     }
 
     // SSE 连接
-    state_->notify_ = [&screen] { screen.Post(Event::Custom); };
+    state_->notify_ = [&screen] {
+        screen.Post(Event::Custom);
+    };
     post_job_ = state_->notify_;
     connect_sse();
 
@@ -91,10 +93,10 @@ int TuiClient::run() {
                 Element el;
                 switch (item.kind) {
                 case ItemKind::User:
-                    el = paragraph("You: " + item.text) | color(Color::Cyan);
+                    el = paragraph("❯ " + item.text) | color(Color::Cyan);
                     break;
                 case ItemKind::Assistant:
-                    el = paragraph("AI: " + item.text) |
+                    el = paragraph(item.text) |
                          (item.streaming ? color(Color::GreenLight) : color(Color::Green));
                     break;
                 case ItemKind::Reasoning: {
@@ -262,6 +264,7 @@ int TuiClient::run() {
         return false;
     });
 
+    input->TakeFocus();
     screen.Loop(component);
 
     acp_.disconnect();
@@ -390,28 +393,24 @@ void TuiClient::cmd_balance(const std::string& line) {
 AcpClient::Callbacks TuiClient::build_callbacks() {
     return {
         .on_assistant = [this](std::string_view delta) {
-            LOG_DEBUG("SSE delta: {}", delta);
             AcpEvent ev;
             ev.kind = AcpEvent::Kind::AssistantDelta;
             ev.text = std::string(delta);
             state_->push_event(ev);
         },
         .on_reasoning = [this](std::string_view delta) {
-            LOG_DEBUG("SSE reasoning delta: {}", delta);
             AcpEvent ev;
             ev.kind = AcpEvent::Kind::ReasoningDelta;
             ev.text = std::string(delta);
             state_->push_event(ev);
         },
         .on_tool_call = [this](const acp::ToolCallEvent& tc) {
-            LOG_DEBUG("SSE tool_call: {}", tc.name);
             AcpEvent ev;
             ev.kind = AcpEvent::Kind::ToolCall;
             ev.tool_call = tc;
             state_->push_event(ev);
         },
         .on_tool_result = [this](const acp::ToolResultEvent& tr) {
-            LOG_DEBUG("SSE tool_result: {} success={}", tr.content.substr(0, 100), tr.success);
             AcpEvent ev;
             ev.kind = AcpEvent::Kind::ToolResult;
             ev.tool_result = tr;

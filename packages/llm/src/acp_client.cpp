@@ -28,6 +28,9 @@ bool AcpClient::send_async(const ChatRequest& request) {
     if (!request.session_id.empty()) req_json["session_id"] = request.session_id;
     if (!conn_id_.empty()) req_json["conn_id"] = conn_id_;
     auto res = http_->Post("/api/v1/acp", headers, req_json.dump(), "application/json");
+    LOG_INFO("send_async session={} conn={} status={}",
+             request.session_id.substr(0, 8), conn_id_.empty() ? "(none)" : conn_id_.substr(0, 8),
+             res ? std::to_string(res->status) : "no-response");
     return res && (res->status == 200 || res->status == 202);
 }
 
@@ -81,17 +84,26 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
             while (connected_) {
                 auto r = ws_->read(msg);
                 if (r == httplib::ws::ReadResult::Fail) break;
+                LOG_DEBUG("WS recv {} bytes: {}",
+                          msg.size(),
+                          msg.size() <= 160 ? msg : msg.substr(0, 160) + "...");
                 auto event = acp::parse_frame(msg);
-                if (!event) continue;
+                if (!event) {
+                    LOG_WARN("WS frame parse failed: {}", msg);
+                    continue;
+                }
+                LOG_DEBUG("WS event type={}", acp::to_string(event->type));
                 switch (event->type) {
                 case acp::EventType::connected:
                     conn_id_ = event->data.value("conn_id", "");
-                    LOG_DEBUG("WS connected, conn_id={}", conn_id_);
+                    LOG_INFO("WS connected, conn_id={}", conn_id_);
                     break;
                 case acp::EventType::assistant:
+                    LOG_DEBUG("WS assistant delta ({} bytes)", event->data.value("delta", "").size());
                     if (callbacks_.on_assistant) callbacks_.on_assistant(event->data.value("delta", ""));
                     break;
                 case acp::EventType::reasoning:
+                    LOG_DEBUG("WS reasoning delta ({} bytes)", event->data.value("delta", "").size());
                     if (callbacks_.on_reasoning) callbacks_.on_reasoning(event->data.value("delta", ""));
                     break;
                 case acp::EventType::tool_call:
@@ -108,6 +120,7 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                     if (callbacks_.on_error) callbacks_.on_error(event->data.value("message",""));
                     break;
                 case acp::EventType::done:
+                    LOG_DEBUG("WS done");
                     if (callbacks_.on_done) callbacks_.on_done();
                     break;
                 }
