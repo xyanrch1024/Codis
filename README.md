@@ -39,17 +39,14 @@ cmake --build build -j$(nproc)
 export GLM_API_KEY="your-api-key"
 ./build/packages/server/opencode-server -c config/config.toml
 
-# Terminal 2: interactive CLI (default)
+# Terminal 2: launch the TUI client (default)
 ./build/packages/cli/opencode
 
-# Launch the TUI (recommended)
-./build/packages/cli/opencode --tui
-
 # Continue the last session
-./build/packages/cli/opencode --tui -c
+./build/packages/cli/opencode -c
 
-# Custom port / provider
-./build/packages/cli/opencode --tui -p 8711 -m glm-4.5-flash
+# Custom port / model
+./build/packages/cli/opencode -p 8711 -m glm-4.5-flash
 ```
 
 No need to start the server manually — the CLI auto-starts it if it isn't running.
@@ -67,13 +64,12 @@ No need to start the server manually — the CLI auto-starts it if it isn't runn
 
 | Command | Description |
 |------|------|
-| `/sessions` | List all sessions |
-| `/session <id> use` | Resume a session |
-| `/session <id> del` | Delete a session |
+| `/sessions` | List all sessions (or `Ctrl+S` for the session list overlay) |
 | `/newsession` | Create a new session |
 | `/clear` | Clear the current context |
 | `/clearsessions` | Delete all sessions |
 | `/balance [provider]` | Query provider balance |
+| `/model [provider]` | Switch model / list providers |
 | `/exit` | Quit |
 
 ### Logging
@@ -134,6 +130,6 @@ docker logs -f codis
 ```
 packages/
 ├── server/   # Server daemon (HTTP + WebSocket + LLM scheduling + tool execution)
-├── cli/      # Clients (interactive CLI + FTXUI TUI)
+├── cli/      # FTXUI TUI client
 └── llm/      # Provider wrappers / session storage / tool registry (shared)
 ```

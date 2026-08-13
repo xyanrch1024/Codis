@@ -33,6 +33,19 @@ struct ConvItem {
     ItemKind kind;
     std::string text;
     bool streaming = false;  // 仅 Assistant：true = 仍在流式累积
+
+    // ---- 工具调用（ItemKind::ToolCall）— openCode 风格展示 ----
+    std::string tool_id;        // tool_call id，用于关联 tool_result
+    std::string tool_name;      // 工具名
+    std::string tool_icon;      // 图标（"$", "→", "←", "✱", "⚙"）
+    std::string tool_pending;   // pending 文案
+    std::string tool_title;     // 块标题（可为空）
+    std::string content_text;   // 块内容（write/edit 的 diff）
+    bool tool_block = false;    // 需要块布局
+    bool has_result = false;    // tool_result 已到达
+    bool tool_success = false;  // 结果成功
+    std::string result_text;    // 成功输出（bash 等）
+    std::string error_text;     // 失败信息
 };
 
 // =============================================================================
@@ -138,14 +151,42 @@ private:
                 items.push_back({ItemKind::Reasoning, ev.text});
             }
             break;
-        case AcpEvent::Kind::ToolCall:
+        case AcpEvent::Kind::ToolCall: {
             finalize_streaming();
-            items.push_back({ItemKind::ToolCall,
-                             format_tool_call(ev.tool_call.name, ev.tool_call.arguments)});
+            auto d = tool_display(ev.tool_call.name, ev.tool_call.arguments);
+            ConvItem item;
+            item.kind = ItemKind::ToolCall;
+            item.tool_id = ev.tool_call.id;
+            item.tool_name = ev.tool_call.name;
+            item.tool_icon = d.icon;
+            item.text = d.label;
+            item.tool_pending = d.pending;
+            item.tool_title = d.block_title;
+            item.tool_block = d.block;
+            if (ev.tool_call.name == "write" || ev.tool_call.name == "edit")
+                item.content_text = format_tool_call(ev.tool_call.name, ev.tool_call.arguments);
+            items.push_back(std::move(item));
             break;
-        case AcpEvent::Kind::ToolResult:
-            items.push_back({ItemKind::ToolResult, ev.tool_result.content});
+        }
+        case AcpEvent::Kind::ToolResult: {
+            // 按 id 合并进匹配的 ToolCall；未匹配则保底为独立条目
+            bool matched = false;
+            for (auto it = items.rbegin(); it != items.rend(); ++it) {
+                if (it->kind == ItemKind::ToolCall && it->tool_id == ev.tool_result.id) {
+                    it->has_result = true;
+                    it->tool_success = ev.tool_result.success;
+                    if (ev.tool_result.success)
+                        it->result_text = ev.tool_result.content;
+                    else
+                        it->error_text = ev.tool_result.content;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched)
+                items.push_back({ItemKind::ToolResult, ev.tool_result.content});
             break;
+        }
         case AcpEvent::Kind::Error:
             finalize_streaming();
             items.push_back({ItemKind::Error, ev.text});

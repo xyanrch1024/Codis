@@ -38,17 +38,14 @@ cmake --build build -j$(nproc)
 export GLM_API_KEY="你的-api-key"
 ./build/packages/server/opencode-server -c config/config.toml
 
-# 终端 2: 交互式 CLI（默认）
+# 终端 2: 启动 TUI 客户端（默认）
 ./build/packages/cli/opencode
 
-# 启动 TUI（推荐）
-./build/packages/cli/opencode --tui
-
 # 继续上次会话
-./build/packages/cli/opencode --tui -c
+./build/packages/cli/opencode -c
 
-# 指定端口 / 指定 provider
-./build/packages/cli/opencode --tui -p 8711 -m glm-4.5-flash
+# 指定端口 / 指定模型
+./build/packages/cli/opencode -p 8711 -m glm-4.5-flash
 ```
 
 也可以不用手动启动服务端：CLI 检测到服务端未运行时会自动拉起。
@@ -66,13 +63,12 @@ export GLM_API_KEY="你的-api-key"
 
 | 命令 | 功能 |
 |------|------|
-| `/sessions` | 列出所有会话 |
-| `/session <id> use` | 恢复指定会话 |
-| `/session <id> del` | 删除指定会话 |
+| `/sessions` | 列出所有会话（或 `Ctrl+S` 打开会话列表弹窗） |
 | `/newsession` | 新建会话 |
 | `/clear` | 清空当前上下文 |
 | `/clearsessions` | 删除所有会话 |
-| `/balance [provider]` | 查询 Provider 余额 |
+| `/balance [provider]` | 查询 provider 余额 |
+| `/model [provider]` | 切换模型 / 列出可用 provider |
 | `/exit` | 退出 |
 
 ### 日志
@@ -130,6 +126,6 @@ docker logs -f codis
 ```
 packages/
 ├── server/   # 服务端守护进程（HTTP + WebSocket + LLM 调度 + 工具执行）
-└── cli/      # 客户端（交互 CLI + FTXUI TUI）
+└── cli/      # FTXUI TUI 客户端
 └── llm/      # Provider 封装 / 会话存储 / 工具注册（server 与 cli 共用）
 ```

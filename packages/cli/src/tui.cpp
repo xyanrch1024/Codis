@@ -1,9 +1,12 @@
 #include "tui.h"
+#include "tui_tool_render.h"
 #include "log.h"
 #include "tool_format.h"
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
+#include <ftxui/screen/terminal.hpp>
+#include <ftxui/screen/string.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <cstdlib>
@@ -24,6 +27,93 @@ static const std::vector<std::pair<std::string, std::string>> kCommands = {
     {"/model", "切换模型"},
     {"/clearsessions", "删除所有会话"},
 };
+
+// UTF-8 感知、按显示宽度换行：
+//   - CJK 等宽字符按 2 列计算
+//   - 优先在空格处断行；无空格的长句（中文）在超宽处硬断
+//   - 行内已有文本时尽量在最后一个空格处回退断行
+static std::vector<std::string> wrap_by_width(const std::string& text, int width) {
+    std::vector<std::string> lines;
+    if (width <= 0) return {text};
+    std::string line;
+    int line_w = 0;
+    size_t i = 0;
+    const size_t n = text.size();
+
+    auto utf8_len = [](char c) {
+        unsigned char u = (unsigned char)c;
+        if (u >= 0xF0) return 4;
+        if (u >= 0xE0) return 3;
+        if (u >= 0xC0) return 2;
+        return 1;
+    };
+
+    auto push_line = [&]() {
+        lines.push_back(line);
+        line.clear();
+        line_w = 0;
+    };
+
+    while (i < n) {
+        char c = text[i];
+        if (c == '\n') {
+            push_line();
+            i++;
+            continue;
+        }
+        int clen = utf8_len(c);
+        if (i + clen > n) clen = 1;
+        std::string_view cp(text.data() + i, clen);
+        int w = string_width(cp);
+
+        if (cp == " ") {
+            if (!line.empty() && line_w + 1 <= width) {
+                line += ' ';
+                line_w += 1;
+            }
+            i += clen;
+            continue;
+        }
+
+        if (line_w + w <= width) {
+            line.append(cp);
+            line_w += w;
+            i += clen;
+            continue;
+        }
+
+        // 超宽：优先回退到行内最后一个空格处断行（head 足够宽才有意义）
+        if (!line.empty()) {
+            auto sp = line.find_last_of(' ');
+            if (sp != std::string::npos && string_width(line.substr(0, sp)) >= 3) {
+                lines.push_back(line.substr(0, sp));
+                line = line.substr(sp + 1) + std::string(cp);
+                line_w = string_width(line);
+                i += clen;
+                continue;
+            }
+        }
+        if (!line.empty()) {
+            // 无空格可断：硬断（长单词 / 无空格中文）
+            push_line();
+            continue;  // 重新处理当前字符
+        }
+        // 单字符比整行宽：逐字硬断
+        line.append(cp);
+        line_w += w;
+        if (line_w >= width) push_line();
+        i += clen;
+    }
+    if (!line.empty()) lines.push_back(line);
+    return lines;
+}
+
+// 按宽度换行后转为 vbox<text> 元素
+static Element wrapped_text(const std::string& content, int width) {
+    Elements els;
+    for (auto& ln : wrap_by_width(content, width)) els.push_back(ftxui::text(ln));
+    return vbox(std::move(els));
+}
 
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
                      std::string session_arg)
@@ -97,7 +187,14 @@ int TuiClient::run() {
         return out;
     };
 
-    auto input = Input(&input_text, "> ");
+    InputOption in_opt;
+    in_opt.content = &input_text;
+    in_opt.placeholder = "> ";
+    in_opt.transform = [](InputState state) {
+        if (state.is_placeholder) state.element |= dim;
+        return state.element | bgcolor(Color(Color::Palette256::Grey19));
+    };
+    auto input = Input(std::move(in_opt));
     input |= CatchEvent([&](Event event) {
         // "/" 开头的输入：显示命令补全弹窗（可见性在 renderer 中按 input_text 计算）
         if (cmd_palette_visible_) {
@@ -159,7 +256,9 @@ int TuiClient::run() {
                              clear_under | border);
             }
         }
-        els.push_back(hbox({text("> "), input->Render() | flex}) | border);
+        els.push_back(vbox({text(""),
+                            hbox({text("> "), input->Render() | flex}),
+                            text("")}) | bgcolor(Color(Color::Palette256::Grey19)));
         return vbox(std::move(els));
     });
 
@@ -174,33 +273,35 @@ int TuiClient::run() {
 
         Elements els;
         {
+            int vw = std::max(10, Terminal::Size().dimx);
+            int tw = vw - 2;  // 预留 vscroll_indicator 一列 + 1 列余量
             for (auto& item : state_->items) {
                 Element el;
                 switch (item.kind) {
                 case ItemKind::User:
-                    el = paragraph("❯ " + item.text) | color(Color::Cyan);
+                    el = wrapped_text("❯ " + item.text, tw) | color(Color::Cyan);
                     break;
                 case ItemKind::Assistant:
-                    el = paragraph(item.text) |
+                    el = wrapped_text(item.text, tw) |
                          (item.streaming ? color(Color::GreenLight) : color(Color::Green));
                     break;
                 case ItemKind::Reasoning: {
-                    el = text("· " + item.text) | color(Color::GrayDark) | dim;
+                    el = wrapped_text("· " + item.text, tw) | color(Color::GrayDark) | dim;
                     break;
                 }
                 case ItemKind::ToolCall:
-                    el = text("▸ " + item.text) | color(Color::Yellow);
+                    el = render_tool_call(item);
                     break;
                 case ItemKind::ToolResult: {
                     auto txt = opencode::truncate_tool_output(item.text);
-                    el = text(txt) | color(Color::GrayLight);
+                    el = wrapped_text(txt, tw) | color(Color::GrayLight);
                     break;
                 }
                 case ItemKind::Error:
-                    el = text(item.text) | color(Color::Red);
+                    el = wrapped_text(item.text, tw) | color(Color::Red);
                     break;
                 case ItemKind::Status:
-                    el = text(item.text) | dim;
+                    el = wrapped_text(item.text, tw) | dim;
                     break;
                 }
                 els.push_back(std::move(el));
@@ -209,6 +310,13 @@ int TuiClient::run() {
 
         int total = (int)els.size();
         Element content = vbox(std::move(els));
+
+        // 关键：限制内容宽度 ≤ 视口宽（终端宽）。否则 frame 会按内容自身
+        // 自然宽度(min_x)分配画布，paragraph 在比视口宽的画布里不换行，
+        // 后续换行行被横向裁剪不可见（表现为“输出截断”）。加上这个约束后
+        // 段落按视口宽度换行，resize 时重渲染读取新宽度重新换行。
+        int vw = std::max(10, Terminal::Size().dimx);
+        content = content | size(WIDTH, LESS_THAN, vw);
 
         // focusPositionRelative 控制 frame 滚动到内容的指定比例位置
         // focus() 对单行 text() 元素无效（focused.box.y_min 始终为 0，dy=0）
@@ -258,10 +366,10 @@ int TuiClient::run() {
                      std::to_string(session_list_.size()) + "  ↑↓  Enter(del)  ESC ") | dim | center,
             })) | clear_under | center | border;
 
-            return dbox({vbox(std::move(header)) | border, overlay});
+            return dbox({vbox(std::move(header)), overlay});
         }
 
-        return vbox(std::move(header)) | border;
+        return vbox(std::move(header));
     });
 
     auto component = main_renderer | CatchEvent([&](Event event) {

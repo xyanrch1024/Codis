@@ -489,9 +489,11 @@ void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Res
 
 void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
                                              const std::string& conn_id, ChatRequest req) {
-    static const int MAX_TURNS = 10;
+    static const int MAX_TURNS = 100;
     static const int MAX_EMPTY_RETRIES = 2;
+    static const int MAX_MALFORMED_RETRIES = 3;
     int empty_retries_ = 0;
+    int malformed_retries_ = 0;
 
     auto broadcast = [&](const std::string& frame) {
         std::lock_guard lock(sessions_mutex_);
@@ -601,11 +603,13 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
         }
 
         if (!llm_result.reasoning_content.empty())
-            LOG_TRACE("turn {} reasoning_content ({} bytes): {}", *turn,
-                      llm_result.reasoning_content.size(), llm_result.reasoning_content.substr(0, 200));
+            LOG_DEBUG("turn {} reasoning_content ({} bytes):\n{}", *turn,
+                      llm_result.reasoning_content.size(), llm_result.reasoning_content);
 
         LOG_DEBUG("turn {} LLM: {}ms {} tokens: {}", *turn, llm_ms,
                   assistant_content.size(), assistant_content.substr(0, 200));
+        LOG_DEBUG("turn {} LLM full output ({} bytes):\n{}", *turn,
+                  assistant_content.size(), assistant_content);
 
         if (!assistant_content.empty())
             session_store_.append_message(session_id, {"assistant", assistant_content});
@@ -624,6 +628,18 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
                 broadcast(acp::error_frame(
                     "模型返回空响应（可能思维链耗尽 max_tokens）。reasoning_content 大小: " +
                     std::to_string(llm_result.reasoning_content.size()) + " bytes"));
+            } else if (assistant_content.find("\"tool_calls\"") != std::string::npos) {
+                // 模型尝试调用工具但 JSON 解析失败：提示重试，而不是静默结束任务
+                if (malformed_retries_ < MAX_MALFORMED_RETRIES) {
+                    malformed_retries_++;
+                    LOG_WARN("turn {} malformed tool_calls JSON, asking model to retry ({}/{})",
+                             *turn, malformed_retries_, MAX_MALFORMED_RETRIES);
+                    req.messages.push_back({"system",
+                        "你上一条回复的 tool_calls JSON 格式错误（括号不匹配或含非法字符），无法执行。"
+                        "请重新输出语法正确的 tool_calls JSON，不要附加多余文本。"});
+                    continue;
+                }
+                broadcast(acp::error_frame("模型连续返回格式错误的 tool_calls JSON"));
             }
             break;
         }
@@ -697,27 +713,47 @@ std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& cont
             json_str = content.substr(md_start, md_end - md_start);
     } else {
         // LLM 可能在 tool_calls JSON 前输出文本，找到包含 "tool_calls" 的最外层 JSON 对象
-        // 使用字符串感知的括号匹配，避免 JSON 字符串值中的 `{` 干扰
+        // 用括号栈自动补齐模型偶尔截断/漏写的右括号（如缺 } 或提前 ]）
         auto brace = content.rfind('{', pos);
         if (brace == std::string::npos) return calls;
-        int depth = 0;
+        std::string stack;
+        std::string fixed;
         bool in_string = false;
         bool escaped = false;
-        auto end = brace;
-        for (; end < content.size(); end++) {
-            char c = content[end];
-            if (escaped) { escaped = false; continue; }
-            if (c == '\\') { escaped = true; continue; }
-            if (c == '"') { in_string = !in_string; continue; }
-            if (in_string) continue;
-            if (c == '{') depth++;
+        auto close_outer = [&] {
+            if (stack.empty()) return;
+            while (!fixed.empty() && fixed.back() == ',') fixed.pop_back();
+            while (!stack.empty()) {
+                fixed += stack.back() == '{' ? '}' : ']';
+                stack.pop_back();
+            }
+        };
+        for (auto i = brace; i < content.size(); i++) {
+            char c = content[i];
+            if (escaped) { escaped = false; fixed += c; continue; }
+            if (c == '\\') { escaped = true; fixed += c; continue; }
+            if (c == '"') { in_string = !in_string; fixed += c; continue; }
+            if (in_string) { fixed += c; continue; }
+            if (c == '{') { stack += '{'; fixed += c; }
+            else if (c == '[') { stack += '['; fixed += c; }
             else if (c == '}') {
-                depth--;
-                if (depth == 0) { end++; break; }
+                while (!fixed.empty() && fixed.back() == ',') fixed.pop_back();
+                if (!stack.empty() && stack.back() == '{') { stack.pop_back(); fixed += c; }
+                if (stack.empty()) break;
+            } else if (c == ']') {
+                // 数组内还有未闭合对象：先补 } 再闭合 ]
+                while (!fixed.empty() && fixed.back() == ',') fixed.pop_back();
+                while (!stack.empty() && stack.back() == '{') { fixed += '}'; stack.pop_back(); }
+                if (!stack.empty() && stack.back() == '[') { stack.pop_back(); fixed += c; }
+                if (stack.empty()) break;
+            } else if (c != ',') {
+                fixed += c;
+            } else if (!fixed.empty() && fixed.back() != ',') {
+                fixed += c;
             }
         }
-        if (depth != 0) return calls;
-        json_str = content.substr(brace, end - brace);
+        close_outer();
+        json_str = fixed;
     }
 
     try {

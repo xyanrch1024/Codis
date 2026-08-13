@@ -2,16 +2,11 @@
 #include <iostream>
 #include <string>
 #include <cstdlib>
-#include <format>
 #include <thread>
 #include <chrono>
 #include <filesystem>
-#include <vector>
-#include <sstream>
-#include <mutex>
 
 #include "acp_client.h"
-#include "tool_format.h"
 #include "tui.h"
 #include "log.h"
 
@@ -65,26 +60,18 @@ int main(int argc, char** argv) {
 
     std::string model         = "glm-4.5-flash";
     std::string provider      = "glm";
-    std::string system_prompt = "You are a helpful AI coding assistant.";
-    int  max_tokens  = 4096;
-    double temperature = 0.7;
     int  server_port = 8711;
     std::string server_bin;
     std::string session_arg;
     bool clear_sessions = false;
-    bool use_tui = false;
     bool cont_session = false;
 
-    app.add_flag("--tui",             use_tui,        "Launch TUI mode");
     app.add_flag("--clear-sessions",   clear_sessions, "Delete all sessions");
     app.add_flag("-c,--continue",      cont_session,   "Continue last session");
     app.add_option("-p,--port",        server_port,   "Server port (default: 8711)");
     app.add_option("--server-bin",     server_bin,    "Server binary path");
     app.add_option("-m,--model",       model,         "Model name");
     app.add_option("-S,--session",     session_arg,   "Session ID to attach");
-    app.add_option("-s,--system",      system_prompt, "System prompt");
-    app.add_option("-t,--max-tokens",  max_tokens,    "Max tokens");
-    app.add_option("--temperature",    temperature,   "Temperature");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -124,287 +111,9 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (use_tui) {
-        if (session_arg.empty() && cont_session)
-            session_arg = acp.get_last_session();
-        TuiClient tui(server_port, model, provider, session_arg);
-        return tui.run();
-    }
-
-    // 构建请求模板
-    std::string current_session;
-    auto build_req = [&](const std::vector<Message>& msgs) {
-        ChatRequest req;
-        req.model       = model;
-        req.provider = provider;
-        req.messages    = msgs;
-        req.max_tokens  = max_tokens;
-        req.temperature = temperature;
-        req.stream      = true;
-        req.session_id  = current_session;
-        return req;
-    };
-
-    // ---- 会话初始化 ----
-    if (!session_arg.empty()) {
-        current_session = session_arg;
-    } else if (cont_session) {
-        current_session = acp.get_last_session();
-    }
-    else{
-        auto sid = acp.create_session();
-        if (sid) 
-        {
-                current_session = *sid;
-        }
-        else
-        {
-             std::cout << "Create session failed"<<std::endl;
-
-            return 1;
-        }
-    }
-
-    // ---- 交互模式（单次模式已移除，始终走交互模式）----
-    {
-        std::vector<Message> conversation;
-        conversation.push_back({"system", system_prompt});
-
-        // 加载 session 历史
-        if (!current_session.empty()) {
-            auto info = acp.get_session(current_session);
-            if (info) {
-                conversation = info->messages;
-            }
-        }
-        auto show_header = [&]() {
-            std::cout << "╔══════════════════════════════════════════╗\n";
-            std::cout << "║  Codis Client  v0.6.0                  ║\n";
-            std::cout << std::format("║  Server:   localhost:{:<20d} ║\n", server_port);
-            std::cout << std::format("║  Model:    {:<27s} ║\n", model);
-          
-            std::cout << std::format("║  Session:  {:<27s} ║\n", current_session.substr(0, 27));
-          
-            std::cout << "╚══════════════════════════════════════════╝\n";
-        };
-        show_header();
-
-        // 显示历史
-        if (conversation.size() > 1) {
-            std::cout << std::format("── {} messages loaded from session ──\n", conversation.size() - 1);
-            for (size_t i = 1; i < conversation.size(); i++) {
-                auto& m = conversation[i];
-                if (m.role == "user")  std::cout << "You: " << m.content << "\n";
-                else if (m.role == "assistant") std::cout << "AI: " << m.content << "\n";
-            }
-            std::cout << "──────────────────────────────────────\n";
-        } else {
-            std::cout << "New session. Type your message.\n";
-        }
-
-        std::cout << "\nCommands: /exit /sessions /session <id> /clear /balance\n\n";
-
-        // SSE 长连接（接收所有 LLM 响应 + 其他客户端广播）
-        std::mutex cout_mtx;
-        std::string shared_assistant_content;
-        AcpClient::Callbacks view_cbs{
-            .on_assistant = [&](std::string_view delta) {
-                std::lock_guard lock(cout_mtx);
-                std::cout << delta << std::flush;
-                shared_assistant_content.append(delta);
-            },
-            .on_reasoning = [&](std::string_view delta) {
-                std::lock_guard lock(cout_mtx);
-                std::cout << "\033[90m" << delta << "\033[0m" << std::flush;
-            },
-            .on_tool_call = [&](const acp::ToolCallEvent& tc) {
-                std::lock_guard lock(cout_mtx);
-                std::cout << "\n" << format_tool_call(tc.name, tc.arguments) << "\n";
-            },
-            .on_tool_result = [&](const acp::ToolResultEvent& tr) {
-                std::lock_guard lock(cout_mtx);
-                auto txt = truncate_tool_output(tr.content);
-                if (!txt.empty()) std::cout << txt << "\n";
-            },
-            .on_error = [&](std::string_view msg) {
-                std::lock_guard lock(cout_mtx);
-                std::cerr << "\nError: " << msg << "\n";
-            },
-            .on_done = [&]() {
-                std::lock_guard lock(cout_mtx);
-                if (!shared_assistant_content.empty()) {
-                    conversation.push_back({"assistant", shared_assistant_content});
-                    shared_assistant_content.clear();
-                }
-                std::cout << "\n> " << std::flush;
-            }
-        };
-        acp.connect(current_session, view_cbs);
-
-        std::string line;
-        while (true) {
-            std::cout << "> " << std::flush;
-            if (!std::getline(std::cin, line)) { acp.disconnect(); break; }
-            if (line.empty()) continue;
-
-            // ---- 特殊命令 ----
-            if (line == "/exit" || line == "/quit") { acp.disconnect(); break; }
-
-            if (line == "/sessions") {
-                auto sessions = acp.list_sessions();
-                if (sessions.empty()) {
-                    std::cout << "No sessions found.\n\n";
-                } else {
-                    std::cout << std::format("{:<38} {:<5} {}\n", "ID", "Msgs", "Title");
-                    std::cout << std::string(60, '-') << "\n";
-                    for (auto& s : sessions) {
-                        auto marker = (s.id == current_session) ? "*" : " ";
-                        auto title = s.title.size() > 35 ? s.title.substr(0, 35) + "..." : s.title;
-                        std::cout << std::format("{}{:<37} {:<5} {}\n",
-                            marker, s.id, s.message_count, title);
-                    }
-                    std::cout << "  * = current session\n\n";
-                }
-                continue;
-            }
-
-            if (line.starts_with("/session ")) {
-                auto parts = [&]() {
-                    std::vector<std::string> v;
-                    std::istringstream iss(line);
-                    std::string w;
-                    while (iss >> w) v.push_back(w);
-                    return v;
-                }();
-                if (parts.size() < 2) { std::cout << "Usage: /session <id> [use|del]\n\n"; continue; }
-
-                auto sid = parts[1];
-                auto cmd = parts.size() > 2 ? parts[2] : "";
-
-                if (cmd == "del" || cmd == "delete") {
-                    if (acp.delete_session(sid)) {
-                        std::cout << "Session deleted: " << sid << "\n\n";
-                        if (sid == current_session) {
-                            current_session.clear();
-                            conversation.clear();
-                            conversation.push_back({"system", system_prompt});
-                        }
-                    } else {
-                        std::cout << "Failed to delete session.\n\n";
-                    }
-                    continue;
-                }
-
-                if (cmd == "use" || cmd == "switch" || cmd.empty()) {
-                    auto info = acp.get_session(sid);
-                    if (!info) {
-                        std::cout << "Session not found.\n\n";
-                        continue;
-                    }
-                    acp.switch_session(sid);
-                    current_session = sid;
-                    conversation = info->messages;
-                    show_header();
-                    std::cout << std::format("── {} messages loaded ──\n", conversation.size());
-                    for (auto& m : conversation) {
-                        if (m.role == "user")  std::cout << "You: " << m.content << "\n";
-                        else if (m.role == "assistant") std::cout << "AI: " << m.content << "\n";
-                    }
-                    std::cout << "────────────────────\n\n";
-                    continue;
-                }
-
-                std::cout << "Usage: /session <id> [use|del]\n\n";
-                continue;
-            }
-
-            if (line == "/clear") {
-                conversation.clear();
-                conversation.push_back({"system", system_prompt});
-                if (!current_session.empty()) acp.create_session();
-                std::cout << "Context cleared.\n\n";
-                continue;
-            }
-
-            if (line == "/clearsessions") {
-                if (acp.delete_all_sessions()) {
-                    current_session.clear();
-                    conversation.clear();
-                    conversation.push_back({"system", system_prompt});
-                    std::cout << "All sessions deleted.\n\n";
-                } else {
-                    std::cout << "Failed to delete sessions.\n\n";
-                }
-                continue;
-            }
-
-            if (line == "/balance") {
-                // 查询 provider 余额 — 默认查 deepseek
-                std::string prov = "deepseek";
-                auto parts = [&]() {
-                    std::vector<std::string> v;
-                    std::istringstream iss(line);
-                    std::string w;
-                    while (iss >> w) v.push_back(w);
-                    return v;
-                }();
-                if (parts.size() > 1) prov = parts[1];
-
-                httplib::Client client("127.0.0.1", server_port);
-                client.set_connection_timeout(10, 0);
-                client.set_read_timeout(10, 0);
-
-                auto http_res = client.Get(("/api/v1/balance/" + prov).c_str());
-                if (!http_res) {
-                    std::cout << "[Error] Server unreachable: " << httplib::to_string(http_res.error()) << "\n\n";
-                    continue;
-                }
-                if (http_res->status != 200) {
-                    try {
-                        auto j = json::parse(http_res->body);
-                        std::cout << "[Error] " << j.value("error", http_res->body) << "\n\n";
-                    } catch (...) {
-                        std::cout << "[Error] HTTP " << http_res->status << ": " << http_res->body.substr(0, 200) << "\n\n";
-                    }
-                    continue;
-                }
-
-                try {
-                    auto j = json::parse(http_res->body);
-                    auto& bal = j["balance"];
-                    std::cout << "\n╔══════════════════════════════════════╗\n";
-                    std::cout << "║  " << prov << " balance                ║\n";
-                    std::cout << "╚══════════════════════════════════════╝\n";
-
-                    if (bal.contains("balance_infos") && !bal["balance_infos"].empty()) {
-                        for (auto& bi : bal["balance_infos"]) {
-                            std::cout << std::format("  Total:    {}\n", bi.value("total_balance", "N/A"));
-                            std::cout << std::format("  Topped:   {}\n", bi.value("topped_up_balance", "N/A"));
-                            std::cout << std::format("  Granted:  {}\n", bi.value("granted_balance", "N/A"));
-                        }
-                    } else {
-                        std::cout << "  Response: " << bal.dump(2) << "\n";
-                    }
-
-                    if (bal.contains("is_available")) {
-                        std::cout << std::format("  Active:   {}\n", bal["is_available"].get<bool>() ? "Yes" : "No");
-                    }
-                    std::cout << "\n";
-                } catch (const std::exception& e) {
-                    std::cout << "[Error] Parse failed: " << e.what() << "\n\n";
-                }
-                continue;
-            }
-
-            // ---- 普通消息 ----
-            conversation.push_back({"user", line});
-            std::cout << "\n";
-
-            auto req = build_req(std::vector<Message>{{"user", line}});
-
-            acp.send_async(req);
-        }
-    }
-
-    return 0;
+    // TUI 是唯一交互界面：默认启动，可选续接上次会话
+    if (session_arg.empty() && cont_session)
+        session_arg = acp.get_last_session();
+    TuiClient tui(server_port, model, provider, session_arg);
+    return tui.run();
 }
