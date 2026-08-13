@@ -293,6 +293,25 @@ std::string AcpClient::get_last_session() {
     return "";
 }
 
+std::optional<ServerInfo> AcpClient::get_server_info() {
+    auto res = http_->Get("/api/v1/info");
+    if (!res || res->status != 200) return std::nullopt;
+    try {
+        auto j = acp::json::parse(res->body);
+        ServerInfo info;
+        info.default_provider = j.value("default_provider", "");
+        if (j.contains("providers")) {
+            for (auto& p : j["providers"]) info.providers.push_back(p.get<std::string>());
+        }
+        if (j.contains("provider_models")) {
+            for (auto& [k, v] : j["provider_models"].items())
+                info.provider_models[k] = v.get<std::string>();
+        }
+        return info;
+    } catch (...) {}
+    return std::nullopt;
+}
+
 bool AcpClient::switch_session(const std::string& session_id) {
     auto frame = acp::switch_frame(session_id);
 

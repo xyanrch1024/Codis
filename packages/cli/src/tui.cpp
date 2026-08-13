@@ -8,10 +8,22 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <cstdlib>
 #include <sstream>
+#include <algorithm>
 
 namespace opencode {
 
 using namespace ftxui;
+
+// 支持的命令（用于 "/" 补全弹窗）
+static const std::vector<std::pair<std::string, std::string>> kCommands = {
+    {"/exit", "退出"},
+    {"/clear", "清空上下文"},
+    {"/sessions", "会话列表"},
+    {"/newsession", "新建会话"},
+    {"/balance", "查询余额"},
+    {"/model", "切换模型"},
+    {"/clearsessions", "删除所有会话"},
+};
 
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
                      std::string session_arg)
@@ -41,10 +53,19 @@ int TuiClient::run() {
     }
 
     // SSE 连接
-    state_->notify_ = [&screen] {
+    // 合并刷新：流式增量频繁触发 screen.Post，会淹没输入事件导致 ESC 等按键丢失。
+    // 用原子标志确保同一时刻最多只有一个 Custom 事件在队列里。
+    std::atomic<bool> notify_pending{false};
+    state_->notify_ = [&screen, &notify_pending] {
+        bool expected = false;
+        if (notify_pending.compare_exchange_strong(expected, true))
+            screen.Post(Event::Custom);
+    };
+    // Custom 事件被处理（渲染）后复位标志，允许下一次 Post
+    post_job_ = [&screen, &notify_pending] {
+        notify_pending = false;
         screen.Post(Event::Custom);
     };
-    post_job_ = state_->notify_;
     connect_sse();
 
     // 如果恢复已有 session，通过 REST 拉历史（SSE 长连接不推历史）
@@ -68,8 +89,49 @@ int TuiClient::run() {
 
     // 输入组件
     std::string input_text;
+    // 过滤与已输入前缀匹配的命令（补全弹窗共享）
+    auto filtered_commands = [&]() {
+        std::vector<std::pair<std::string, std::string>> out;
+        for (auto& [cmd, desc] : kCommands)
+            if (input_text.empty() || cmd.starts_with(input_text)) out.push_back({cmd, desc});
+        return out;
+    };
+
     auto input = Input(&input_text, "> ");
     input |= CatchEvent([&](Event event) {
+        // "/" 开头的输入：显示命令补全弹窗（可见性在 renderer 中按 input_text 计算）
+        if (cmd_palette_visible_) {
+            auto filtered = filtered_commands();
+
+            if (event == Event::ArrowUp && cmd_selected_ > 0) {
+                cmd_selected_--;
+                return true;
+            }
+            if (event == Event::ArrowDown && cmd_selected_ < (int)filtered.size() - 1) {
+                cmd_selected_++;
+                return true;
+            }
+            if ((event == Event::Tab || event == Event::Return) && !filtered.empty()) {
+                if (cmd_selected_ >= (int)filtered.size()) cmd_selected_ = (int)filtered.size() - 1;
+                auto& cmd = filtered[cmd_selected_].first;
+                // 执行该命令
+                send_message(cmd);
+                input_text.clear();
+                cmd_palette_visible_ = false;
+                return true;
+            }
+            if (event == Event::Escape) {
+                // 关闭补全：清空输入回到空状态
+                input_text.clear();
+                cmd_palette_visible_ = false;
+                return true;
+            }
+            // 其它按键（继续输入）时保持弹窗，并更新选中索引
+            if (event.is_character() && event.character().size() == 1) {
+                cmd_selected_ = 0;
+            }
+        }
+
         if (event == Event::Return && !input_text.empty()) {
             send_message(input_text);
             input_text.clear();
@@ -79,13 +141,36 @@ int TuiClient::run() {
     });
 
     auto input_bar = Renderer(input, [&] {
-        return hbox({text("> "), input->Render() | flex}) | border;
+        Elements els;
+        // 命令补全弹窗（在 renderer 里计算可见性：此时 input_text 已更新）
+        cmd_palette_visible_ = input_text.starts_with("/");
+        if (cmd_palette_visible_) {
+            auto filtered = filtered_commands();
+            if (!filtered.empty()) {
+                if (cmd_selected_ >= (int)filtered.size()) cmd_selected_ = 0;
+                Elements rows;
+                for (int i = 0; i < (int)filtered.size(); i++) {
+                    auto& [cmd, desc] = filtered[i];
+                    auto el = text("  " + cmd) | flex;
+                    if (i == cmd_selected_) el = el | inverted;
+                    rows.push_back(hbox({el, text("  " + desc) | dim}));
+                }
+                els.push_back(window(text(" Commands "), vbox(std::move(rows)) | frame) |
+                             clear_under | border);
+            }
+        }
+        els.push_back(hbox({text("> "), input->Render() | flex}) | border);
+        return vbox(std::move(els));
     });
 
     // 对话区
     auto conversation_view = Renderer([&] {
         // 单线程消费 WS 事件：先吞队列，再构建视图
-        state_->drain_events();
+        bool had = state_->drain_events();
+        // 合并刷新后复位 Post 标志；若消费期间又有新事件到达，重新触发一次
+        notify_pending = false;
+        if (had && !state_->queue_empty())
+            screen.Post(Event::Custom);
 
         Elements els;
         {
@@ -149,7 +234,6 @@ int TuiClient::run() {
                 text(" Model: " + model_ + status) | dim,
                 text(" S: " + state_->current_session) | dim,
                 flex(text("")),
-                text("/exit /clear /sessions /newsession /balance") | dim,
             }),
             separator(),
             main_container->Render() | flex,
@@ -181,6 +265,13 @@ int TuiClient::run() {
     });
 
     auto component = main_renderer | CatchEvent([&](Event event) {
+        // 命令补全弹窗打开时：↑↓/ESC 交给输入组件处理，不滚动对话区/不触发取消
+        if (cmd_palette_visible_) {
+            if (event == Event::ArrowUp || event == Event::ArrowDown ||
+                event == Event::Escape || event == Event::Tab || event == Event::Return)
+                return false;
+        }
+
         // 双击 ESC（400ms 内两次）：取消正在执行的任务（不退程序）
         if (event == Event::Escape) {
             auto now = std::chrono::steady_clock::now();
@@ -344,6 +435,10 @@ void TuiClient::send_message(const std::string& text) {
         cmd_balance(text);
         return;
     }
+    if (text.starts_with("/model")) {
+        cmd_model(text);
+        return;
+    }
 
     state_->add_item(ItemKind::User, text);
     state_->processing = true;
@@ -430,6 +525,57 @@ void TuiClient::cmd_balance(const std::string& line) {
     } catch (const std::exception& e) {
         state_->add_item(ItemKind::Status, "[Error] Parse failed: " + std::string(e.what()));
     }
+}
+
+void TuiClient::cmd_model(const std::string& line) {
+    auto parts = [&]() {
+        std::vector<std::string> v;
+        std::istringstream iss(line);
+        std::string w;
+        while (iss >> w) v.push_back(w);
+        return v;
+    }();
+
+    auto info = acp_.get_server_info();
+    if (!info) {
+        state_->add_item(ItemKind::Status, "[Error] Cannot query server info (unreachable?)");
+        if (post_job_) post_job_();
+        return;
+    }
+
+    // /model <name> — 切换到指定 provider（使用其配置的 model）
+    if (parts.size() >= 2) {
+        const std::string& name = parts[1];
+        auto it = std::find(info->providers.begin(), info->providers.end(), name);
+        if (it == info->providers.end()) {
+            state_->add_item(ItemKind::Status, "[Error] Unknown provider: " + name);
+            if (post_job_) post_job_();
+            return;
+        }
+        provider_ = name;
+        auto mit = info->provider_models.find(name);
+        if (mit != info->provider_models.end()) {
+            model_ = mit->second;
+            state_->model = model_;
+        }
+        state_->add_item(ItemKind::Status, "[Model switched to " + name +
+                          (mit != info->provider_models.end() ? " (" + mit->second + ")" : "") + "]");
+        if (post_job_) post_job_();
+        return;
+    }
+
+    // /model — 列出当前 + 可用 provider
+    state_->add_item(ItemKind::Status, "--- Model ---");
+    state_->add_item(ItemKind::Status, "  Current: " + provider_ + " (" + model_ + ")");
+    for (auto& p : info->providers) {
+        auto mit = info->provider_models.find(p);
+        std::string model = mit != info->provider_models.end() ? mit->second : "?";
+        state_->add_item(ItemKind::Status, "  " + p + " → " + model +
+                          (p == provider_ ? "  (current)" : "") +
+                          (p == info->default_provider ? "  (default)" : ""));
+    }
+    state_->add_item(ItemKind::Status, "  Usage: /model <provider>");
+    if (post_job_) post_job_();
 }
 
 AcpClient::Callbacks TuiClient::build_callbacks() {

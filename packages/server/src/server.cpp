@@ -260,6 +260,9 @@ void OpenCodeServer::handle_info(const httplib::Request&, httplib::Response& res
     json j;
     j["providers"] = provider_registry_.list();
     j["default_provider"] = provider_registry_.default_name();
+    json pm = json::object();
+    for (auto& p : config_.providers) pm[p.name] = p.model;
+    j["provider_models"] = pm;
     j["tools"] = tool_registry_.list();
     j["features"] = {"acp", "chat", "websocket", "tools", "sessions"};
     res.set_content(j.dump(2), "application/json");

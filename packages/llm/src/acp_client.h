@@ -12,6 +12,8 @@
 #include <atomic>
 #include <mutex>
 #include <deque>
+#include <map>
+#include <vector>
 #include <httplib.h>
 
 namespace opencode {
@@ -23,6 +25,12 @@ struct SessionInfo {
     int64_t created_at = 0;
     int64_t updated_at = 0;
     std::vector<Message> messages;
+};
+
+struct ServerInfo {
+    std::vector<std::string> providers;
+    std::string default_provider;
+    std::map<std::string, std::string> provider_models;  // name -> model
 };
 
 class AcpClient {
@@ -64,6 +72,9 @@ public:
     bool switch_session(const std::string& session_id);
     void cancel_session(const std::string& session_id);
     std::string get_last_session();
+
+    // 服务器信息（providers / models / 特性）
+    std::optional<ServerInfo> get_server_info();
 
 private:
     // WS 就绪前/断线期间的待发请求，connect 成功后 flush

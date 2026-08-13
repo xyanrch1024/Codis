@@ -100,7 +100,7 @@ struct TuiState {
     }
 
     // ---- UI 线程每帧调用：吞掉队列并逐个应用到 items ----
-    void drain_events() {
+    bool drain_events() {
         std::deque<AcpEvent> batch;
         {
             std::lock_guard lk(mutex);
@@ -108,6 +108,12 @@ struct TuiState {
         }
         LOG_DEBUG("drain_events batch={}", batch.size());
         for (auto& ev : batch) apply_event(ev);
+        return !batch.empty();
+    }
+
+    bool queue_empty() {
+        std::lock_guard lk(mutex);
+        return queue_.empty();
     }
 
 private:
@@ -174,6 +180,7 @@ private:
     void cmd_clear();
     void cmd_delete_all();
     void cmd_balance(const std::string& line);
+    void cmd_model(const std::string& line);
 
     int server_port_;
     std::string model_;
@@ -198,6 +205,10 @@ private:
 
     // 双击 ESC 取消当前任务（非退出）
     std::chrono::steady_clock::time_point last_escape_;
+
+    // 命令补全弹窗：输入以 "/" 开头时显示
+    bool cmd_palette_visible_ = false;
+    int cmd_selected_ = 0;
 };
 
 } // namespace opencode
