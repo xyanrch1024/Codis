@@ -209,7 +209,7 @@ codis-cpp/
 ├── CMakeLists.txt / vcpkg.json
 ├── ARCHITECTURE.md / codis-cpp-design.md / plan.md
 │
-├── packages/
+├── libs/
 │   ├── cli/src/main.cpp           # connect() + send_async()
 │   │       tui.h/cpp              # FTXUI TUI + session overlay
 │   ├── server/src/
@@ -304,9 +304,9 @@ void plugin_shutdown(void) { }
 
 | 文件 | 说明 |
 |------|------|
-| `packages/llm/src/plugin.h` | C ABI 接口定义 |
-| `packages/llm/src/plugin_loader.h/cpp` | dlopen 加载器 |
-| `packages/llm/src/plugin_tool.h` | C 回调 → Tool 接口适配器 |
+| `libs/llm/src/plugin.h` | C ABI 接口定义 |
+| `libs/llm/src/plugin_loader.h/cpp` | dlopen 加载器 |
+| `libs/llm/src/plugin_tool.h` | C 回调 → Tool 接口适配器 |
 | `plugins/echo_plugin.c` | 示例插件 |
 
 ## Phase 演进

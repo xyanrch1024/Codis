@@ -7,4 +7,4 @@ LOCAL_LIB="$HOME/.local/usr/lib/x86_64-linux-gnu"
 export PATH="$LOCAL_BIN:$PATH"
 export LD_LIBRARY_PATH="$LOCAL_LIB:$LD_LIBRARY_PATH"
 
-exec "$PROJECT_DIR/build/packages/server/codis-server" "$@"
+exec "$PROJECT_DIR/build/libs/server/codis-server" "$@"

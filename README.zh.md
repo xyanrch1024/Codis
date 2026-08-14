@@ -36,16 +36,16 @@ cmake --build build -j$(nproc)
 ```bash
 # 终端 1: 启动服务端
 export GLM_API_KEY="你的-api-key"
-./build/packages/server/codis-server -c config/config.toml
+./build/libs/server/codis-server -c config/config.toml
 
 # 终端 2: 启动 TUI 客户端（默认）
-./build/packages/cli/codis
+./build/libs/cli/codis
 
 # 继续上次会话
-./build/packages/cli/codis -c
+./build/libs/cli/codis -c
 
 # 指定端口 / 指定模型
-./build/packages/cli/codis -p 8711 -m glm-4.5-flash
+./build/libs/cli/codis -p 8711 -m glm-4.5-flash
 ```
 
 也可以不用手动启动服务端：CLI 检测到服务端未运行时会自动拉起。
@@ -124,7 +124,7 @@ docker logs -f codis
 ## 项目结构
 
 ```
-packages/
+libs/
 ├── server/   # 服务端守护进程（HTTP + WebSocket + LLM 调度 + 工具执行）
 └── cli/      # FTXUI TUI 客户端
 └── llm/      # Provider 封装 / 会话存储 / 工具注册（server 与 cli 共用）

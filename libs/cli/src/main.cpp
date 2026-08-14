@@ -89,11 +89,11 @@ int main(int argc, char** argv) {
     if (!is_server_running(server_port)) {
         LOG_INFO("server not running on port {}, attempting auto-start", server_port);
 
-        auto cli_dir = std::filesystem::path(argv[0]).parent_path();  // build/packages/cli
+        auto cli_dir = std::filesystem::path(argv[0]).parent_path();  // build/libs/cli
         auto project_root = std::filesystem::canonical(cli_dir / "../../..").string();
 
         std::string bin = server_bin.empty()
-            ? (project_root + "/build/packages/server/codis-server")
+            ? (project_root + "/build/libs/server/codis-server")
             : server_bin;
 
         if (std::filesystem::exists(bin)) {

@@ -6,9 +6,9 @@ add_executable(codis-server
 )
 
 target_include_directories(codis-server PRIVATE
-    ${CMAKE_SOURCE_DIR}/packages/llm/src
-    ${CMAKE_SOURCE_DIR}/packages/util/src
-    ${CMAKE_SOURCE_DIR}/packages/plugin/include
+    ${CMAKE_SOURCE_DIR}/libs/llm/src
+    ${CMAKE_SOURCE_DIR}/libs/util/src
+    ${CMAKE_SOURCE_DIR}/libs/plugin/include
 )
 
 target_link_libraries(codis-server PRIVATE
@@ -17,5 +17,6 @@ target_link_libraries(codis-server PRIVATE
     CLI11::CLI11
     codis_llm
     codis_util
+    codis_tool
     codis_plugin
 )

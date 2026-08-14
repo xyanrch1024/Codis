@@ -285,11 +285,11 @@ LLM 通过工具调用 `rag_search("authentication")` 按需检索，避免所�
 
 | 文件 | 操作 | 行数 |
 |------|------|------|
-| `packages/llm/src/rag_store.h` | 新增 | ~40 |
-| `packages/llm/src/rag_store.cpp` | 新增 | ~200 |
-| `packages/llm/src/chunker.h/cpp` | 新增 | ~80 |
-| `packages/llm/src/tools/rag_tools.h/cpp` | 新增 | ~60 |
-| `packages/server/src/server.cpp` | 修改 (注册+索引) | ~10 |
+| `libs/llm/src/rag_store.h` | 新增 | ~40 |
+| `libs/llm/src/rag_store.cpp` | 新增 | ~200 |
+| `libs/llm/src/chunker.h/cpp` | 新增 | ~80 |
+| `libs/llm/src/tools/rag_tools.h/cpp` | 新增 | ~60 |
+| `libs/server/src/server.cpp` | 修改 (注册+索引) | ~10 |
 | **总计** | | **~390** |
 
 ### 依赖变化

@@ -8,5 +8,6 @@ target_include_directories(codis_plugin PUBLIC
 target_link_libraries(codis_plugin PUBLIC
     nlohmann_json::nlohmann_json
     codis_util
+    codis_tool
     ${CMAKE_DL_LIBS}
 )

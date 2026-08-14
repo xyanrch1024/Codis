@@ -55,7 +55,7 @@
 codis-cpp/
 ├── CMakeLists.txt / vcpkg.json
 ├── ARCHITECTURE.md / codis-cpp-design.md / plan.md
-├── packages/
+├── libs/
 │   ├── cli/src/main.cpp           # connect() + send_async()
 │   ├── server/src/                # 2 ACP 端点 + broadcast
 │   ├── llm/src/                   # Provider / Tool / Session / Log

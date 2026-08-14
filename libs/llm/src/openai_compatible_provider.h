@@ -1,7 +1,7 @@
 #pragma once
 
 #include "provider.h"
-#include "client.h"
+#include "llm_http_client.h"
 #include "config.h"
 #include "log.h"
 

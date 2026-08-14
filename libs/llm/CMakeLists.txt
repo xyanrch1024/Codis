@@ -1,8 +1,6 @@
 add_library(codis_llm STATIC
-    src/client.cpp
+    src/llm_http_client.cpp
     src/openai_compatible_provider.cpp
-    src/acp_client.cpp
-    src/tools/tools.cpp
 )
 
 target_include_directories(codis_llm PUBLIC src ${SQLite3_INCLUDE_DIR})

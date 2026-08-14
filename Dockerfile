@@ -22,7 +22,7 @@ ENV CMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake
 # Build Codis
 WORKDIR /build
 COPY CMakeLists.txt vcpkg.json ./
-COPY packages/ packages/
+COPY libs/ libs/
 RUN cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
     && cmake --build build -- -j$(nproc)
@@ -40,8 +40,8 @@ RUN apt-get update -qq && apt-get install -y -qq \
 RUN pip3 install --break-system-packages lark-oapi httpx
 
 # Copy C++ binaries
-COPY --from=builder /build/build/packages/server/codis-server /usr/local/bin/
-COPY --from=builder /build/build/packages/cli/codis /usr/local/bin/
+COPY --from=builder /build/build/libs/server/codis-server /usr/local/bin/
+COPY --from=builder /build/build/libs/cli/codis /usr/local/bin/
 
 # Copy config + bot
 WORKDIR /app

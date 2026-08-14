@@ -1,6 +1,7 @@
 add_executable(codis
     src/main.cpp
     src/tui.cpp
+    src/acp_client.cpp
     src/tui.h
 )
 
