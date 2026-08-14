@@ -46,12 +46,15 @@ void SessionStore::init_tables() {
             content     TEXT NOT NULL DEFAULT '',
             tool_call_id TEXT,
             tool_name   TEXT,
+            tool_arguments TEXT,
             created_at  INTEGER NOT NULL DEFAULT (unixepoch())
         )
     )");
     exec(R"(
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)
     )");
+    // 旧库迁移：早期版本没有 tool_arguments 列
+    migrate_messages_columns();
     exec(R"(
         CREATE TABLE IF NOT EXISTS context_snapshots (
             session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -72,6 +75,24 @@ void SessionStore::exec(const std::string& sql) {
         LOG_ERROR("SQL error: {}", err ? err : "unknown");
         sqlite3_free(err);
     }
+}
+
+// 检查 messages 表是否缺少 tool_arguments 列，缺则 ALTER TABLE 补上
+void SessionStore::migrate_messages_columns() {
+    std::lock_guard lock(mutex_);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "PRAGMA table_info(messages)", -1, &stmt, nullptr) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        return;
+    }
+    bool has_args = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        if (name && std::string(name) == "tool_arguments") has_args = true;
+    }
+    sqlite3_finalize(stmt);
+    if (!has_args)
+        exec("ALTER TABLE messages ADD COLUMN tool_arguments TEXT");
 }
 
 int64_t SessionStore::last_insert_id() {
@@ -182,8 +203,8 @@ void SessionStore::append_message(const std::string& session_id, const Message& 
     std::lock_guard lock(mutex_);
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(db_,
-        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_name) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, tool_arguments) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, session_id.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 2, msg.role.c_str(), -1, SQLITE_STATIC);
@@ -192,6 +213,13 @@ void SessionStore::append_message(const std::string& session_id, const Message& 
     else sqlite3_bind_null(stmt, 4);
     if (msg.tool_name) sqlite3_bind_text(stmt, 5, msg.tool_name->c_str(), -1, SQLITE_STATIC);
     else sqlite3_bind_null(stmt, 5);
+    if (msg.tool_arguments) {
+        // 局部字符串绑定后立即销毁，必须让 sqlite 复制（SQLITE_TRANSIENT）
+        std::string args = msg.tool_arguments->dump();
+        sqlite3_bind_text(stmt, 6, args.c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 6);
+    }
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
@@ -209,7 +237,7 @@ std::vector<Message> SessionStore::load_messages(const std::string& session_id) 
     std::vector<Message> result;
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(db_,
-        "SELECT role, content, tool_call_id, tool_name "
+        "SELECT role, content, tool_call_id, tool_name, tool_arguments "
         "FROM messages WHERE session_id = ? ORDER BY id",
         -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, session_id.c_str(), -1, SQLITE_STATIC);
@@ -221,6 +249,16 @@ std::vector<Message> SessionStore::load_messages(const std::string& session_id) 
             m.tool_call_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
         if (sqlite3_column_type(stmt, 3) != SQLITE_NULL)
             m.tool_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        if (sqlite3_column_type(stmt, 4) != SQLITE_NULL) {
+            auto txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+            try {
+                m.tool_arguments = json::parse(txt);
+            } catch (...) {
+                // 历史脏数据（早期 bug 写入的悬垂指针垃圾字节）不能拖垮服务
+                LOG_WARN("session {}: corrupt tool_arguments row ignored", session_id);
+                m.tool_arguments.reset();
+            }
+        }
         result.push_back(m);
     }
     sqlite3_finalize(stmt);
@@ -243,7 +281,7 @@ void SessionStore::save_context_snapshot(const std::string& session_id,
         -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, session_id.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 2, key.c_str(), -1, SQLITE_STATIC);
-    auto value_str = value.dump();
+    auto value_str = json_dump_safe(value);
     sqlite3_bind_text(stmt, 3, value_str.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 4, rendered.c_str(), -1, SQLITE_STATIC);
     sqlite3_step(stmt);

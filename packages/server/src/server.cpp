@@ -12,6 +12,9 @@
 
 namespace opencode {
 
+// 定义在 Tool call 提取段（extract_tool_calls 前），供存历史时剥离内嵌 JSON 使用
+static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content);
+
 namespace {
 std::string expand_path(const std::string& path) {
     if (path.starts_with("~/")) {
@@ -252,7 +255,7 @@ void OpenCodeServer::handle_health(const httplib::Request&, httplib::Response& r
     j["port"] = port_;
     j["default_provider"] = provider_registry_.default_name();
     j["tools"] = tool_registry_.list();
-    res.set_content(j.dump(2), "application/json");
+    res.set_content(json_dump_safe(j, 2), "application/json");
 }
 
 void OpenCodeServer::handle_info(const httplib::Request&, httplib::Response& res) {
@@ -265,7 +268,7 @@ void OpenCodeServer::handle_info(const httplib::Request&, httplib::Response& res
     j["provider_models"] = pm;
     j["tools"] = tool_registry_.list();
     j["features"] = {"acp", "chat", "websocket", "tools", "sessions"};
-    res.set_content(j.dump(2), "application/json");
+    res.set_content(json_dump_safe(j, 2), "application/json");
 }
 
 void OpenCodeServer::handle_chat(const httplib::Request& req, httplib::Response& res) {
@@ -290,10 +293,10 @@ void OpenCodeServer::handle_chat(const httplib::Request& req, httplib::Response&
         resp["content"] = result;
         resp["model"] = chat_req.model;
         resp["success"] = true;
-        res.set_content(resp.dump(), "application/json");
+        res.set_content(json_dump_safe(resp), "application/json");
     } catch (const std::exception& e) {
         res.status = 500;
-        res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        res.set_content(json_dump_safe(json{{"error", e.what()}}), "application/json");
     }
 }
 
@@ -611,8 +614,20 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
         LOG_DEBUG("turn {} LLM full output ({} bytes):\n{}", *turn,
                   assistant_content.size(), assistant_content);
 
-        if (!assistant_content.empty())
-            session_store_.append_message(session_id, {"assistant", assistant_content});
+        // 持久化思维链（独立行，恢复会话时按顺序在 assistant 前展示；不进入模型上下文）
+        if (!llm_result.reasoning_content.empty())
+            session_store_.append_message(session_id, {"reasoning", llm_result.reasoning_content});
+
+        // 存历史时剥掉内嵌的 tool_calls JSON（只存可见文本），避免恢复会话时
+        // 把原始 JSON 当正文展示给用户/模型
+        std::string assistant_text = assistant_content;
+        {
+            auto [jbegin, jend] = tool_calls_json_span(assistant_content);
+            if (jbegin != std::string::npos && jbegin < jend)
+                assistant_text = assistant_content.substr(0, jbegin) + assistant_content.substr(jend);
+        }
+        if (!assistant_text.empty())
+            session_store_.append_message(session_id, {"assistant", assistant_text});
 
         auto call_list = extract_tool_calls(assistant_content);
         if (call_list.empty()) {
@@ -658,10 +673,12 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
             asst_msg.tool_call_id = call.id; asst_msg.tool_name = call.name;
             asst_msg.tool_arguments = call.arguments;
             req.messages.push_back(asst_msg);
+            session_store_.append_message(session_id, asst_msg);
 
             Message tool_msg; tool_msg.role = "tool";
             tool_msg.content = result.content; tool_msg.tool_call_id = call.id;
             req.messages.push_back(tool_msg);
+            session_store_.append_message(session_id, tool_msg);
         }
     }
 
@@ -696,6 +713,49 @@ void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
 // =============================================================================
 // Tool call 提取 — 从 token 流中解析
 // =============================================================================
+
+// 定位 content 中 tool_calls 最外层 JSON 的字节区间 [begin, end)（含 ```json 围栏）。
+// 找不到返回 {npos, npos}；JSON 被截断时剥到末尾（保证文本部分可安全取出）。
+static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content) {
+    auto pos = content.find("\"tool_calls\"");
+    if (pos == std::string::npos) return {std::string::npos, std::string::npos};
+
+    // 优先从 markdown 代码块中提取
+    auto md_start = content.find("```json");
+    if (md_start != std::string::npos && md_start < pos) {
+        auto md_end = content.find("```", md_start + 7);
+        if (md_end == std::string::npos) return {md_start, content.size()};
+        return {md_start, md_end + 3};
+    }
+
+    // LLM 可能在 tool_calls JSON 前输出文本，找到包含 "tool_calls" 的最外层 JSON 对象
+    // 用括号栈定位闭合位置（截断/漏写右括号时剥到末尾）
+    auto brace = content.rfind('{', pos);
+    if (brace == std::string::npos) return {std::string::npos, std::string::npos};
+
+    std::string stack;
+    bool in_string = false;
+    bool escaped = false;
+    for (auto i = brace; i < content.size(); i++) {
+        char c = content[i];
+        if (escaped) { escaped = false; continue; }
+        if (c == '\\') { escaped = true; continue; }
+        if (c == '"') { in_string = !in_string; continue; }
+        if (in_string) continue;
+        if (c == '{') { stack += '{'; }
+        else if (c == '[') { stack += '['; }
+        else if (c == '}') {
+            if (!stack.empty() && stack.back() == '{') stack.pop_back();
+            if (stack.empty()) return {brace, i + 1};
+        } else if (c == ']') {
+            // 数组内还有未闭合对象：先补 } 再闭合 ]
+            while (!stack.empty() && stack.back() == '{') stack.pop_back();
+            if (!stack.empty() && stack.back() == '[') stack.pop_back();
+            if (stack.empty()) return {brace, i + 1};
+        }
+    }
+    return {brace, content.size()};
+}
 
 std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& content) {
     std::vector<ToolCall> calls;
@@ -808,7 +868,7 @@ void OpenCodeServer::handle_session_get(const httplib::Request& req, httplib::Re
     auto msgs = session_store_.load_messages(session->id);
     j["messages"] = json::array();
     for (auto& m : msgs) j["messages"].push_back(m.to_json());
-    res.set_content(j.dump(2), "application/json");
+    res.set_content(json_dump_safe(j, 2), "application/json");
 }
 
 void OpenCodeServer::handle_session_delete(const httplib::Request& req, httplib::Response& res) {

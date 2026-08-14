@@ -28,93 +28,6 @@ static const std::vector<std::pair<std::string, std::string>> kCommands = {
     {"/clearsessions", "删除所有会话"},
 };
 
-// UTF-8 感知、按显示宽度换行：
-//   - CJK 等宽字符按 2 列计算
-//   - 优先在空格处断行；无空格的长句（中文）在超宽处硬断
-//   - 行内已有文本时尽量在最后一个空格处回退断行
-static std::vector<std::string> wrap_by_width(const std::string& text, int width) {
-    std::vector<std::string> lines;
-    if (width <= 0) return {text};
-    std::string line;
-    int line_w = 0;
-    size_t i = 0;
-    const size_t n = text.size();
-
-    auto utf8_len = [](char c) {
-        unsigned char u = (unsigned char)c;
-        if (u >= 0xF0) return 4;
-        if (u >= 0xE0) return 3;
-        if (u >= 0xC0) return 2;
-        return 1;
-    };
-
-    auto push_line = [&]() {
-        lines.push_back(line);
-        line.clear();
-        line_w = 0;
-    };
-
-    while (i < n) {
-        char c = text[i];
-        if (c == '\n') {
-            push_line();
-            i++;
-            continue;
-        }
-        int clen = utf8_len(c);
-        if (i + clen > n) clen = 1;
-        std::string_view cp(text.data() + i, clen);
-        int w = string_width(cp);
-
-        if (cp == " ") {
-            if (!line.empty() && line_w + 1 <= width) {
-                line += ' ';
-                line_w += 1;
-            }
-            i += clen;
-            continue;
-        }
-
-        if (line_w + w <= width) {
-            line.append(cp);
-            line_w += w;
-            i += clen;
-            continue;
-        }
-
-        // 超宽：优先回退到行内最后一个空格处断行（head 足够宽才有意义）
-        if (!line.empty()) {
-            auto sp = line.find_last_of(' ');
-            if (sp != std::string::npos && string_width(line.substr(0, sp)) >= 3) {
-                lines.push_back(line.substr(0, sp));
-                line = line.substr(sp + 1) + std::string(cp);
-                line_w = string_width(line);
-                i += clen;
-                continue;
-            }
-        }
-        if (!line.empty()) {
-            // 无空格可断：硬断（长单词 / 无空格中文）
-            push_line();
-            continue;  // 重新处理当前字符
-        }
-        // 单字符比整行宽：逐字硬断
-        line.append(cp);
-        line_w += w;
-        if (line_w >= width) push_line();
-        i += clen;
-    }
-    if (!line.empty()) lines.push_back(line);
-    return lines;
-}
-
-// 按宽度换行后转为 vbox<text> 元素
-static Element wrapped_text(const std::string& content, int width) {
-    Elements els;
-    for (auto& ln : wrap_by_width(content, width)) els.push_back(ftxui::text(ln));
-    return vbox(std::move(els));
-}
-
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
                      std::string session_arg)
     : server_port_(server_port)
@@ -161,17 +74,7 @@ int TuiClient::run() {
     // 如果恢复已有 session，通过 REST 拉历史（SSE 长连接不推历史）
     if (!session_arg_.empty()) {
         auto info = acp_.get_session(state_->current_session);
-        if (info) {
-            for (auto& m : info->messages) {
-                if (m.role == "user") {
-                    state_->add_item(ItemKind::User, m.content);
-                    state_->history.push_back(m);
-                } else if (m.role == "assistant") {
-                    state_->add_item(ItemKind::Assistant, m.content);
-                    state_->history.push_back(m);
-                }
-            }
-        }
+        if (info) load_history(info->messages);
         // 首次 TUI 渲染时自动滚动到底部
         auto_scroll_ = true;
         scroll_item_ = -1;
@@ -290,11 +193,10 @@ int TuiClient::run() {
                     break;
                 }
                 case ItemKind::ToolCall:
-                    el = render_tool_call(item);
+                    el = render_tool_call(item, tw);
                     break;
                 case ItemKind::ToolResult: {
-                    auto txt = opencode::truncate_tool_output(item.text);
-                    el = wrapped_text(txt, tw) | color(Color::GrayLight);
+                    el = wrapped_text(item.text, tw) | color(Color::GrayLight);
                     break;
                 }
                 case ItemKind::Error:
@@ -730,6 +632,55 @@ void TuiClient::connect_sse() {
     acp_.connect(state_->current_session, build_callbacks());
 }
 
+// 历史回放：把持久化的消息恢复成 TUI 条目。
+// 与实时流一致——user/assistant 纯文本进 history（供构建请求），
+// reasoning/tool 仅展示（不入 history，避免把思维链或工具角色发回模型）。
+void TuiClient::load_history(const std::vector<Message>& msgs) {
+    for (auto& m : msgs) {
+        if (m.role == "user") {
+            state_->add_item(ItemKind::User, m.content);
+            state_->history.push_back(m);
+        } else if (m.role == "reasoning") {
+            state_->add_item(ItemKind::Reasoning, m.content);
+        } else if (m.role == "tool") {
+            // 合并进匹配的 ToolCall；未匹配则保底为独立条目
+            bool matched = false;
+            for (auto it = state_->items.rbegin(); it != state_->items.rend(); ++it) {
+                if (it->kind == ItemKind::ToolCall && m.tool_call_id && it->tool_id == *m.tool_call_id) {
+                    it->has_result = true;
+                    it->tool_success = true;
+                    it->result_text = m.content;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched)
+                state_->add_item(ItemKind::ToolResult, m.content);
+        } else if (m.role == "assistant") {
+            if (m.tool_call_id) {
+                json args = m.tool_arguments ? *m.tool_arguments : json::object();
+                auto d = tool_display(m.tool_name.value_or(""), args);
+                ConvItem item;
+                item.kind = ItemKind::ToolCall;
+                item.tool_id = *m.tool_call_id;
+                item.tool_name = m.tool_name.value_or("");
+                item.tool_icon = d.icon;
+                item.text = d.label;
+                item.tool_pending = d.pending;
+                item.tool_title = d.block_title;
+                item.tool_block = d.block;
+                if (item.tool_name == "write" || item.tool_name == "edit")
+                    item.content_text = format_tool_call(item.tool_name, args);
+                state_->items.push_back(std::move(item));
+                if (state_->notify_) state_->notify_();
+            } else {
+                state_->add_item(ItemKind::Assistant, m.content);
+                state_->history.push_back(m);
+            }
+        }
+    }
+}
+
 void TuiClient::switch_session(const SessionInfo& s) {
     state_->current_session = s.id;
     sessions_visible_ = false;
@@ -740,17 +691,7 @@ void TuiClient::switch_session(const SessionInfo& s) {
     // 通过 REST API 拉历史
     auto info = acp_.get_session(s.id);
     state_->clear_all();
-    if (info) {
-        for (auto& m : info->messages) {
-            if (m.role == "user") {
-                state_->add_item(ItemKind::User, m.content);
-                state_->history.push_back(m);
-            } else if (m.role == "assistant") {
-                state_->add_item(ItemKind::Assistant, m.content);
-                state_->history.push_back(m);
-            }
-        }
-    }
+    if (info) load_history(info->messages);
     auto_scroll_ = true;
     scroll_item_ = -1;
     state_->add_item(ItemKind::Status, "[Session: " + s.id + "]");

@@ -52,7 +52,7 @@ void LLMHttpClient::stream_post(const std::string& url,
     client.set_read_timeout(timeout_seconds, 0);
     client.set_write_timeout(timeout_seconds, 0);
 
-    std::string req_body = body.dump();
+    std::string req_body = json_dump_safe(body);
 
     // LOG_DEBUG("POST {}://{}{} ({} bytes, stream={}), body={}", use_ssl ? "https" : "http", host, path, req_body.size(), !non_stream, req_body);
 

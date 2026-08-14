@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tool.h"
+#include "types.h"
 #include "log.h"
 
 #include <string>
@@ -43,7 +44,18 @@ public:
             return {call.id, false, "Unknown tool: " + call.name};
         }
         LOG_DEBUG("executing tool: {} id={}", call.name, call.id);
-        return it->second->execute(call);
+        try {
+            auto result = it->second->execute(call);
+            // 工具输出可能含二进制/非 UTF-8 字节，统一清理后再广播/入库/进模型上下文
+            result.content = make_valid_utf8(result.content);
+            return result;
+        } catch (const std::exception& e) {
+            LOG_ERROR("tool {} threw: {}", call.name, e.what());
+            return {call.id, false, std::string("tool threw: ") + e.what()};
+        } catch (...) {
+            LOG_ERROR("tool {} threw unknown exception", call.name);
+            return {call.id, false, "tool threw: unknown exception"};
+        }
     }
 
     std::vector<std::string> list() const {

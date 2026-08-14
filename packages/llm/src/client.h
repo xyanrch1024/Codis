@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 #include <httplib.h>
+#include "types.h"
 
 namespace opencode {
 

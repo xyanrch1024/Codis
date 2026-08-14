@@ -274,39 +274,4 @@ inline ToolDisplay tool_display(const std::string& name, const json& args) {
     return d;
 }
 
-// 截断 tool 执行输出用于 UI 展示:
-//   - 最多保留 max_lines 行，超出追加 "... (N more lines)"
-//   - 单行超过 max_line_len 字符时截断
-//   空内容返回空串
-inline std::string truncate_tool_output(const std::string& content,
-                                        size_t max_lines = 20,
-                                        size_t max_line_len = 500) {
-    std::vector<std::string> kept;
-    size_t total = 0;
-    size_t pos = 0;
-    while (pos < content.size()) {
-        auto nl = content.find('\n', pos);
-        size_t end = (nl == std::string::npos) ? content.size() : nl;
-        auto line = content.substr(pos, end - pos);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        total++;
-        if (kept.size() < max_lines) {
-            if (line.size() > max_line_len)
-                line = line.substr(0, max_line_len) + "...";
-            kept.push_back(std::move(line));
-        }
-        if (nl == std::string::npos) break;
-        pos = nl + 1;
-    }
-    if (total > kept.size())
-        kept.push_back("... (" + std::to_string(total - kept.size()) + " more lines)");
-
-    std::string out;
-    for (size_t i = 0; i < kept.size(); ++i) {
-        if (i) out += '\n';
-        out += kept[i];
-    }
-    return out;
-}
-
 } // namespace opencode

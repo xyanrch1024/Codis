@@ -239,6 +239,7 @@ private:
     void switch_session(const SessionInfo& s);
     void connect_sse();
     AcpClient::Callbacks build_callbacks();
+    void load_history(const std::vector<Message>& msgs);
 
     // Conversation scrolling（按 item 索引）
     int scroll_item_ = -1;  // -1 = auto-scroll to bottom

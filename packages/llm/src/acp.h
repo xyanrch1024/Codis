@@ -77,7 +77,7 @@ inline std::string to_frame(EventType type, const json& data) {
     json frame;
     frame["type"] = to_string(type);
     frame["data"] = data;
-    return frame.dump();
+    return json_dump_safe(frame);
 }
 
 inline std::string assistant_frame(std::string_view delta) {
