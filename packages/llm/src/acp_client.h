@@ -76,6 +76,9 @@ public:
     // 服务器信息（providers / models / 特性）
     std::optional<ServerInfo> get_server_info();
 
+    // WebSocket 长连接是否已建立
+    bool connected() const { return connected_.load(); }
+
 private:
     // WS 就绪前/断线期间的待发请求，connect 成功后 flush
     void flush_pending();

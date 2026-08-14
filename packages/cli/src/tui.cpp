@@ -2,6 +2,7 @@
 #include "tui_tool_render.h"
 #include "log.h"
 #include "tool_format.h"
+#include "clipboard.h"
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
@@ -12,20 +13,25 @@
 #include <cstdlib>
 #include <sstream>
 #include <algorithm>
+#include <filesystem>
 
 namespace opencode {
 
 using namespace ftxui;
 
+// Sessions 面板的最大可见行数（固定面板高度，避免会话太多时撑满屏幕）
+static constexpr int kMaxSessionRows = 12;
+
 // 支持的命令（用于 "/" 补全弹窗）
 static const std::vector<std::pair<std::string, std::string>> kCommands = {
-    {"/exit", "退出"},
-    {"/clear", "清空上下文"},
-    {"/sessions", "会话列表"},
-    {"/newsession", "新建会话"},
-    {"/balance", "查询余额"},
-    {"/model", "切换模型"},
-    {"/clearsessions", "删除所有会话"},
+    {"/help", "Show help"},
+    {"/exit", "Quit"},
+    {"/clear", "Clear context"},
+    {"/sessions", "List sessions"},
+    {"/newsession", "New session"},
+    {"/balance", "Check balance"},
+    {"/model", "Switch model"},
+    {"/clearsessions", "Delete all sessions"},
 };
 
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
@@ -235,8 +241,34 @@ int TuiClient::run() {
 
     auto main_container = Container::Vertical({conversation_view, input_bar});
 
+    // 工作目录（进程 cwd，渲染期间不变；长路径截断避免撑破布局）
+    std::string cwd;
+    try {
+        cwd = std::filesystem::current_path().string();
+    } catch (...) {}
+    if (cwd.size() > 50) cwd = "…" + cwd.substr(cwd.size() - 50);
+
     auto main_renderer = Renderer(main_container, [&] {
         auto status = state_->processing ? " [processing...]" : "";
+
+        // 底部状态栏（输入框下方）：两行 — 状态/提示 + 工作目录
+        auto status_bar = vbox({
+            hbox({
+                text(acp_.connected() ? " ● Connected" : " ● Disconnected") |
+                    (acp_.connected() ? color(Color::Green) : color(Color::Red)),
+                text("  ·  " + (state_->processing ? std::string("processing...")
+                                                   : std::string("idle"))) |
+                    dim,
+                text("  ·  " + std::to_string(state_->items.size()) + " items") | dim,
+                flex(text("")),
+                text("Double-ESC cancel · Drag to copy · /commands") | dim,
+            }),
+            hbox({
+                text(" " + cwd) | dim,
+                flex(text("")),
+                text("Ctrl+S sessions") | dim,
+            }),
+        }) | bgcolor(Color(Color::Palette256::Grey23));
 
         Elements header = {
             hbox({
@@ -247,25 +279,46 @@ int TuiClient::run() {
             }),
             separator(),
             main_container->Render() | flex,
+            status_bar,
         };
+
+        // Help overlay
+        if (help_visible_) {
+            Elements cmd_rows;
+            for (const auto& [cmd, desc] : kCommands)
+                cmd_rows.push_back(text("  " + cmd + "  " + desc));
+            auto overlay = window(text(" Help "), vbox({
+                text(" Commands:") | bold,
+                vbox(std::move(cmd_rows)) | frame,
+                separator(),
+                text(" Keys:") | bold,
+                text("  ESC ESC         cancel running task"),
+                text("  Up/Down / wheel scroll conversation"),
+                text("  Drag left mouse copy selected text"),
+                separator(),
+                text(" ESC to close ") | dim | center,
+            })) | clear_under | center | border;
+            return dbox({vbox(std::move(header)), overlay});
+        }
 
         // Sessions overlay
         if (sessions_visible_ && !session_list_.empty()) {
             Elements rows;
             for (int i = 0; i < (int)session_list_.size(); i++) {
                 auto& s = session_list_[i];
-                auto line = s.id + "  " + std::to_string(s.message_count) + " msgs  " + s.title;
-                auto el = text("  " + line);
-                if (i == session_selected_) el = el | inverted;
-                if (s.id == state_->current_session) el = text("> " + line) | bold;
+                std::string prefix = (s.id == state_->current_session) ? "> " : "  ";
+                auto el = text(prefix + s.id + "  " + std::to_string(s.message_count) + " msgs  " + s.title);
+                if (s.id == state_->current_session) el = el | bold;
+                if (i == session_selected_) el = el | inverted | focus;
                 rows.push_back(el);
             }
 
             auto overlay = window(text(" Sessions "), vbox({
-                vbox(std::move(rows)) | frame | flex,
+                vbox(std::move(rows)) | frame | size(HEIGHT, EQUAL, kMaxSessionRows) |
+                    vscroll_indicator,
                 separator(),
                  text(" " + std::to_string(session_selected_ + 1) + "/" +
-                     std::to_string(session_list_.size()) + "  ↑↓  Enter(del)  ESC ") | dim | center,
+                     std::to_string(session_list_.size()) + "  ↑↓/Tab  Enter(del)  ESC ") | dim | center,
             })) | clear_under | center | border;
 
             return dbox({vbox(std::move(header)), overlay});
@@ -275,6 +328,69 @@ int TuiClient::run() {
     });
 
     auto component = main_renderer | CatchEvent([&](Event event) {
+        // 左键按下/拖动/松开：高亮交给 FTXUI 内置选择处理，这里只跟踪拖拽状态；
+        // 松开时若有实际拖动则直接用 GetSelection() 复制。
+        // 注意：不能用 SelectionChange 回调——释放事件坐标通常等于最后一次移动，
+        // selection_data_ 不变，回调不会触发，复制永远不会执行。
+        if (event.is_mouse() && event.mouse().button == Mouse::Left) {
+            if (event.mouse().motion == Mouse::Pressed) {
+                drag_active_ = true;
+                drag_moved_ = false;
+            } else if (event.mouse().motion == Mouse::Moved) {
+                if (drag_active_) drag_moved_ = true;
+            } else if (event.mouse().motion == Mouse::Released) {
+                if (drag_active_) {
+                    drag_active_ = false;
+                    if (drag_moved_) {
+                        drag_moved_ = false;
+                        const auto sel = screen.GetSelection();
+                        if (!sel.empty()) {
+                            copy_to_clipboard(sel);
+                            state_->add_item(ItemKind::Status,
+                                             "[Copied " + std::to_string(sel.size()) + " chars]");
+                            post_job_();
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        // ESC 键取消任务（双击）。必须在补全弹窗/输入组件之前处理：
+        // 1) 补全弹窗的 CatchEvent 会吞掉第一个 ESC（清空输入并关闭弹窗），
+        //    若在这里之后处理，双击永远只被看到一次；
+        // 2) 快速双击（间隔 <50ms）会被 FTXUI 合并成 Event::Special("\x1b\x1b")，
+        //    它 != Event::Escape，旧逻辑完全漏掉。
+        // 做法：统计窗口内纯 "\x1b" 字节组成的按键次数（单个/合并都算），
+        // 单次 ESC 仍向下传递（关闭补全/会话列表等），第二次才取消。
+        {
+            size_t esc_count = 0;
+            const auto& in = event.input();
+            while (esc_count < in.size() && in[esc_count] == '\x1b') esc_count++;
+            if (esc_count > 0 && esc_count == in.size()) {
+                if (state_->processing) {
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - last_escape_ > std::chrono::milliseconds(600))
+                        esc_count_ = 0;
+                    esc_count_ += static_cast<int>(esc_count);
+                    last_escape_ = now;
+                    if (esc_count_ >= 2) {
+                        esc_count_ = 0;
+                        last_escape_ = std::chrono::steady_clock::time_point{};
+                        acp_.cancel_session(state_->current_session);
+                        state_->processing = false;
+                        state_->add_item(ItemKind::Status, "[Task cancelled]");
+                        post_job_();
+                        return true;
+                    }
+                } else {
+                    // 非任务状态不累计，避免污染下次任务的首次按键
+                    esc_count_ = 0;
+                    last_escape_ = std::chrono::steady_clock::time_point{};
+                }
+            }
+        }
+
         // 命令补全弹窗打开时：↑↓/ESC 交给输入组件处理，不滚动对话区/不触发取消
         if (cmd_palette_visible_) {
             if (event == Event::ArrowUp || event == Event::ArrowDown ||
@@ -282,22 +398,24 @@ int TuiClient::run() {
                 return false;
         }
 
-        // 双击 ESC（400ms 内两次）：取消正在执行的任务（不退程序）
-        if (event == Event::Escape) {
-            auto now = std::chrono::steady_clock::now();
-            if (state_->processing &&
-                now - last_escape_ <= std::chrono::milliseconds(400)) {
-                last_escape_ = std::chrono::steady_clock::time_point{};
-                acp_.cancel_session(state_->current_session);
-                state_->processing = false;
-                state_->add_item(ItemKind::Status, "[任务已取消]");
-                post_job_();
+        if (help_visible_) {
+            if (event == Event::Escape) {
+                help_visible_ = false;
                 return true;
             }
-            last_escape_ = now;
+            return true;  // 面板打开时吞掉其它按键（与 Sessions 一致）
         }
 
         if (sessions_visible_) {
+            if (event == Event::Tab) {
+                session_selected_ = (session_selected_ - 1 + (int)session_list_.size()) %
+                                    (int)session_list_.size();
+                return true;
+            }
+            if (event == Event::TabReverse) {
+                session_selected_ = (session_selected_ + 1) % (int)session_list_.size();
+                return true;
+            }
             if (event == Event::ArrowUp && session_selected_ > 0) {
                 session_selected_--;
                 return true;
@@ -404,7 +522,7 @@ int TuiClient::run() {
     });
 
     input->TakeFocus();
-    screen.TrackMouse(true);  // 开启鼠标追踪：滚轮滚动生效；复制改用 Shift+拖拽
+    screen.TrackMouse(true);  // 开启鼠标追踪：滚轮滚动 + 左键拖拽选择复制
     exit_loop_ = screen.ExitLoopClosure();
     screen.Loop(component);
 
@@ -431,6 +549,10 @@ void TuiClient::send_message(const std::string& text) {
     }
     if (text == "/clearsessions") {
         cmd_delete_all();
+        return;
+    }
+    if (text == "/help") {
+        help_visible_ = true;
         return;
     }
     if (text.starts_with("/newsession")) {

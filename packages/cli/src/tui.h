@@ -232,10 +232,11 @@ private:
     std::function<void()> post_job_;
     std::function<void()> exit_loop_;  // run() 内设置为 screen.ExitLoopClosure()
 
-    // Session overlay
+    // Session / Help overlay
     bool sessions_visible_ = false;
     int session_selected_ = 0;
     std::vector<SessionInfo> session_list_;
+    bool help_visible_ = false;
     void switch_session(const SessionInfo& s);
     void connect_sse();
     AcpClient::Callbacks build_callbacks();
@@ -247,10 +248,15 @@ private:
 
     // 双击 ESC 取消当前任务（非退出）
     std::chrono::steady_clock::time_point last_escape_;
+    int esc_count_ = 0;  // 窗口内累计的 ESC 次数（兼容合并的 "\x1b\x1b"）
 
     // 命令补全弹窗：输入以 "/" 开头时显示
     bool cmd_palette_visible_ = false;
     int cmd_selected_ = 0;
+
+    // 鼠标拖拽选择（FTXUI 内置选择）→ 松开自动复制
+    bool drag_active_ = false;  // 左键按下中
+    bool drag_moved_ = false;   // 是否发生了实际拖动（区分点击/拖拽）
 };
 
 } // namespace opencode
