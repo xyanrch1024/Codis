@@ -1,5 +1,5 @@
-# OpenCode C++ 多 Provider 配置
-# 路径: ~/.config/opencode/config.toml 或通过 -c 指定
+# Codis C++ 多 Provider 配置
+# 路径: ~/.config/codis/config.toml 或通过 -c 指定
 #
 # API Key 通过环境变量设置，不要在配置文件里写明文:
 #   export OPENAI_API_KEY="sk-..."

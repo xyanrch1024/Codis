@@ -26,7 +26,7 @@
 #include <condition_variable>
 #include <atomic>
 
-namespace opencode {
+namespace codis {
 
 // =============================================================================
 // 每连接帧缓冲队列（ACP 循环 push，WS 发送线程 pop）
@@ -80,10 +80,10 @@ struct SessionState {
 // HTTP Server
 // =============================================================================
 
-class OpenCodeServer {
+class CodisServer {
 public:
-    OpenCodeServer(int port = 8711, std::optional<std::string> config_path = std::nullopt);
-    ~OpenCodeServer();
+    CodisServer(int port = 8711, std::optional<std::string> config_path = std::nullopt);
+    ~CodisServer();
 
     void start();
     void stop();
@@ -141,4 +141,4 @@ private:
     PluginLoader plugin_loader_;
 };
 
-} // namespace opencode
+} // namespace codis

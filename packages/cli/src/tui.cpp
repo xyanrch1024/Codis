@@ -18,7 +18,7 @@
 #include <thread>
 #include <unistd.h>
 
-namespace opencode {
+namespace codis {
 
 using namespace ftxui;
 
@@ -740,7 +740,7 @@ void TuiClient::cmd_balance(const std::string& line) {
     }
     if (http_res->status != 200) {
         try {
-            auto j = opencode::json::parse(http_res->body);
+            auto j = codis::json::parse(http_res->body);
             state_->add_item(ItemKind::Status, "[Error] " + j.value("error", http_res->body));
         } catch (...) {
             state_->add_item(ItemKind::Status, "[Error] HTTP " + std::to_string(http_res->status) + ": " + http_res->body.substr(0, 200));
@@ -749,7 +749,7 @@ void TuiClient::cmd_balance(const std::string& line) {
     }
 
     try {
-        auto j = opencode::json::parse(http_res->body);
+        auto j = codis::json::parse(http_res->body);
         auto& bal = j["balance"];
         state_->add_item(ItemKind::Status, "--- " + prov + " Balance ---");
 
@@ -932,4 +932,4 @@ void TuiClient::switch_session(const SessionInfo& s) {
     if (post_job_) post_job_();
 }
 
-} // namespace opencode
+} // namespace codis

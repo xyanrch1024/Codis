@@ -4,7 +4,7 @@
 
 #include <unistd.h>
 
-namespace opencode {
+namespace codis {
 
 // Base64 编码（RFC 4648），供 OSC52 剪贴板使用
 inline std::string base64_encode(const std::string& in) {
@@ -32,4 +32,4 @@ inline void copy_to_clipboard(const std::string& text) {
     (void)::write(STDOUT_FILENO, frame.data(), frame.size());
 }
 
-} // namespace opencode
+} // namespace codis

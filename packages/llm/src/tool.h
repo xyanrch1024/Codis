@@ -4,7 +4,7 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 
-namespace opencode {
+namespace codis {
 
 using json = nlohmann::json;
 
@@ -52,4 +52,4 @@ public:
     virtual ToolResult execute(const ToolCall& call) = 0;
 };
 
-} // namespace opencode
+} // namespace codis

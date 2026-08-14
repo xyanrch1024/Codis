@@ -16,7 +16,7 @@
 #include <vector>
 #include <httplib.h>
 
-namespace opencode {
+namespace codis {
 
 struct SessionInfo {
     std::string id;
@@ -97,4 +97,4 @@ private:
     std::deque<std::string> pending_outbound_;
 };
 
-} // namespace opencode
+} // namespace codis

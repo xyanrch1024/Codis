@@ -7,7 +7,7 @@
 #include <random>
 #include <iomanip>
 
-namespace opencode {
+namespace codis {
 
 SessionStore::SessionStore(const std::string& db_path) : db_path_(db_path) {
     auto parent = std::filesystem::path(db_path).parent_path();
@@ -399,4 +399,4 @@ std::vector<std::string> SessionStore::search_sessions(const std::string& query,
     return result;
 }
 
-} // namespace opencode
+} // namespace codis

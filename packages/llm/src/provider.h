@@ -8,7 +8,7 @@
 #include <memory>
 #include <atomic>
 
-namespace opencode {
+namespace codis {
 
 class LLMProvider {
 public:
@@ -23,4 +23,4 @@ public:
                                      std::atomic<bool>* abort_flag = nullptr) = 0;
 };
 
-} // namespace opencode
+} // namespace codis

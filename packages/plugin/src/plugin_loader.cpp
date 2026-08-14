@@ -6,7 +6,7 @@
 #include <cstring>
 #include <atomic>
 
-namespace opencode {
+namespace codis {
 
 // 全局桥接（单实例 PluginLoader）
 static std::atomic<PluginLoader*> g_active_loader{nullptr};
@@ -115,4 +115,4 @@ bool PluginLoader::load_one(const std::string& path, const std::string& config_j
     return true;
 }
 
-} // namespace opencode
+} // namespace codis

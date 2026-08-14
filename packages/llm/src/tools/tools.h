@@ -3,7 +3,7 @@
 #include "tool.h"
 #include <string>
 
-namespace opencode::tools {
+namespace codis::tools {
 
 class BashTool : public Tool {
 public:
@@ -47,4 +47,4 @@ public:
     ToolResult execute(const ToolCall& call) override;
 };
 
-} // namespace opencode::tools
+} // namespace codis::tools

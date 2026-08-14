@@ -11,7 +11,7 @@
 #include <cstdlib>
 #include <cstdio>
 
-namespace opencode::log {
+namespace codis::log {
 
 // =============================================================================
 // 级别
@@ -75,7 +75,7 @@ public:
             file, line, msg);
 
         std::lock_guard lock(mutex_);
-        // 配置了 OPENCODE_LOG_FILE 时只写文件不写 stderr，
+        // 配置了 CODIS_LOG_FILE 时只写文件不写 stderr，
         // 避免全屏 TUI（备用屏幕缓冲）被日志文字污染
         if (!file_.is_open()) std::cerr << line_str;
         if (file_.is_open()) file_ << line_str << std::flush;
@@ -83,7 +83,7 @@ public:
 
 private:
     Logger() {
-        const char* env = std::getenv("OPENCODE_LOG_LEVEL");
+        const char* env = std::getenv("CODIS_LOG_LEVEL");
         if (env) {
             std::string s(env);
             if (s == "trace") level_ = Level::trace;
@@ -93,7 +93,7 @@ private:
             else if (s == "error") level_ = Level::error;
             else if (s == "off")   level_ = Level::off;
         }
-        const char* f = std::getenv("OPENCODE_LOG_FILE");
+        const char* f = std::getenv("CODIS_LOG_FILE");
         if (f) set_file(f);
     }
 
@@ -102,7 +102,7 @@ private:
     std::ofstream file_;
 };
 
-} // namespace opencode::log
+} // namespace codis::log
 
 // =============================================================================
 // 宏
@@ -114,18 +114,18 @@ private:
 #endif
 
 #define LOG_TRACE(fmt, ...) \
-    do { if constexpr ((int)opencode::log::Level::trace >= LOG_ACTIVE_LEVEL) \
-         opencode::log::Logger::instance().log(opencode::log::Level::trace, __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
+    do { if constexpr ((int)codis::log::Level::trace >= LOG_ACTIVE_LEVEL) \
+         codis::log::Logger::instance().log(codis::log::Level::trace, __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
 
 #define LOG_DEBUG(fmt, ...) \
-    do { if constexpr ((int)opencode::log::Level::debug >= LOG_ACTIVE_LEVEL) \
-         opencode::log::Logger::instance().log(opencode::log::Level::debug, __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
+    do { if constexpr ((int)codis::log::Level::debug >= LOG_ACTIVE_LEVEL) \
+         codis::log::Logger::instance().log(codis::log::Level::debug, __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
 
 #define LOG_INFO(fmt, ...) \
-    do { opencode::log::Logger::instance().log(opencode::log::Level::info,  __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
+    do { codis::log::Logger::instance().log(codis::log::Level::info,  __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
 
 #define LOG_WARN(fmt, ...) \
-    do { opencode::log::Logger::instance().log(opencode::log::Level::warn,  __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
+    do { codis::log::Logger::instance().log(codis::log::Level::warn,  __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
 
 #define LOG_ERROR(fmt, ...) \
-    do { opencode::log::Logger::instance().log(opencode::log::Level::error, __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)
+    do { codis::log::Logger::instance().log(codis::log::Level::error, __FILE__, __LINE__, std::format(fmt, ##__VA_ARGS__)); } while(0)

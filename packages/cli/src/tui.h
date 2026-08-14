@@ -14,7 +14,7 @@
 #include <memory>
 #include <chrono>
 
-namespace opencode {
+namespace codis {
 
 // =============================================================================
 // 消息模型 — 渲染的唯一事实源。无控制字符、无前缀嗅探。
@@ -272,4 +272,4 @@ private:
     std::chrono::steady_clock::time_point last_event_at_;
 };
 
-} // namespace opencode
+} // namespace codis

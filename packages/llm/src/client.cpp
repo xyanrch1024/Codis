@@ -4,7 +4,7 @@
 #include <iostream>
 #include <map>
 
-namespace opencode {
+namespace codis {
 
 LLMHttpClient::LLMHttpClient() {}
 
@@ -22,7 +22,7 @@ void LLMHttpClient::stream_post(const std::string& url,
     httplib::Headers headers = {
         {"Authorization", "Bearer " + api_key},
         {"Content-Type", "application/json"},
-        {"User-Agent", "opencode-cpp/0.1.0"}
+        {"User-Agent", "codis-cpp/0.1.0"}
     };
 
     std::string url_part = url;
@@ -231,4 +231,4 @@ bool LLMHttpClient::parse_sse_line(const std::string& line,
     return true;
 }
 
-} // namespace opencode
+} // namespace codis

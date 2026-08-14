@@ -6,7 +6,7 @@
 #include <chrono>
 #include <thread>
 
-namespace opencode {
+namespace codis {
 
 AcpClient::AcpClient(int server_port)
     : host_("127.0.0.1")
@@ -333,4 +333,4 @@ bool AcpClient::switch_session(const std::string& session_id) {
     return true;
 }
 
-} // namespace opencode
+} // namespace codis

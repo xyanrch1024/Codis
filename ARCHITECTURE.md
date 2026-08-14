@@ -176,7 +176,7 @@ ACP 线程不直接写 TCP，只入队。mutex + condition_variable 同步。
 httplib 默认 socket 选项使用 `SO_REUSEPORT`，会导致两个 server 进程同时绑定同一端口，
 内核把新连接分发给不同进程 —— WS 长连接和 HTTP POST 落在不同进程时消息会静默丢失。
 
-`OpenCodeServer` 构造函数中覆盖 socket 选项为仅 `SO_REUSEADDR`：
+`CodisServer` 构造函数中覆盖 socket 选项为仅 `SO_REUSEADDR`：
 
 ```cpp
 server_->set_socket_options([](int sock) {
@@ -205,9 +205,9 @@ server_->set_socket_options([](int sock) {
 ## 项目目录
 
 ```
-opencode-cpp/
+codis-cpp/
 ├── CMakeLists.txt / vcpkg.json
-├── ARCHITECTURE.md / opencode-cpp-design.md / plan.md
+├── ARCHITECTURE.md / codis-cpp-design.md / plan.md
 │
 ├── packages/
 │   ├── cli/src/main.cpp           # connect() + send_async()

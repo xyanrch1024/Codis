@@ -14,7 +14,7 @@
 #include <sys/utsname.h>
 #endif
 
-namespace opencode {
+namespace codis {
 
 // =============================================================================
 // SystemContext
@@ -238,4 +238,4 @@ ContextSource project_instructions_source(const std::string& project_root) {
 
 } // namespace context_sources
 
-} // namespace opencode
+} // namespace codis

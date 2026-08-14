@@ -7,7 +7,7 @@
 #include <atomic>
 #include <cstdint>
 
-namespace opencode {
+namespace codis {
 
 class EventBus {
 public:
@@ -54,4 +54,4 @@ private:
     std::atomic<uint64_t> next_id_{1};
 };
 
-} // namespace opencode
+} // namespace codis

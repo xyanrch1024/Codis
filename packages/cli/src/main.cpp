@@ -14,9 +14,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
 #endif
 
-using namespace opencode;
+using namespace codis;
 
 namespace {
 
@@ -31,9 +32,18 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
 #ifdef __linux__
     pid_t pid = fork();
     if (pid == 0) {
+        // daemon 化：不继承终端 fd，避免 CLI 退出/终端关闭后 server 挂死
         setsid();
         chdir(project_root.c_str());
-        execl(server_binary.c_str(), server_binary.c_str(), "-p", std::to_string(port).c_str(),
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        auto port_str = std::to_string(port);
+        execl(server_binary.c_str(), server_binary.c_str(), "-p", port_str.c_str(),
               "-c", "config/config.toml", nullptr);
         _exit(127);
     }
@@ -56,7 +66,7 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
 } // anonymous namespace
 
 int main(int argc, char** argv) {
-    CLI::App app{"OpenCode C++ Client — ACP + SSE (v0.3.0)"};
+    CLI::App app{"Codis C++ Client — ACP + SSE (v0.3.0)"};
 
     std::string model         = "glm-4.5-flash";
     std::string provider      = "glm";
@@ -83,14 +93,14 @@ int main(int argc, char** argv) {
         auto project_root = std::filesystem::canonical(cli_dir / "../../..").string();
 
         std::string bin = server_bin.empty()
-            ? (project_root + "/build/packages/server/opencode-server")
+            ? (project_root + "/build/packages/server/codis-server")
             : server_bin;
 
         if (std::filesystem::exists(bin)) {
             ensure_server_running(server_port, bin, project_root);
         } else {
             LOG_ERROR("server binary not found: {}", bin);
-            std::cerr << "Server not running. Start it: opencode-server -p " << server_port << " -c config/config.toml\n";
+            std::cerr << "Server not running. Start it: codis-server -p " << server_port << " -c config/config.toml\n";
             return 1;
         }
     }

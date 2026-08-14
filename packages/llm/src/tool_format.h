@@ -7,7 +7,7 @@
 #include <vector>
 #include <algorithm>
 
-namespace opencode {
+namespace codis {
 
 // =============================================================================
 // edit 工具的统一 diff 渲染（LCS 对齐，输出类 git diff）
@@ -274,4 +274,4 @@ inline ToolDisplay tool_display(const std::string& name, const json& args) {
     return d;
 }
 
-} // namespace opencode
+} // namespace codis

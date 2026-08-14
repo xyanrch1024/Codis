@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <cstdlib>
 
-namespace opencode {
+namespace codis {
 
 struct ProviderConfig {
     std::string name;
@@ -52,4 +52,4 @@ struct AppConfig {
     }
 };
 
-} // namespace opencode
+} // namespace codis

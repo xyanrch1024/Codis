@@ -11,7 +11,7 @@
 #include <shared_mutex>
 #include <optional>
 
-namespace opencode {
+namespace codis {
 
 class ToolRegistry {
 public:
@@ -70,4 +70,4 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Tool>> tools_;
 };
 
-} // namespace opencode
+} // namespace codis

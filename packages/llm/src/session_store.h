@@ -11,7 +11,7 @@
 
 struct sqlite3;
 
-namespace opencode {
+namespace codis {
 
 struct SessionData {
     std::string id;
@@ -72,4 +72,4 @@ private:
     std::string db_path_;
 };
 
-} // namespace opencode
+} // namespace codis

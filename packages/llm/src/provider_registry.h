@@ -10,7 +10,7 @@
 #include <shared_mutex>
 #include <optional>
 
-namespace opencode {
+namespace codis {
 
 class ProviderRegistry {
 public:
@@ -48,4 +48,4 @@ inline std::vector<std::string> ProviderRegistry::list() const {
     return names;
 }
 
-} // namespace opencode
+} // namespace codis

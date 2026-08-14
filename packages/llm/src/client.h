@@ -11,7 +11,7 @@
 #include <httplib.h>
 #include "types.h"
 
-namespace opencode {
+namespace codis {
 
 using json = nlohmann::json;
 
@@ -43,4 +43,4 @@ private:
                         ReasoningCallback& on_reasoning);
 };
 
-} // namespace opencode
+} // namespace codis

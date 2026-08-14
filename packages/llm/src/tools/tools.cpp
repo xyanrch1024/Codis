@@ -13,7 +13,7 @@
 #include <chrono>
 #include <thread>
 
-namespace opencode::tools {
+namespace codis::tools {
 
 // =============================================================================
 // Bash — fork + exec shell command, capture stdout/stderr
@@ -381,4 +381,4 @@ ToolResult GrepTool::execute(const ToolCall& call) {
     return {call.id, true, oss.str().empty() ? "No matches found" : oss.str()};
 }
 
-} // namespace opencode::tools
+} // namespace codis::tools

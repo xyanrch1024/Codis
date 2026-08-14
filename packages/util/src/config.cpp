@@ -4,7 +4,7 @@
 #include <fstream>
 #include <iostream>
 
-namespace opencode {
+namespace codis {
 
 AppConfig AppConfig::load(const std::filesystem::path& path) {
     AppConfig cfg;
@@ -46,4 +46,4 @@ AppConfig AppConfig::default_config() {
     return cfg;
 }
 
-} // namespace opencode
+} // namespace codis

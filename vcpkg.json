@@ -1,5 +1,5 @@
 {
-  "name": "opencode-cpp",
+  "name": "codis-cpp",
   "version": "0.3.1",
   "description": "C++ AI Coding Agent — Client/Server with ACP+SSE",
   "dependencies": [

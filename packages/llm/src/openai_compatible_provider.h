@@ -8,7 +8,7 @@
 #include <memory>
 #include <string>
 
-namespace opencode {
+namespace codis {
 
 class OpenAICompatibleProvider : public LLMProvider {
 public:
@@ -121,4 +121,4 @@ private:
     std::string base_url_;
 };
 
-} // namespace opencode
+} // namespace codis

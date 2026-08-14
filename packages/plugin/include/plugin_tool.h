@@ -5,7 +5,7 @@
 
 #include <string>
 
-namespace opencode {
+namespace codis {
 
 class PluginTool : public Tool {
 public:
@@ -46,4 +46,4 @@ private:
     void* ctx_;
 };
 
-} // namespace opencode
+} // namespace codis

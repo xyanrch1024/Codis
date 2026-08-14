@@ -6,7 +6,7 @@
 #include <optional>
 #include <nlohmann/json.hpp>
 
-namespace opencode {
+namespace codis {
 
 using json = nlohmann::json;
 
@@ -152,4 +152,4 @@ struct ChatResponse {
     std::string error;
 };
 
-} // namespace opencode
+} // namespace codis

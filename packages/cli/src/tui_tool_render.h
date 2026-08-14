@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace opencode {
+namespace codis {
 
 using namespace ftxui;
 
@@ -211,4 +211,4 @@ inline Element render_tool_call(const ConvItem& item, int width) {
     return tool_inline(item.tool_icon, item.text, kToolMuted, width);
 }
 
-} // namespace opencode
+} // namespace codis

@@ -36,16 +36,16 @@ cmake --build build -j$(nproc)
 ```bash
 # 终端 1: 启动服务端
 export GLM_API_KEY="你的-api-key"
-./build/packages/server/opencode-server -c config/config.toml
+./build/packages/server/codis-server -c config/config.toml
 
 # 终端 2: 启动 TUI 客户端（默认）
-./build/packages/cli/opencode
+./build/packages/cli/codis
 
 # 继续上次会话
-./build/packages/cli/opencode -c
+./build/packages/cli/codis -c
 
 # 指定端口 / 指定模型
-./build/packages/cli/opencode -p 8711 -m glm-4.5-flash
+./build/packages/cli/codis -p 8711 -m glm-4.5-flash
 ```
 
 也可以不用手动启动服务端：CLI 检测到服务端未运行时会自动拉起。
@@ -75,8 +75,8 @@ export GLM_API_KEY="你的-api-key"
 
 | 环境变量 | 默认值 | 说明 |
 |------|------|------|
-| `OPENCODE_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
-| `OPENCODE_LOG_FILE` | 未设 | 设置后日志只写文件（保持全屏 TUI 干净）；否则输出到 stderr |
+| `CODIS_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
+| `CODIS_LOG_FILE` | 未设 | 设置后日志只写文件（保持全屏 TUI 干净）；否则输出到 stderr |
 
 ## 配置
 

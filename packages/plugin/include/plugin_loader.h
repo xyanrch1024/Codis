@@ -8,7 +8,7 @@
 #include <memory>
 #include <functional>
 
-namespace opencode {
+namespace codis {
 
 using LogCallback = std::function<void(int level, const std::string& msg)>;
 using PluginToolRegistrar = std::function<void(const std::string& name,
@@ -48,4 +48,4 @@ private:
     PluginToolRegistrar tool_cb_;
 };
 
-} // namespace opencode
+} // namespace codis

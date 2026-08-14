@@ -52,9 +52,9 @@
 ## 目录
 
 ```
-opencode-cpp/
+codis-cpp/
 ├── CMakeLists.txt / vcpkg.json
-├── ARCHITECTURE.md / opencode-cpp-design.md / plan.md
+├── ARCHITECTURE.md / codis-cpp-design.md / plan.md
 ├── packages/
 │   ├── cli/src/main.cpp           # connect() + send_async()
 │   ├── server/src/                # 2 ACP 端点 + broadcast

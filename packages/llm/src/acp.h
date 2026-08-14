@@ -7,7 +7,7 @@
 #include <optional>
 #include <nlohmann/json.hpp>
 
-namespace opencode::acp {
+namespace codis::acp {
 
 using json = nlohmann::json;
 
@@ -166,4 +166,4 @@ inline std::optional<ParsedEvent> parse_frame(const std::string& payload) {
     }
 }
 
-} // namespace opencode::acp
+} // namespace codis::acp

@@ -37,16 +37,16 @@ cmake --build build -j$(nproc)
 ```bash
 # Terminal 1: start the server
 export GLM_API_KEY="your-api-key"
-./build/packages/server/opencode-server -c config/config.toml
+./build/packages/server/codis-server -c config/config.toml
 
 # Terminal 2: launch the TUI client (default)
-./build/packages/cli/opencode
+./build/packages/cli/codis
 
 # Continue the last session
-./build/packages/cli/opencode -c
+./build/packages/cli/codis -c
 
 # Custom port / model
-./build/packages/cli/opencode -p 8711 -m glm-4.5-flash
+./build/packages/cli/codis -p 8711 -m glm-4.5-flash
 ```
 
 No need to start the server manually — the CLI auto-starts it if it isn't running.
@@ -76,8 +76,8 @@ No need to start the server manually — the CLI auto-starts it if it isn't runn
 
 | Env | Default | Description |
 |------|------|------|
-| `OPENCODE_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
-| `OPENCODE_LOG_FILE` | unset | When set, logs go to the file only (keeps the fullscreen TUI clean); otherwise to stderr |
+| `CODIS_LOG_LEVEL` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `off` |
+| `CODIS_LOG_FILE` | unset | When set, logs go to the file only (keeps the fullscreen TUI clean); otherwise to stderr |
 
 ## Configuration
 

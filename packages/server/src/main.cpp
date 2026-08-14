@@ -25,7 +25,7 @@ extern "C" void signal_handler(int) {
 }
 
 int main(int argc, char** argv) {
-    CLI::App app{"OpenCode Server — Multi-Provider Backend"};
+    CLI::App app{"Codis Server — Multi-Provider Backend"};
 
     int port = 8711;
     std::string host = "127.0.0.1";
@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
 
     CLI11_PARSE(app, argc, argv);
 
-    LOG_INFO("OpenCode Server v0.3.1 starting (port {}, host {})", port, host);
+    LOG_INFO("Codis Server v0.3.1 starting (port {}, host {})", port, host);
     if (!config_path.empty()) LOG_INFO("config file: {}", config_path);
 
     std::optional<std::string> cfg;
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
         cfg = std::filesystem::absolute(config_path).string();
     }
 
-    opencode::OpenCodeServer server(port, cfg);
+    codis::CodisServer server(port, cfg);
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);

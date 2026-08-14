@@ -10,7 +10,7 @@
 #include <iomanip>
 #include <sys/socket.h>
 
-namespace opencode {
+namespace codis {
 
 // 定义在 Tool call 提取段（extract_tool_calls 前），供存历史时剥离内嵌 JSON 使用
 static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content);
@@ -90,10 +90,10 @@ std::vector<std::string> SessionManager::list_sessions() const {
 }
 
 // =============================================================================
-// OpenCodeServer
+// CodisServer
 // =============================================================================
 
-OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
+CodisServer::CodisServer(int port, std::optional<std::string> config_path)
     : port_(port)
     , server_(std::make_unique<httplib::Server>())
 {
@@ -164,7 +164,7 @@ OpenCodeServer::OpenCodeServer(int port, std::optional<std::string> config_path)
 // Context Sources 初始化
 // =============================================================================
 
-void OpenCodeServer::init_context_sources() {
+void CodisServer::init_context_sources() {
     system_context_.register_source(context_sources::date_source());
     system_context_.register_source(context_sources::working_dir_source());
     system_context_.register_source(context_sources::platform_source());
@@ -175,9 +175,9 @@ void OpenCodeServer::init_context_sources() {
     }));
 }
 
-OpenCodeServer::~OpenCodeServer() { stop(); }
+CodisServer::~CodisServer() { stop(); }
 
-void OpenCodeServer::start() {
+void CodisServer::start() {
     running_ = true;
     thread_ = std::make_unique<std::thread>([this] {
         LOG_INFO("Server listening on http://localhost:{}", port_);
@@ -187,27 +187,27 @@ void OpenCodeServer::start() {
         if (!server_->listen("127.0.0.1", port_)) {
             // bind 失败（端口被占用）：错误退出而非静默空转
             LOG_ERROR("Failed to bind port {} — address already in use? "
-                      "Another opencode-server may already be listening. Exiting.", port_);
+                      "Another codis-server may already be listening. Exiting.", port_);
             std::_Exit(1);
         }
     });
 }
-void OpenCodeServer::stop() {
+void CodisServer::stop() {
     if (running_.exchange(false)) { server_->stop(); if (thread_ && thread_->joinable()) thread_->join(); }
     LOG_INFO("Server stopped");
 }
 
-void OpenCodeServer::set_cors(httplib::Response& res) {
+void CodisServer::set_cors(httplib::Response& res) {
     res.set_header("Access-Control-Allow-Origin", "*");
     res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-std::string OpenCodeServer::generate_conn_id() {
+std::string CodisServer::generate_conn_id() {
     return gen_short_id();
 }
 
-void OpenCodeServer::cleanup_connection(const std::string& sid, const std::string& conn_id) {
+void CodisServer::cleanup_connection(const std::string& sid, const std::string& conn_id) {
     LOG_INFO("WS connection detached session {} conn_id={}", sid.substr(0, 8), conn_id);
     std::lock_guard lock(sessions_mutex_);
     auto it = sessions_.find(sid);
@@ -221,7 +221,7 @@ void OpenCodeServer::cleanup_connection(const std::string& sid, const std::strin
 // 路由
 // =============================================================================
 
-void OpenCodeServer::register_routes() {
+void CodisServer::register_routes() {
     server_->Options("/api/v1/.*", [](const auto&, auto& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -246,7 +246,7 @@ void OpenCodeServer::register_routes() {
 // 端点
 // =============================================================================
 
-void OpenCodeServer::handle_health(const httplib::Request&, httplib::Response& res) {
+void CodisServer::handle_health(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
     json j;
     j["status"] = "ok";
@@ -258,7 +258,7 @@ void OpenCodeServer::handle_health(const httplib::Request&, httplib::Response& r
     res.set_content(json_dump_safe(j, 2), "application/json");
 }
 
-void OpenCodeServer::handle_info(const httplib::Request&, httplib::Response& res) {
+void CodisServer::handle_info(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
     json j;
     j["providers"] = provider_registry_.list();
@@ -271,7 +271,7 @@ void OpenCodeServer::handle_info(const httplib::Request&, httplib::Response& res
     res.set_content(json_dump_safe(j, 2), "application/json");
 }
 
-void OpenCodeServer::handle_chat(const httplib::Request& req, httplib::Response& res) {
+void CodisServer::handle_chat(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
         auto body = json::parse(req.body);
@@ -300,7 +300,7 @@ void OpenCodeServer::handle_chat(const httplib::Request& req, httplib::Response&
     }
 }
 
-void OpenCodeServer::queue_chat_request(const std::string& session_id,
+void CodisServer::queue_chat_request(const std::string& session_id,
                                         const std::string& conn_id, ChatRequest req) {
     if (session_id.empty() || !session_store_.load_session(session_id))
         throw std::runtime_error("session not found: " + session_id);
@@ -335,7 +335,7 @@ void OpenCodeServer::queue_chat_request(const std::string& session_id,
     }
 }
 
-void OpenCodeServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSocket& ws) {
+void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSocket& ws) {
     std::string sid = req.matches[1];
     if (!session_store_.load_session(sid))
         session_store_.create_session_with_id(sid);
@@ -433,7 +433,7 @@ void OpenCodeServer::handle_acp_ws(const httplib::Request& req, httplib::ws::Web
 // handle_acp_switch — 切换 session 不断开 WS
 // =============================================================================
 
-bool OpenCodeServer::move_connection(const std::string& conn_id, const std::string& new_sid) {
+bool CodisServer::move_connection(const std::string& conn_id, const std::string& new_sid) {
     std::shared_ptr<FrameQueue> queue;
 
     {
@@ -457,7 +457,7 @@ bool OpenCodeServer::move_connection(const std::string& conn_id, const std::stri
     return true;
 }
 
-void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Response& res) {
+void CodisServer::handle_acp_switch(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
         auto body = json::parse(req.body);
@@ -490,7 +490,7 @@ void OpenCodeServer::handle_acp_switch(const httplib::Request& req, httplib::Res
 // run_acp_loop_broadcast — 推送到指定 connection 的 queue
 // =============================================================================
 
-void OpenCodeServer::run_acp_loop_broadcast(const std::string& session_id,
+void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
                                              const std::string& conn_id, ChatRequest req) {
     static const int MAX_TURNS = 100;
     static const int MAX_EMPTY_RETRIES = 2;
@@ -757,7 +757,7 @@ static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content
     return {brace, content.size()};
 }
 
-std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& content) {
+std::vector<ToolCall> CodisServer::extract_tool_calls(const std::string& content) {
     std::vector<ToolCall> calls;
     auto pos = content.find("\"tool_calls\"");
     if (pos == std::string::npos) return calls;
@@ -836,14 +836,14 @@ std::vector<ToolCall> OpenCodeServer::extract_tool_calls(const std::string& cont
 // 会话端点
 // =============================================================================
 
-void OpenCodeServer::handle_session_create(const httplib::Request&, httplib::Response& res) {
+void CodisServer::handle_session_create(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
     auto id = session_store_.create_session();
     res.status = 201;
     res.set_content(json{{"session_id", id}}.dump(), "application/json");
 }
 
-void OpenCodeServer::handle_session_list(const httplib::Request&, httplib::Response& res) {
+void CodisServer::handle_session_list(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
     auto sessions = session_store_.list_sessions_info();
     json arr = json::array();
@@ -859,7 +859,7 @@ void OpenCodeServer::handle_session_list(const httplib::Request&, httplib::Respo
     res.set_content(arr.dump(), "application/json");
 }
 
-void OpenCodeServer::handle_session_get(const httplib::Request& req, httplib::Response& res) {
+void CodisServer::handle_session_get(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     auto session = session_store_.load_session(req.matches[1]);
     if (!session) { res.status = 404; res.set_content(R"({"error":"not found"})", "application/json"); return; }
@@ -871,19 +871,19 @@ void OpenCodeServer::handle_session_get(const httplib::Request& req, httplib::Re
     res.set_content(json_dump_safe(j, 2), "application/json");
 }
 
-void OpenCodeServer::handle_session_delete(const httplib::Request& req, httplib::Response& res) {
+void CodisServer::handle_session_delete(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     session_store_.delete_session(req.matches[1]);
     res.set_content(R"({"status":"ok"})", "application/json");
 }
 
-void OpenCodeServer::handle_session_delete_all(const httplib::Request& req, httplib::Response& res) {
+void CodisServer::handle_session_delete_all(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     session_store_.delete_all_sessions();
     res.set_content(R"({"status":"ok","deleted":"all"})", "application/json");
 }
 
-void OpenCodeServer::handle_session_add_message(const httplib::Request& req, httplib::Response& res) {
+void CodisServer::handle_session_add_message(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     try {
         auto msg = Message::from_json(json::parse(req.body));
@@ -899,7 +899,7 @@ void OpenCodeServer::handle_session_add_message(const httplib::Request& req, htt
 // 余额查询
 // =============================================================================
 
-void OpenCodeServer::handle_balance(const httplib::Request& req, httplib::Response& res) {
+void CodisServer::handle_balance(const httplib::Request& req, httplib::Response& res) {
     set_cors(res);
     std::string provider_name = req.matches[1];
 
@@ -912,7 +912,7 @@ void OpenCodeServer::handle_balance(const httplib::Request& req, httplib::Respon
     }
 }
 
-json OpenCodeServer::query_provider_balance(const std::string& provider_name) {
+json CodisServer::query_provider_balance(const std::string& provider_name) {
     // 查找 provider 配置
     auto providers = provider_registry_.list();
     const ProviderConfig* target = nullptr;
@@ -1007,7 +1007,7 @@ json OpenCodeServer::query_provider_balance(const std::string& provider_name) {
 // =============================================================================
 // Provider 解析 + LLM 调用
 // =============================================================================
-std::shared_ptr<LLMProvider> OpenCodeServer::resolve_provider(const ChatRequest& req) {
+std::shared_ptr<LLMProvider> CodisServer::resolve_provider(const ChatRequest& req) {
     std::string name = req.provider.empty() ? provider_registry_.default_name() : req.provider;
     LOG_DEBUG("resolving provider '{}'", name);
     auto provider = provider_registry_.get(name);
@@ -1020,7 +1020,7 @@ std::shared_ptr<LLMProvider> OpenCodeServer::resolve_provider(const ChatRequest&
     LOG_ERROR("no provider configured");
     return nullptr;
 }
-std::string OpenCodeServer::call_llm(const ChatRequest& req) {
+std::string CodisServer::call_llm(const ChatRequest& req) {
     auto prov = resolve_provider(req);
     if (!prov) throw std::runtime_error("No provider configured. Set API key env var (e.g. GLM_API_KEY)");
     auto result = prov->chat(req);
@@ -1030,4 +1030,4 @@ std::string OpenCodeServer::call_llm(const ChatRequest& req) {
     }
     return result.content;
 }
-} // namespace opencode
+} // namespace codis

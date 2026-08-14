@@ -11,7 +11,7 @@
 #include <shared_mutex>
 #include <unordered_map>
 
-namespace opencode {
+namespace codis {
 
 // =============================================================================
 // Context Value
@@ -80,4 +80,4 @@ ContextSource project_instructions_source(const std::string& project_root);
 
 } // namespace context_sources
 
-} // namespace opencode
+} // namespace codis

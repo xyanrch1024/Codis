@@ -13,7 +13,7 @@ export LD_LIBRARY_PATH="$LOCAL_LIB:$LD_LIBRARY_PATH"
 BUILD_DIR="${1:-$PROJECT_DIR/build}"
 BUILD_TYPE="${2:-Release}"
 
-echo "=== OpenCode C++ Build ==="
+echo "=== Codis C++ Build ==="
 echo "Project:     $PROJECT_DIR"
 echo "Build dir:   $BUILD_DIR"
 echo "Build type:  $BUILD_TYPE"
@@ -27,5 +27,5 @@ cmake -B "$BUILD_DIR" -S "$PROJECT_DIR" \
 cmake --build "$BUILD_DIR" -- -j$(nproc)
 
 echo ""
-echo "Build complete: $BUILD_DIR/packages/cli/opencode"
-echo "Run: $PROJECT_DIR/bin/opencode --help"
+echo "Build complete: $BUILD_DIR/packages/cli/codis"
+echo "Run: $PROJECT_DIR/bin/codis --help"

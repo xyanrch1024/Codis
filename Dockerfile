@@ -40,8 +40,8 @@ RUN apt-get update -qq && apt-get install -y -qq \
 RUN pip3 install --break-system-packages lark-oapi httpx
 
 # Copy C++ binaries
-COPY --from=builder /build/build/packages/server/opencode-server /usr/local/bin/
-COPY --from=builder /build/build/packages/cli/opencode /usr/local/bin/
+COPY --from=builder /build/build/packages/server/codis-server /usr/local/bin/
+COPY --from=builder /build/build/packages/cli/codis /usr/local/bin/
 
 # Copy config + bot
 WORKDIR /app
