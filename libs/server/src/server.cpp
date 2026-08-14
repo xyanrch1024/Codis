@@ -2,6 +2,7 @@
 #include "tools/tools.h"
 #include "plugin_loader.h"
 #include "plugin_tool.h"
+#include "text.h"
 
 #include <iostream>
 #include <thread>
@@ -14,17 +15,6 @@ namespace codis {
 
 // 定义在 Tool call 提取段（extract_tool_calls 前），供存历史时剥离内嵌 JSON 使用
 static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content);
-
-namespace {
-std::string gen_short_id() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<> dis(0, 15);
-    std::ostringstream ss; ss << std::hex << std::setfill('0');
-    for (int i = 0; i < 8; i++) ss << dis(gen);
-    return ss.str();
-}
-} // anonymous namespace
 
 // =============================================================================
 // FrameQueue
@@ -196,7 +186,7 @@ void CodisServer::set_cors(httplib::Response& res) {
 }
 
 std::string CodisServer::generate_conn_id() {
-    return gen_short_id();
+    return util::gen_short_id();
 }
 
 void CodisServer::cleanup_connection(const std::string& sid, const std::string& conn_id) {
@@ -304,6 +294,11 @@ void CodisServer::queue_chat_request(const std::string& session_id,
     if (has_msg) {
         for (auto it = req.messages.rbegin(); it != req.messages.rend(); ++it) {
             if (it->role == "user" && !it->content.empty()) {
+                // 首条消息时用其内容生成会话标题
+                if (session_store_.message_count(session_id) == 0) {
+                    auto title = util::make_session_title(it->content);
+                    if (!title.empty()) session_store_.set_title(session_id, title);
+                }
                 session_store_.append_message(session_id, *it); break;
             }
         }

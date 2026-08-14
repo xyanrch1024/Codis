@@ -119,7 +119,7 @@ int TuiClient::run() {
 
     InputOption in_opt;
     in_opt.content = &input_text;
-    in_opt.placeholder = "> ";
+    in_opt.placeholder = "";
     // 光标与 input_text 同步：Alt+Enter 手动插换行后，后续输入仍落在正确位置
     int cursor_pos = 0;
     in_opt.cursor_position = &cursor_pos;
@@ -346,12 +346,10 @@ int TuiClient::run() {
             notice_.empty()
                 ? text("")
                 : text(" " + notice_ + " ") | color(Color::Yellow),
-            text("Double-ESC cancel · Drag to copy · Alt+Enter newline · /commands") | dim,
         }));
         status_els.push_back(hbox({
             text(" " + cwd) | dim,
             flex(text("")),
-            text("Ctrl+S sessions") | dim,
         }));
         auto status_bar = vbox(std::move(status_els)) |
                           bgcolor(Color(Color::Palette256::Grey23));
