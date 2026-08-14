@@ -9,6 +9,7 @@
 #include <vector>
 #include <deque>
 #include <mutex>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <chrono>
@@ -257,6 +258,18 @@ private:
     // 鼠标拖拽选择（FTXUI 内置选择）→ 松开自动复制
     bool drag_active_ = false;  // 左键按下中
     bool drag_moved_ = false;   // 是否发生了实际拖动（区分点击/拖拽）
+
+    // 状态栏瞬时提示（复制/取消等）；定时线程轮询 notice_pending_ 触发自动消失
+    std::string notice_;
+    std::chrono::steady_clock::time_point notice_at_;
+    std::atomic<bool> notice_pending_{false};
+    void show_notice(const std::string& msg);
+
+    // 粘贴检测：bracketed paste 标记（\x1b[200~ ... \x1b[201~）识别粘贴内容，
+    // 使粘贴的多行内容按换行插入，而不是被当成多次 Enter 提前发送
+    bool in_paste_ = false;
+    // 输入事件到达时间：时序兜底，识别快速连续到达的粘贴事件流
+    std::chrono::steady_clock::time_point last_event_at_;
 };
 
 } // namespace opencode

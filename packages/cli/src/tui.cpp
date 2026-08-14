@@ -14,6 +14,9 @@
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
+#include <atomic>
+#include <thread>
+#include <unistd.h>
 
 namespace opencode {
 
@@ -21,6 +24,21 @@ using namespace ftxui;
 
 // Sessions 面板的最大可见行数（固定面板高度，避免会话太多时撑满屏幕）
 static constexpr int kMaxSessionRows = 12;
+
+// 输入框的最大可见行数（超出后内部滚动，避免多行消息挤掉对话区）
+static constexpr int kMaxInputRows = 6;
+
+// Alt/Ctrl/Shift+Enter 换行（不同终端编码：xterm ESC+CR/LF、kitty/WezTerm 等 CSI-u）
+static bool is_newline_key(const Event& ev) {
+    const auto& s = ev.input();
+    return s == "\x1b\r" || s == "\x1b\n" ||              // Alt+Enter（传统编码）
+           s == "\x1b[13;2u" || s == "\x1b[13;3u" ||      // Shift+Enter / Alt+Enter
+           s == "\x1b[13;4u" || s == "\x1b[13;5u" ||      // Shift+Alt / Ctrl+Enter
+           s == "\x1b[13;6u" || s == "\x1b[13;7u";        // Ctrl+Shift / Ctrl+Alt
+}
+
+// 粘贴事件判定：bracketed paste 标记内，或与前一事件间隔 <50ms（快速连续）
+static constexpr auto kPasteWindow = std::chrono::milliseconds(50);
 
 // 支持的命令（用于 "/" 补全弹窗）
 static const std::vector<std::pair<std::string, std::string>> kCommands = {
@@ -99,12 +117,25 @@ int TuiClient::run() {
     InputOption in_opt;
     in_opt.content = &input_text;
     in_opt.placeholder = "> ";
+    // 光标与 input_text 同步：Alt+Enter 手动插换行后，后续输入仍落在正确位置
+    int cursor_pos = 0;
+    in_opt.cursor_position = &cursor_pos;
+    in_opt.multiline = true;
     in_opt.transform = [](InputState state) {
         if (state.is_placeholder) state.element |= dim;
         return state.element | bgcolor(Color(Color::Palette256::Grey19));
     };
     auto input = Input(std::move(in_opt));
     input |= CatchEvent([&](Event event) {
+        // 粘贴检测（时序兜底，bracketed paste 标记外的场景）：
+        // 与前一输入事件间隔 <50ms 视为快速连续流（粘贴）
+        auto now = std::chrono::steady_clock::now();
+        const bool rapid = now - last_event_at_ < kPasteWindow;
+        // 粘贴流结束判定（>1s 无输入）：防止丢失 \x1b[201~ 后 in_paste_ 卡死
+        const bool paste_done = now - last_event_at_ > std::chrono::seconds(1);
+        last_event_at_ = now;
+        if (in_paste_ && paste_done) in_paste_ = false;
+
         // "/" 开头的输入：显示命令补全弹窗（可见性在 renderer 中按 input_text 计算）
         if (cmd_palette_visible_) {
             auto filtered = filtered_commands();
@@ -117,18 +148,22 @@ int TuiClient::run() {
                 cmd_selected_++;
                 return true;
             }
-            if ((event == Event::Tab || event == Event::Return) && !filtered.empty()) {
+            if ((event == Event::Tab ||
+                 (event == Event::Return && !in_paste_ && !rapid)) &&
+                !filtered.empty()) {
                 if (cmd_selected_ >= (int)filtered.size()) cmd_selected_ = (int)filtered.size() - 1;
                 auto& cmd = filtered[cmd_selected_].first;
                 // 执行该命令
                 send_message(cmd);
                 input_text.clear();
+                cursor_pos = 0;
                 cmd_palette_visible_ = false;
                 return true;
             }
             if (event == Event::Escape) {
                 // 关闭补全：清空输入回到空状态
                 input_text.clear();
+                cursor_pos = 0;
                 cmd_palette_visible_ = false;
                 return true;
             }
@@ -138,10 +173,28 @@ int TuiClient::run() {
             }
         }
 
-        if (event == Event::Return && !input_text.empty()) {
-            send_message(input_text);
-            input_text.clear();
+        // Alt/Ctrl/Shift+Enter：在光标处插入换行（多行输入）
+        if (is_newline_key(event)) {
+            cursor_pos = std::min(cursor_pos, (int)input_text.size());
+            input_text.insert(cursor_pos, "\n");
+            cursor_pos++;
             return true;
+        }
+
+        if (event == Event::Return) {
+            if (in_paste_ || rapid) {
+                // 粘贴内容里的换行：插入而不是发送
+                cursor_pos = std::min(cursor_pos, (int)input_text.size());
+                input_text.insert(cursor_pos, "\n");
+                cursor_pos++;
+                return true;
+            }
+            if (!input_text.empty()) {
+                send_message(input_text);
+                input_text.clear();
+                cursor_pos = 0;
+                return true;
+            }
         }
         return false;
     });
@@ -149,7 +202,9 @@ int TuiClient::run() {
     auto input_bar = Renderer(input, [&] {
         Elements els;
         // 命令补全弹窗（在 renderer 里计算可见性：此时 input_text 已更新）
-        cmd_palette_visible_ = input_text.starts_with("/");
+        // 仅单行 "/" 前缀时显示，多行输入不再弹出
+        cmd_palette_visible_ =
+            input_text.starts_with("/") && input_text.find('\n') == std::string::npos;
         if (cmd_palette_visible_) {
             auto filtered = filtered_commands();
             if (!filtered.empty()) {
@@ -165,8 +220,14 @@ int TuiClient::run() {
                              clear_under | border);
             }
         }
+        // 输入区高度随内容增长，但不超过 kMaxInputRows（超出后内部滚动）
+        int input_lines = 1;
+        for (char c : input_text)
+            if (c == '\n') input_lines++;
+        input_lines = std::clamp(input_lines, 1, kMaxInputRows);
         els.push_back(vbox({text(""),
-                            hbox({text("> "), input->Render() | flex}),
+                            hbox({text("> "), input->Render() | flex |
+                                                 size(HEIGHT, EQUAL, input_lines)}),
                             text("")}) | bgcolor(Color(Color::Palette256::Grey19)));
         return vbox(std::move(els));
     });
@@ -251,6 +312,15 @@ int TuiClient::run() {
     auto main_renderer = Renderer(main_container, [&] {
         auto status = state_->processing ? " [processing...]" : "";
 
+        // 瞬时提示过期清理（定时线程轮询 notice_pending_ 触发渲染）
+        if (notice_pending_.load()) {
+            auto now = std::chrono::steady_clock::now();
+            if (now - notice_at_ > std::chrono::seconds(3)) {
+                notice_.clear();
+                notice_pending_.store(false);
+            }
+        }
+
         // 底部状态栏（输入框下方）：两行 — 状态/提示 + 工作目录
         auto status_bar = vbox({
             hbox({
@@ -261,7 +331,10 @@ int TuiClient::run() {
                     dim,
                 text("  ·  " + std::to_string(state_->items.size()) + " items") | dim,
                 flex(text("")),
-                text("Double-ESC cancel · Drag to copy · /commands") | dim,
+                notice_.empty()
+                    ? text("")
+                    : text(" " + notice_ + " ") | color(Color::Yellow),
+                text("Double-ESC cancel · Drag to copy · Alt+Enter newline · /commands") | dim,
             }),
             hbox({
                 text(" " + cwd) | dim,
@@ -328,6 +401,19 @@ int TuiClient::run() {
     });
 
     auto component = main_renderer | CatchEvent([&](Event event) {
+        // bracketed paste 标记：\x1b[200~ 粘贴开始，\x1b[201~ 粘贴结束。
+        // 期间的所有 Enter 视为换行（插入），否则多行粘贴会被当成多次 Enter 提前发送。
+        // 这里必须最先处理，避免标记被当作普通按键。
+        const auto& raw = event.input();
+        if (raw == "\x1b[200~") {
+            in_paste_ = true;
+            return true;
+        }
+        if (raw == "\x1b[201~") {
+            in_paste_ = false;
+            return true;
+        }
+
         // 左键按下/拖动/松开：高亮交给 FTXUI 内置选择处理，这里只跟踪拖拽状态；
         // 松开时若有实际拖动则直接用 GetSelection() 复制。
         // 注意：不能用 SelectionChange 回调——释放事件坐标通常等于最后一次移动，
@@ -346,9 +432,7 @@ int TuiClient::run() {
                         const auto sel = screen.GetSelection();
                         if (!sel.empty()) {
                             copy_to_clipboard(sel);
-                            state_->add_item(ItemKind::Status,
-                                             "[Copied " + std::to_string(sel.size()) + " chars]");
-                            post_job_();
+                            show_notice("[Copied " + std::to_string(sel.size()) + " chars]");
                         }
                     }
                 }
@@ -379,8 +463,7 @@ int TuiClient::run() {
                         last_escape_ = std::chrono::steady_clock::time_point{};
                         acp_.cancel_session(state_->current_session);
                         state_->processing = false;
-                        state_->add_item(ItemKind::Status, "[Task cancelled]");
-                        post_job_();
+                        show_notice("[Task cancelled]");
                         return true;
                     }
                 } else {
@@ -524,10 +607,37 @@ int TuiClient::run() {
     input->TakeFocus();
     screen.TrackMouse(true);  // 开启鼠标追踪：滚轮滚动 + 左键拖拽选择复制
     exit_loop_ = screen.ExitLoopClosure();
+
+    // 瞬时提示自动消失：提示激活期间周期性触发渲染，由渲染处按时间戳清理
+    std::atomic<bool> timer_stop{false};
+    std::thread notice_timer([&] {
+        while (!timer_stop.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (notice_pending_.load()) screen.Post(Event::Custom);
+        }
+    });
+
+    // 开启 bracketed paste：终端会用 \x1b[200~ ... \x1b[201~ 包裹粘贴内容，
+    // 据此识别粘贴，避免多行粘贴被当成多次 Enter 提前发送
+    (void)::write(STDOUT_FILENO, "\x1b[?2004h", 8);
+
     screen.Loop(component);
+
+    // 关闭 bracketed paste，恢复终端粘贴行为
+    (void)::write(STDOUT_FILENO, "\x1b[?2004l", 8);
+
+    timer_stop.store(true);
+    notice_timer.join();
 
     acp_.disconnect();
     return 0;
+}
+
+void TuiClient::show_notice(const std::string& msg) {
+    notice_ = msg;
+    notice_at_ = std::chrono::steady_clock::now();
+    notice_pending_.store(true);
+    if (post_job_) post_job_();
 }
 
 void TuiClient::send_message(const std::string& text) {
