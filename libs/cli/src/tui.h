@@ -301,6 +301,9 @@ private:
     std::chrono::steady_clock::time_point last_escape_;
     int esc_count_ = 0;  // 窗口内累计的 ESC 次数（兼容合并的 "\x1b\x1b"）
 
+    // Spinner 动画帧索引（每渲染推进一次）
+    int spinner_frame_ = 0;
+
     // 命令补全弹窗：输入以 "/" 开头时显示
     bool cmd_palette_visible_ = false;
     int cmd_selected_ = 0;

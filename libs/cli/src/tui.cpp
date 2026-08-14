@@ -228,6 +228,15 @@ int TuiClient::run() {
         for (char c : input_text)
             if (c == '\n') input_lines++;
         input_lines = std::clamp(input_lines, 1, kMaxInputRows);
+        // pending 队列横幅（有排队消息时显示在输入框上方）
+        if (int pc = state_->pending_count(); pc > 0) {
+            auto ptext = " ⏳ pending: " + state_->pending_preview(2, 90);
+            els.push_back(hbox({
+                text(ptext) | color(Color::Yellow),
+                flex(text("")),
+                text(std::to_string(pc) + " queued") | dim,
+            }) | bgcolor(Color(Color::Palette256::Grey7)));
+        }
         els.push_back(vbox({text(""),
                             hbox({text("> "), input->Render() | flex |
                                                  size(HEIGHT, EQUAL, input_lines)}),
@@ -342,8 +351,6 @@ int TuiClient::run() {
     if (cwd.size() > 50) cwd = "…" + cwd.substr(cwd.size() - 50);
 
     auto main_renderer = Renderer(main_container, [&] {
-        std::string status = state_->processing ? " [processing...]" : "";
-
         // 瞬时提示过期清理（定时线程轮询 notice_pending_ 触发渲染）
         if (notice_pending_.load()) {
             auto now = std::chrono::steady_clock::now();
@@ -353,42 +360,47 @@ int TuiClient::run() {
             }
         }
 
-        // 底部状态栏（输入框下方）：压缩为一行，pending 时额外一行
-        Elements status_els;
-        if (state_->pending_count() > 0) {
-            auto ptext = " ⏳ pending: " + state_->pending_preview(2, 90);
-            status_els.push_back(hbox({
-                text(ptext) | color(Color::Yellow),
-                flex(text("")),
-                text(std::to_string(state_->pending_count()) + " queued · ESC ESC to cancel") |
-                    dim,
-            }) | bgcolor(Color(Color::Palette256::Grey19)));
-        }
-        status_els.push_back(hbox({
+        // 底部状态栏（三行，状态在第二行）
+        Elements status_lines;
+        status_lines.push_back(hbox({
             text(acp_.connected() ? " ● Connected" : " ● Disconnected") |
                 (acp_.connected() ? color(Color::Green) : color(Color::Red)),
-            text("  ·  " + (state_->processing ? std::string("processing...") : std::string("idle"))) | dim,
-            text("  ·  context " + state_->context_size_str()) | dim,
+            text("  │  " + model_) | dim,
+            text("  │  context " + state_->context_size_str()) | dim,
             flex(text("")),
-            text(" " + cwd) | dim,
+            text("  " + state_->current_session.substr(0, 8)) | dim | inverted,
+        }) | bgcolor(Color(Color::Palette256::Grey7)));
+        static constexpr const char* kSpinner[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+        static constexpr int kSpinnerCount = 10;
+        if (state_->processing) spinner_frame_ = (spinner_frame_ + 1) % kSpinnerCount;
+        status_lines.push_back(hbox({
+            text(state_->processing
+                     ? (std::string(" ") + kSpinner[spinner_frame_] + " processing...")
+                     : std::string(" ● idle")) |
+                (state_->processing ? color(Color::Yellow) : color(Color::Green)),
+            flex(text("")),
             notice_.empty()
                 ? text("")
                 : text("  " + notice_ + " ") | color(Color::Yellow),
         }) | bgcolor(Color(Color::Palette256::Grey7)));
-        status_els.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
-        status_els.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
+        status_lines.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
+        status_lines.push_back(hbox({
+            text(" " + cwd) | dim,
+            flex(text("")),
+        }) | bgcolor(Color(Color::Palette256::Grey7)));
+        status_lines.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
 
+        auto status_bar = vbox(std::move(status_lines));
+
+        // Header: 居中 Codis + 分隔线 + 内容 + 状态栏
         Elements header = {
-            hbox({
-                text(" Codis TUI ") | bold,
-                text(" Model: " + model_ + status) | dim,
-                text(" S: " + state_->current_session) | dim,
-                flex(text("")),
-            }),
+            text(" Codis ") | bold | center,
             separator(),
             main_container->Render() | flex,
-            vbox(std::move(status_els)),
+            status_bar,
         };
+
+        auto body = vbox(std::move(header));
 
         // Help overlay
         if (help_visible_) {
@@ -406,7 +418,7 @@ int TuiClient::run() {
                 separator(),
                 text(" ESC to close ") | dim | center,
             })) | clear_under | center | border;
-            return dbox({vbox(std::move(header)), overlay});
+            return dbox({body, overlay});
         }
 
         // Sessions overlay
@@ -429,10 +441,10 @@ int TuiClient::run() {
                      std::to_string(session_list_.size()) + "  ↑↓/Tab  Enter(del)  ESC ") | dim | center,
             })) | clear_under | center | border;
 
-            return dbox({vbox(std::move(header)), overlay});
+            return dbox({body, overlay});
         }
 
-        return vbox(std::move(header));
+        return body;
     });
 
     auto component = main_renderer | CatchEvent([&](Event event) {
@@ -645,12 +657,12 @@ int TuiClient::run() {
     screen.TrackMouse(true);  // 开启鼠标追踪：滚轮滚动 + 左键拖拽选择复制
     exit_loop_ = screen.ExitLoopClosure();
 
-    // 瞬时提示自动消失：提示激活期间周期性触发渲染，由渲染处按时间戳清理
+    // 瞬时提示自动消失 + spinner 动画驱动：提示激活或 processing 时周期性触发渲染
     std::atomic<bool> timer_stop{false};
     std::thread notice_timer([&] {
         while (!timer_stop.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            if (notice_pending_.load()) screen.Post(Event::Custom);
+            if (notice_pending_.load() || state_->processing) screen.Post(Event::Custom);
         }
     });
 
