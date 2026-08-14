@@ -82,6 +82,8 @@ struct TuiState {
     std::string system_prompt = "You are a helpful AI coding assistant.";
     bool processing = false;
     std::string status_msg;
+    std::chrono::steady_clock::time_point request_start_;
+    std::string current_model_;
 
     // ---- 客户端 pending 队列 ----
     // 任务处理中输入的新消息：仅入队，不进入对话区（避免打乱对话顺序）；
@@ -135,6 +137,13 @@ struct TuiState {
     // ---- UI 线程直接修改 items（无需锁）----
     void add_item(ItemKind kind, std::string text, bool streaming = false) {
         items.push_back({kind, std::move(text), streaming});
+        if (notify_) notify_();
+    }
+
+    void add_footer(const std::string& label, double secs) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.1fs", secs);
+        items.push_back({ItemKind::Status, "↳  " + label + "  " + buf});
         if (notify_) notify_();
     }
 
@@ -239,11 +248,17 @@ private:
             processing = false;
             if (on_idle_) on_idle_();
             break;
-        case AcpEvent::Kind::Done:
+        case AcpEvent::Kind::Done: {
             finalize_streaming();
+            if (request_start_.time_since_epoch().count() > 0) {
+                auto dur = std::chrono::steady_clock::now() - request_start_;
+                auto secs = std::chrono::duration<double>(dur).count();
+                add_footer(current_model_, secs);
+            }
             processing = false;
             if (on_idle_) on_idle_();
             break;
+        }
         }
         if (notify_) notify_();
     }

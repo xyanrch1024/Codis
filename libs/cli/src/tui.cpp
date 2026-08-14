@@ -747,6 +747,8 @@ void TuiClient::send_message(const std::string& text) {
 void TuiClient::send_request(const std::string& text) {
     state_->add_item(ItemKind::User, text);
     state_->processing = true;
+    state_->request_start_ = std::chrono::steady_clock::now();
+    state_->current_model_ = model_;
     auto_scroll_ = true;
     scroll_px_ = 0;
     post_job_();
