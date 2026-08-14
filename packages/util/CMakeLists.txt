@@ -3,4 +3,4 @@ add_library(codis_util STATIC
 )
 
 target_include_directories(codis_util PUBLIC src)
-target_link_libraries(codis_util PUBLIC tomlplusplus::tomlplusplus)
+target_link_libraries(codis_util PUBLIC tomlplusplus::tomlplusplus nlohmann_json::nlohmann_json)

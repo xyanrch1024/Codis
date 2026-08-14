@@ -1,6 +1,8 @@
 add_executable(codis-server
     src/main.cpp
     src/server.cpp
+    src/session_store.cpp
+    src/context_source.cpp
 )
 
 target_include_directories(codis-server PRIVATE

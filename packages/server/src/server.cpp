@@ -16,14 +16,6 @@ namespace codis {
 static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content);
 
 namespace {
-std::string expand_path(const std::string& path) {
-    if (path.starts_with("~/")) {
-        const char* home = std::getenv("HOME");
-        return (home ? home : "/tmp") + path.substr(1);
-    }
-    return path;
-}
-
 std::string gen_short_id() {
     static std::random_device rd;
     static std::mt19937 gen(rd());

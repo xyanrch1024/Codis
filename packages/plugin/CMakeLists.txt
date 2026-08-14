@@ -4,9 +4,9 @@ add_library(codis_plugin STATIC
 
 target_include_directories(codis_plugin PUBLIC
     include
-    ${CMAKE_SOURCE_DIR}/packages/llm/src    # log.h
 )
 target_link_libraries(codis_plugin PUBLIC
     nlohmann_json::nlohmann_json
+    codis_util
     ${CMAKE_DL_LIBS}
 )
