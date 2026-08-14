@@ -37,16 +37,16 @@ cmake --build build -j$(nproc)
 ```bash
 # Terminal 1: start the server
 export GLM_API_KEY="your-api-key"
-./build/libs/server/codis-server -c config/config.toml
+./build/bin/codis-server -c config/config.toml
 
 # Terminal 2: launch the TUI client (default)
-./build/libs/cli/codis
+./build/bin/codis
 
 # Continue the last session
-./build/libs/cli/codis -c
+./build/bin/codis -c
 
 # Custom port / model
-./build/libs/cli/codis -p 8711 -m glm-4.5-flash
+./build/bin/codis -p 8711 -m glm-4.5-flash
 ```
 
 No need to start the server manually — the CLI auto-starts it if it isn't running.

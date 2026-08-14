@@ -27,5 +27,5 @@ cmake -B "$BUILD_DIR" -S "$PROJECT_DIR" \
 cmake --build "$BUILD_DIR" -- -j$(nproc)
 
 echo ""
-echo "Build complete: $BUILD_DIR/libs/cli/codis"
+echo "Build complete: $BUILD_DIR/bin/codis"
 echo "Run: $PROJECT_DIR/bin/codis --help"

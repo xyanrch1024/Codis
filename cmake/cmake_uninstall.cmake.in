@@ -1,0 +1,40 @@
+# ==============================================================================
+# Uninstall — 根据 install_manifest.txt 删除已安装文件
+# 用法: cmake --build build --target uninstall
+# ==============================================================================
+if(NOT EXISTS "@CMAKE_BINARY_DIR@/install_manifest.txt")
+    message(FATAL_ERROR "Cannot find install manifest: @CMAKE_BINARY_DIR@/install_manifest.txt")
+endif()
+
+file(READ "@CMAKE_BINARY_DIR@/install_manifest.txt" files)
+string(REGEX REPLACE "\n" ";" files "${files}")
+foreach(file ${files})
+    message(STATUS "Uninstalling: $ENV{DESTDIR}${file}")
+    if(IS_SYMLINK "$ENV{DESTDIR}${file}" OR EXISTS "$ENV{DESTDIR}${file}")
+        execute_process(COMMAND "@CMAKE_COMMAND@" -E rm -f "$ENV{DESTDIR}${file}"
+            RESULT_VARIABLE rm_retval)
+        if(NOT "${rm_retval}" STREQUAL "0")
+            message(FATAL_ERROR "Problem when removing '$ENV{DESTDIR}${file}'")
+        endif()
+    else()
+        message(STATUS "File '$ENV{DESTDIR}${file}' does not exist.")
+    endif()
+endforeach()
+
+# 清理安装产生的目录（从 manifest 文件路径推导，逆序逐级删除空目录）
+set(dirs "")
+foreach(file ${files})
+    get_filename_component(dir "$ENV{DESTDIR}${file}" DIRECTORY)
+    while(dir AND NOT dir STREQUAL "/")
+        list(APPEND dirs "${dir}")
+        get_filename_component(dir "${dir}" DIRECTORY)
+    endwhile()
+endforeach()
+list(REVERSE dirs)
+list(REMOVE_DUPLICATES dirs)
+foreach(dir ${dirs})
+    if(IS_DIRECTORY "${dir}")
+        execute_process(COMMAND "@CMAKE_COMMAND@" -E remove_directory "${dir}")
+        message(STATUS "Removing empty dir: ${dir}")
+    endif()
+endforeach()

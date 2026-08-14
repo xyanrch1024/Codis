@@ -26,3 +26,32 @@ add_subdirectory(libs/plugin)
 add_subdirectory(libs/llm)
 add_subdirectory(libs/cli)
 add_subdirectory(libs/server)
+
+# ==============================================================================
+# 输出布局 — codis / codis-server 统一输出到 ${CMAKE_BINARY_DIR}/bin
+# ==============================================================================
+set_target_properties(codis        PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set_target_properties(codis-server PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ==============================================================================
+# 安装规则
+#   bin/                codis, codis-server
+#   etc/codis/          config.toml
+#   lib/codis/plugins/  echo_plugin.so
+# ==============================================================================
+install(TARGETS codis codis-server RUNTIME DESTINATION bin)
+install(FILES config/config.toml DESTINATION etc/codis)
+install(DIRECTORY plugins/ DESTINATION lib/codis/plugins FILES_MATCHING PATTERN "*.so")
+
+# ==============================================================================
+# Uninstall 目标 — cmake --build build --target uninstall
+# ==============================================================================
+if(NOT TARGET uninstall)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+        IMMEDIATE @ONLY)
+    add_custom_target(uninstall
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+        COMMENT "Uninstalling codis-cpp")
+endif()

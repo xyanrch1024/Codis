@@ -36,16 +36,16 @@ cmake --build build -j$(nproc)
 ```bash
 # 终端 1: 启动服务端
 export GLM_API_KEY="你的-api-key"
-./build/libs/server/codis-server -c config/config.toml
+./build/bin/codis-server -c config/config.toml
 
 # 终端 2: 启动 TUI 客户端（默认）
-./build/libs/cli/codis
+./build/bin/codis
 
 # 继续上次会话
-./build/libs/cli/codis -c
+./build/bin/codis -c
 
 # 指定端口 / 指定模型
-./build/libs/cli/codis -p 8711 -m glm-4.5-flash
+./build/bin/codis -p 8711 -m glm-4.5-flash
 ```
 
 也可以不用手动启动服务端：CLI 检测到服务端未运行时会自动拉起。

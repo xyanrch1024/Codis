@@ -26,7 +26,7 @@ bool is_server_running(int port) {
     return client.health_check();
 }
 
-bool ensure_server_running(int port, const std::string& server_binary, const std::string& project_root) {
+bool ensure_server_running(int port, const std::string& server_binary, const std::string& config_path) {
     if (is_server_running(port)) return true;
 
 #ifdef __linux__
@@ -34,7 +34,6 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
     if (pid == 0) {
         // daemon 化：不继承终端 fd，避免 CLI 退出/终端关闭后 server 挂死
         setsid();
-        chdir(project_root.c_str());
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
             dup2(devnull, STDIN_FILENO);
@@ -44,7 +43,7 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
         }
         auto port_str = std::to_string(port);
         execl(server_binary.c_str(), server_binary.c_str(), "-p", port_str.c_str(),
-              "-c", "config/config.toml", nullptr);
+              "-c", config_path.c_str(), nullptr);
         _exit(127);
     }
     if (pid < 0) return false;
@@ -89,20 +88,40 @@ int main(int argc, char** argv) {
     if (!is_server_running(server_port)) {
         LOG_INFO("server not running on port {}, attempting auto-start", server_port);
 
-        auto cli_dir = std::filesystem::path(argv[0]).parent_path();  // build/libs/cli
-        auto project_root = std::filesystem::canonical(cli_dir / "../../..").string();
+        // Linux 下用 /proc/self/exe 解析真实二进制路径（argv[0] 不可靠）
+        std::filesystem::path exe = std::filesystem::canonical("/proc/self/exe");
+        std::filesystem::path exe_dir = exe.parent_path();  // build/bin 或 /usr/local/bin
 
-        std::string bin = server_bin.empty()
-            ? (project_root + "/build/libs/server/codis-server")
-            : server_bin;
+        std::filesystem::path bin = server_bin.empty()
+            ? exe_dir / "codis-server"
+            : std::filesystem::path(server_bin);
 
-        if (std::filesystem::exists(bin)) {
-            ensure_server_running(server_port, bin, project_root);
-        } else {
-            LOG_ERROR("server binary not found: {}", bin);
+        if (!std::filesystem::exists(bin)) {
+            LOG_ERROR("server binary not found: {}", bin.string());
             std::cerr << "Server not running. Start it: codis-server -p " << server_port << " -c config/config.toml\n";
             return 1;
         }
+
+        // 配置文件探测（按优先级）：
+        //   1. 已安装：  <bin>/../etc/codis/config.toml   (/usr/local/etc/codis/config.toml)
+        //   2. 本地构建：<bin>/../../config/config.toml   (build/bin/../../config/config.toml)
+        //   3. 兜底：   相对当前目录 config/config.toml
+        std::filesystem::path config_path;
+        for (auto cand : { exe_dir / "../etc/codis/config.toml",
+                           exe_dir / "../../config/config.toml",
+                           std::filesystem::path("config/config.toml") }) {
+            auto p = cand.lexically_normal();
+            if (std::filesystem::exists(p)) { config_path = p; break; }
+        }
+        if (config_path.empty()) {
+            LOG_ERROR("config file not found (searched etc/codis and project config/)");
+            return 1;
+        }
+
+        if (ensure_server_running(server_port, bin.string(), config_path.string()))
+            LOG_INFO("server auto-started, config: {}", config_path.string());
+        else
+            LOG_ERROR("failed to start server: {}", bin.string());
     }
 
     if (!is_server_running(server_port)) {
