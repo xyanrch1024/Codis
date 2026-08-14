@@ -4,7 +4,7 @@ A C++20 AI coding assistant with multi-provider support, multi-client shared ses
 
 > 🇨🇳 [中文 README](./README.zh.md)
 
-![Codis](docs/codis.png)
+![Codis](docs/condis.png)
 
 ## Features
 
