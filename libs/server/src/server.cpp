@@ -679,25 +679,25 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
 
     broadcast(acp::done_frame());
 
-    // 标记完成；若有排队请求则保持 processing 并立即补跑下一轮
-    std::optional<ChatRequest> next;
-    {
-        std::lock_guard lock(sessions_mutex_);
-        auto it = sessions_.find(session_id);
-        if (it != sessions_.end()) {
-            if (!it->second.pending.empty()) {
-                next = std::move(it->second.pending.front());
-                it->second.pending.pop_front();
-            } else {
-                it->second.processing = false;
+    // 标记完成；若有排队请求则保持 processing 并在本线程内循环补跑下一轮
+    // （同一 session 串行执行，无需每次新建线程）
+    for (;;) {
+        std::optional<ChatRequest> next;
+        {
+            std::lock_guard lock(sessions_mutex_);
+            auto it = sessions_.find(session_id);
+            if (it != sessions_.end()) {
+                if (!it->second.pending.empty()) {
+                    next = std::move(it->second.pending.front());
+                    it->second.pending.pop_front();
+                } else {
+                    it->second.processing = false;
+                }
             }
         }
-    }
-    if (next) {
-        std::thread([this, session_id, conn_id, req = std::move(*next)]() mutable {
-            run_acp_loop_broadcast(session_id, conn_id, std::move(req));
-        }).detach();
+        if (!next) break;
         LOG_DEBUG("session {} rerun for queued message", session_id.substr(0, 8));
+        run_acp_loop_broadcast(session_id, conn_id, std::move(*next));
     }
     LOG_DEBUG("session {} completed", session_id.substr(0, 8));
 }
