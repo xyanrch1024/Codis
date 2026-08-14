@@ -325,6 +325,7 @@ int TuiClient::run() {
                         if (sid) {
                             state_->clear_all();
                             state_->current_session = *sid;
+                            acp_.switch_session(*sid);  // WS 移到新 session
                             state_->add_item(ItemKind::Status, "[Session " + s.id + " deleted, new session created]");
                         }
                     }
@@ -437,6 +438,7 @@ void TuiClient::send_message(const std::string& text) {
         if (sid) {
             state_->clear_all();
             state_->current_session = *sid;
+            acp_.switch_session(*sid);  // WS 移到新 session，否则服务端广播无连接可发
             state_->add_item(ItemKind::Status, "[New session created: " + *sid + "]");
         }
         return;
