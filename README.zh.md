@@ -4,7 +4,7 @@
 
 > 🇺🇸 [English README](./README.md)
 
-![Codis](docs/condis.png)
+![Codis](docs/codis.png)
 
 ## 特点
 
