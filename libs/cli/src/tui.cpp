@@ -104,7 +104,7 @@ int TuiClient::run() {
         if (info) load_history(info->messages);
         // 首次 TUI 渲染时自动滚动到底部
         auto_scroll_ = true;
-        scroll_item_ = -1;
+        scroll_px_ = 0;
     }
 
     // 输入组件
@@ -126,7 +126,7 @@ int TuiClient::run() {
     in_opt.multiline = true;
     in_opt.transform = [](InputState state) {
         if (state.is_placeholder) state.element |= dim;
-        return state.element | bgcolor(Color(Color::Palette256::Grey19));
+        return state.element | bgcolor(Color(Color::Palette256::Grey7));
     };
     auto input = Input(std::move(in_opt));
     input |= CatchEvent([&](Event event) {
@@ -231,7 +231,7 @@ int TuiClient::run() {
         els.push_back(vbox({text(""),
                             hbox({text("> "), input->Render() | flex |
                                                  size(HEIGHT, EQUAL, input_lines)}),
-                            text("")}) | bgcolor(Color(Color::Palette256::Grey19)));
+                            text("")}) | bgcolor(Color(Color::Palette256::Grey7)));
         return vbox(std::move(els));
     });
 
@@ -244,35 +244,69 @@ int TuiClient::run() {
         if (had && !state_->queue_empty())
             screen.Post(Event::Custom);
 
+        int vw = std::max(10, Terminal::Size().dimx);
+        int tw = vw - 2;  // 预留 vscroll_indicator 一列 + 1 列余量
+
         Elements els;
+        int total_rows = 0;
         {
-            int vw = std::max(10, Terminal::Size().dimx);
-            int tw = vw - 2;  // 预留 vscroll_indicator 一列 + 1 列余量
+            bool first = true;
+            auto count_wrap = [&](const std::string& txt, int w) {
+                return (int)wrap_by_width(txt, w).size();
+            };
             for (auto& item : state_->items) {
+                if (!first) { els.push_back(text("")); total_rows++; }
+                first = false;
+
                 Element el;
+                auto card_bg = bgcolor(Color(Color::Palette256::Grey7));
                 switch (item.kind) {
-                case ItemKind::User:
-                    el = wrapped_text("❯ " + item.text, tw) | color(Color::Cyan);
+                case ItemKind::User: {
+                    int r = count_wrap(item.text, tw - 2);
+                    el = hbox({text("┃ ") | color(Color::Cyan) | bold,
+                               wrapped_text(item.text, tw - 2) | color(Color::Cyan) | flex}) | card_bg;
+                    total_rows += r;
                     break;
-                case ItemKind::Assistant:
-                    el = wrapped_text(item.text, tw) |
-                         (item.streaming ? color(Color::GreenLight) : color(Color::Green));
+                }
+                case ItemKind::Assistant: {
+                    int r = count_wrap(item.text, tw - 2);
+                    el = hbox({text("┃ ") | color(Color::Green) | bold,
+                               wrapped_text(item.text, tw - 2) |
+                                   (item.streaming ? color(Color::GreenLight) : color(Color::Green)) | flex}) | card_bg;
+                    total_rows += r;
                     break;
+                }
                 case ItemKind::Reasoning: {
-                    el = wrapped_text("· " + item.text, tw) | color(Color::GrayDark) | dim;
+                    int r = count_wrap("· " + item.text, tw - 2);
+                    el = hbox({text("┃ ") | color(Color::GrayDark) | dim,
+                               wrapped_text("· " + item.text, tw - 2) | color(Color::GrayDark) | dim | flex}) | card_bg;
+                    total_rows += r;
                     break;
                 }
                 case ItemKind::ToolCall:
                     el = render_tool_call(item, tw);
+                    // 估算工具调用行数
+                    if (!item.has_result) { total_rows += 1; break; }
+                    if (item.tool_name == "write" || item.tool_name == "edit")
+                        total_rows += 1 + count_wrap(item.content_text, tw);
+                    else if (item.tool_name == "bash")
+                        total_rows += 1 + count_wrap(item.result_text, tw);
+                    else total_rows += 2;
                     break;
                 case ItemKind::ToolResult: {
+                    total_rows += count_wrap(item.text, tw);
                     el = wrapped_text(item.text, tw) | color(Color::GrayLight);
                     break;
                 }
-                case ItemKind::Error:
-                    el = wrapped_text(item.text, tw) | color(Color::Red);
+                case ItemKind::Error: {
+                    int r = count_wrap(item.text, tw - 2);
+                    el = hbox({text("┃ ") | color(Color::Red) | bold,
+                               wrapped_text(item.text, tw - 2) | color(Color::Red) | flex}) | card_bg;
+                    total_rows += r;
                     break;
+                }
                 case ItemKind::Status:
+                    total_rows += count_wrap(item.text, tw);
                     el = wrapped_text(item.text, tw) | dim;
                     break;
                 }
@@ -280,23 +314,18 @@ int TuiClient::run() {
             }
         }
 
-        int total = (int)els.size();
         Element content = vbox(std::move(els));
 
-        // 关键：限制内容宽度 ≤ 视口宽（终端宽）。否则 frame 会按内容自身
-        // 自然宽度(min_x)分配画布，paragraph 在比视口宽的画布里不换行，
-        // 后续换行行被横向裁剪不可见（表现为“输出截断”）。加上这个约束后
-        // 段落按视口宽度换行，resize 时重渲染读取新宽度重新换行。
-        int vw = std::max(10, Terminal::Size().dimx);
+        // 限制内容宽度 ≤ 视口宽
         content = content | size(WIDTH, LESS_THAN, vw);
 
-        // focusPositionRelative 控制 frame 滚动到内容的指定比例位置
-        // focus() 对单行 text() 元素无效（focused.box.y_min 始终为 0，dy=0）
-        // focusPositionRelative(0, 1) 滚动到底部（auto-scroll）
-        if (auto_scroll_ || scroll_item_ < 0) {
+        // 行级滚动 → focusPositionRelative 比例
+        max_scroll_ = total_rows;
+        if (auto_scroll_) {
+            scroll_px_ = total_rows;
             content = content | focusPositionRelative(0.f, 1.f);
         } else {
-            float frac = (float)scroll_item_ / std::max(1, total);
+            float frac = std::min(1.0f, (float)scroll_px_ / std::max(1, total_rows));
             content = content | focusPositionRelative(0.f, frac);
         }
 
@@ -324,7 +353,7 @@ int TuiClient::run() {
             }
         }
 
-        // 底部状态栏（输入框下方）：状态/提示 + 工作目录；有 pending 时顶部加专用行
+        // 底部状态栏（输入框下方）：压缩为一行，pending 时额外一行
         Elements status_els;
         if (state_->pending_count() > 0) {
             auto ptext = " ⏳ pending: " + state_->pending_preview(2, 90);
@@ -338,21 +367,16 @@ int TuiClient::run() {
         status_els.push_back(hbox({
             text(acp_.connected() ? " ● Connected" : " ● Disconnected") |
                 (acp_.connected() ? color(Color::Green) : color(Color::Red)),
-            text("  ·  " + (state_->processing ? std::string("processing...")
-                                               : std::string("idle"))) |
-                dim,
+            text("  ·  " + (state_->processing ? std::string("processing...") : std::string("idle"))) | dim,
             text("  ·  context " + state_->context_size_str()) | dim,
             flex(text("")),
+            text(" " + cwd) | dim,
             notice_.empty()
                 ? text("")
-                : text(" " + notice_ + " ") | color(Color::Yellow),
-        }));
-        status_els.push_back(hbox({
-            text(" " + cwd) | dim,
-            flex(text("")),
-        }));
-        auto status_bar = vbox(std::move(status_els)) |
-                          bgcolor(Color(Color::Palette256::Grey23));
+                : text("  " + notice_ + " ") | color(Color::Yellow),
+        }) | bgcolor(Color(Color::Palette256::Grey7)));
+        status_els.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
+        status_els.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
 
         Elements header = {
             hbox({
@@ -363,7 +387,7 @@ int TuiClient::run() {
             }),
             separator(),
             main_container->Render() | flex,
-            status_bar,
+            vbox(std::move(status_els)),
         };
 
         // Help overlay
@@ -556,22 +580,23 @@ int TuiClient::run() {
             return true;
         }
 
-        // 对话区上下滚动（按 item 索引）
+        // 对话区上下滚动（行级）
         if (event == Event::ArrowUp) {
             if (auto_scroll_) {
                 auto_scroll_ = false;
-                scroll_item_ = std::max(0, (int)state_->items.size() - 1);
-            } else if (scroll_item_ > 0) {
-                scroll_item_--;
+                scroll_px_ = std::max(0, max_scroll_ - 1);
+            } else if (scroll_px_ > 0) {
+                scroll_px_--;
             }
             post_job_();
             return true;
         }
         if (event == Event::ArrowDown) {
-            if (scroll_item_ >= 0) {
-                scroll_item_++;
-                if (scroll_item_ >= (int)state_->items.size()) {
-                    scroll_item_ = -1;
+            if (!auto_scroll_) {
+                scroll_px_++;
+                // 一旦超过文档顶部，自动回到 auto-scroll
+                if (scroll_px_ > 0 && scroll_px_ >= max_scroll_ - 2) {
+                    scroll_px_ = 0;
                     auto_scroll_ = true;
                 }
             }
@@ -579,22 +604,22 @@ int TuiClient::run() {
             return true;
         }
 
-        // 鼠标滚轮滚动（与 ↑↓ 同语义）
+        // 鼠标滚轮滚动（行级，滚轮一次 3 行）
         if (event.is_mouse() && event.mouse().button == Mouse::WheelUp) {
             if (auto_scroll_) {
                 auto_scroll_ = false;
-                scroll_item_ = std::max(0, (int)state_->items.size() - 1);
-            } else if (scroll_item_ > 0) {
-                scroll_item_--;
+                scroll_px_ = std::max(0, max_scroll_ - 3);
+            } else {
+                scroll_px_ = std::max(0, scroll_px_ - 3);
             }
             post_job_();
             return true;
         }
         if (event.is_mouse() && event.mouse().button == Mouse::WheelDown) {
-            if (scroll_item_ >= 0) {
-                scroll_item_++;
-                if (scroll_item_ >= (int)state_->items.size()) {
-                    scroll_item_ = -1;
+            if (!auto_scroll_) {
+                scroll_px_ += 3;
+                if (scroll_px_ >= max_scroll_ - 2) {
+                    scroll_px_ = 0;
                     auto_scroll_ = true;
                 }
             }
@@ -700,7 +725,7 @@ void TuiClient::send_message(const std::string& text) {
     if (state_->processing) {
         state_->pending_queue.push_back(text);
         auto_scroll_ = true;
-        scroll_item_ = -1;
+        scroll_px_ = 0;
         post_job_();
         return;
     }
@@ -711,7 +736,7 @@ void TuiClient::send_request(const std::string& text) {
     state_->add_item(ItemKind::User, text);
     state_->processing = true;
     auto_scroll_ = true;
-    scroll_item_ = -1;
+    scroll_px_ = 0;
     post_job_();
 
     state_->history.push_back({"user", text});
@@ -959,7 +984,7 @@ void TuiClient::switch_session(const SessionInfo& s) {
     state_->clear_all();
     if (info) load_history(info->messages);
     auto_scroll_ = true;
-    scroll_item_ = -1;
+    scroll_px_ = 0;
     state_->add_item(ItemKind::Status, "[Session: " + s.id + "]");
     if (post_job_) post_job_();
 }

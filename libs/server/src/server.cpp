@@ -2,7 +2,7 @@
 #include "tools/tools.h"
 #include "plugin_loader.h"
 #include "plugin_tool.h"
-#include "text.h"
+#include "str_util.h"
 
 #include <iostream>
 #include <thread>

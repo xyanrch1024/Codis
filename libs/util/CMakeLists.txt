@@ -1,6 +1,6 @@
 add_library(codis_util STATIC
     src/config.cpp
-    src/text.cpp
+    src/str_util.cpp
 )
 
 target_include_directories(codis_util PUBLIC src)

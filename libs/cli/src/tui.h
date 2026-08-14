@@ -292,8 +292,9 @@ private:
     AcpClient::Callbacks build_callbacks();
     void load_history(const std::vector<Message>& msgs);
 
-    // Conversation scrolling（按 item 索引）
-    int scroll_item_ = -1;  // -1 = auto-scroll to bottom
+    // Conversation scrolling（行级偏移，1 像素 = 1 终端行）
+    int scroll_px_ = 0;         // 距顶部偏移行数；0 = 顶部
+    int max_scroll_ = 0;        // 每帧由 renderer 更新：最大可滚行数
     bool auto_scroll_ = true;
 
     // 双击 ESC 取消当前任务（非退出）
