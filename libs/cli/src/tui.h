@@ -83,6 +83,38 @@ struct TuiState {
     bool processing = false;
     std::string status_msg;
 
+    // ---- 客户端 pending 队列 ----
+    // 任务处理中输入的新消息：仅入队，不进入对话区（避免打乱对话顺序）；
+    // 由底部状态栏展示。当前任务完成(Done/Error)后由 on_idle_ 逐条取出发送，
+    // 发送时才以正常 User 条目进入对话区（UI 线程访问）。
+    std::deque<std::string> pending_queue;
+    std::function<void()> on_idle_;
+
+    int pending_count() const { return (int)pending_queue.size(); }
+
+    // 取 pending 预览文本（状态栏展示）：最多 prefix 条 + 总长度限制
+    std::string pending_preview(int max_items, int max_chars) const {
+        if (pending_queue.empty()) return "";
+        std::string out;
+        int shown = 0;
+        for (auto& t : pending_queue) {
+            if (shown >= max_items) break;
+            if (shown > 0) out += "  |  ";
+            out += t;
+            shown++;
+        }
+        if ((int)pending_queue.size() > shown)
+            out += "  (+" + std::to_string(pending_queue.size() - shown) + ")";
+        if ((int)out.size() > max_chars) out = out.substr(0, max_chars) + "…";
+        return out;
+    }
+
+    // 取消任务时调用：丢弃未发送的排队消息（与 server 侧行为一致）
+    void clear_pending() {
+        pending_queue.clear();
+        if (notify_) notify_();
+    }
+
     std::mutex mutex;                // 仅保护 queue_
 
     // 由 TuiClient::run() 设置，指向 screen.Post（线程安全）
@@ -99,6 +131,7 @@ struct TuiState {
         history.clear();
         processing = false;
         pending_streaming_ = false;
+        pending_queue.clear();
         if (notify_) notify_();
     }
 
@@ -192,10 +225,12 @@ private:
             finalize_streaming();
             items.push_back({ItemKind::Error, ev.text});
             processing = false;
+            if (on_idle_) on_idle_();
             break;
         case AcpEvent::Kind::Done:
             finalize_streaming();
             processing = false;
+            if (on_idle_) on_idle_();
             break;
         }
         if (notify_) notify_();
@@ -219,6 +254,8 @@ public:
 
 private:
     void send_message(const std::string& text);
+    void send_request(const std::string& text);
+    void flush_pending();
     void cmd_clear();
     void cmd_delete_all();
     void cmd_balance(const std::string& line);

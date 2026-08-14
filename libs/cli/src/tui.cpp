@@ -95,6 +95,9 @@ int TuiClient::run() {
     };
     connect_sse();
 
+    // 任务完成后自动发送排队中的 pending 消息（Done/Error 触发）
+    state_->on_idle_ = [this] { flush_pending(); };
+
     // 如果恢复已有 session，通过 REST 拉历史（SSE 长连接不推历史）
     if (!session_arg_.empty()) {
         auto info = acp_.get_session(state_->current_session);
@@ -310,7 +313,7 @@ int TuiClient::run() {
     if (cwd.size() > 50) cwd = "…" + cwd.substr(cwd.size() - 50);
 
     auto main_renderer = Renderer(main_container, [&] {
-        auto status = state_->processing ? " [processing...]" : "";
+        std::string status = state_->processing ? " [processing...]" : "";
 
         // 瞬时提示过期清理（定时线程轮询 notice_pending_ 触发渲染）
         if (notice_pending_.load()) {
@@ -321,27 +324,37 @@ int TuiClient::run() {
             }
         }
 
-        // 底部状态栏（输入框下方）：两行 — 状态/提示 + 工作目录
-        auto status_bar = vbox({
-            hbox({
-                text(acp_.connected() ? " ● Connected" : " ● Disconnected") |
-                    (acp_.connected() ? color(Color::Green) : color(Color::Red)),
-                text("  ·  " + (state_->processing ? std::string("processing...")
-                                                   : std::string("idle"))) |
+        // 底部状态栏（输入框下方）：状态/提示 + 工作目录；有 pending 时顶部加专用行
+        Elements status_els;
+        if (state_->pending_count() > 0) {
+            auto ptext = " ⏳ pending: " + state_->pending_preview(2, 90);
+            status_els.push_back(hbox({
+                text(ptext) | color(Color::Yellow),
+                flex(text("")),
+                text(std::to_string(state_->pending_count()) + " queued · ESC ESC to cancel") |
                     dim,
-                text("  ·  " + std::to_string(state_->items.size()) + " items") | dim,
-                flex(text("")),
-                notice_.empty()
-                    ? text("")
-                    : text(" " + notice_ + " ") | color(Color::Yellow),
-                text("Double-ESC cancel · Drag to copy · Alt+Enter newline · /commands") | dim,
-            }),
-            hbox({
-                text(" " + cwd) | dim,
-                flex(text("")),
-                text("Ctrl+S sessions") | dim,
-            }),
-        }) | bgcolor(Color(Color::Palette256::Grey23));
+            }) | bgcolor(Color(Color::Palette256::Grey19)));
+        }
+        status_els.push_back(hbox({
+            text(acp_.connected() ? " ● Connected" : " ● Disconnected") |
+                (acp_.connected() ? color(Color::Green) : color(Color::Red)),
+            text("  ·  " + (state_->processing ? std::string("processing...")
+                                               : std::string("idle"))) |
+                dim,
+            text("  ·  " + std::to_string(state_->items.size()) + " items") | dim,
+            flex(text("")),
+            notice_.empty()
+                ? text("")
+                : text(" " + notice_ + " ") | color(Color::Yellow),
+            text("Double-ESC cancel · Drag to copy · Alt+Enter newline · /commands") | dim,
+        }));
+        status_els.push_back(hbox({
+            text(" " + cwd) | dim,
+            flex(text("")),
+            text("Ctrl+S sessions") | dim,
+        }));
+        auto status_bar = vbox(std::move(status_els)) |
+                          bgcolor(Color(Color::Palette256::Grey23));
 
         Elements header = {
             hbox({
@@ -463,6 +476,7 @@ int TuiClient::run() {
                         last_escape_ = std::chrono::steady_clock::time_point{};
                         acp_.cancel_session(state_->current_session);
                         state_->processing = false;
+                        state_->clear_pending();  // 取消时丢弃未发送的排队消息
                         show_notice("[Task cancelled]");
                         return true;
                     }
@@ -684,6 +698,18 @@ void TuiClient::send_message(const std::string& text) {
         return;
     }
 
+    // 当前任务处理中：新消息仅入 pending 队列，任务完成后自动发送
+    if (state_->processing) {
+        state_->pending_queue.push_back(text);
+        auto_scroll_ = true;
+        scroll_item_ = -1;
+        post_job_();
+        return;
+    }
+    send_request(text);
+}
+
+void TuiClient::send_request(const std::string& text) {
     state_->add_item(ItemKind::User, text);
     state_->processing = true;
     auto_scroll_ = true;
@@ -704,6 +730,14 @@ void TuiClient::send_message(const std::string& text) {
     req.session_id = state_->current_session;
 
     acp_.send_async(req);
+}
+
+void TuiClient::flush_pending() {
+    if (state_->processing) return;
+    if (state_->pending_queue.empty()) return;
+    std::string text = std::move(state_->pending_queue.front());
+    state_->pending_queue.pop_front();
+    send_request(text);
 }
 
 void TuiClient::cmd_clear() {
