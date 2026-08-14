@@ -1,0 +1,4 @@
+add_library(codis_protocol INTERFACE)
+
+target_include_directories(codis_protocol INTERFACE src)
+target_link_libraries(codis_protocol INTERFACE nlohmann_json::nlohmann_json)

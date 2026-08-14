@@ -16,6 +16,7 @@ target_link_libraries(codis-server PRIVATE
     nlohmann_json::nlohmann_json
     CLI11::CLI11
     codis_llm
+    codis_protocol
     codis_util
     codis_tool
     codis_plugin

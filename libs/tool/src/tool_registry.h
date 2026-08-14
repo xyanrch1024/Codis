@@ -1,7 +1,7 @@
 #pragma once
 
 #include "tool.h"
-#include "types.h"
+#include "messages.h"
 #include "log.h"
 
 #include <string>

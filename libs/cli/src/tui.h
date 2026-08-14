@@ -1,7 +1,7 @@
 #pragma once
 
 #include "acp_client.h"
-#include "types.h"
+#include "messages.h"
 #include "tool_format.h"
 #include "log.h"
 

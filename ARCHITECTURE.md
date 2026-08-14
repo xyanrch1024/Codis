@@ -215,20 +215,31 @@ codis-cpp/
 │   ├── server/src/
 │   │   ├── server.h/cpp             # 路由注册 + handle_acp_ws (request 帧), handle_acp_switch, queue_chat_request
 │   │   └── main.cpp                 # 启动入口
+│   ├── protocol/src/
+│   │   ├── messages.h / acp.h          # ACP 协议帧 + 共享对话/请求模型
+│   │   └── CMakeLists.txt
+│   ├── tool/src/
+│   │   ├── tool.h / tool_registry.h
+│   │   ├── tools/tools.h/cpp            # 内置工具 (bash/read/write/edit/glob/grep)
+│   │   └── CMakeLists.txt
 │   ├── llm/src/
-│   │   ├── types.h / acp.h          # ACP 协议帧定义 + connected 事件
-│   │   ├── acp_client.h/cpp         # connect() / send_async()
-│   │   ├── session_store.h/cpp
-│   │   ├── context_source.h/cpp
-│   │   ├── tool.h / tool_registry.h / tools/
-│   │   └── log.h
+│   │   ├── llm_http_client.h/cpp        # OpenAI 兼容 HTTP 客户端
+│   │   ├── provider.h / provider_registry.h
+│   │   └── openai_compatible_provider.h/cpp
 │   ├── plugin/
 │   │   ├── include/
 │   │   │   ├── plugin.h               # C ABI 接口
 │   │   │   ├── plugin_loader.h/cpp     # dlopen 加载器
 │   │   │   └── plugin_tool.h           # C → Tool 适配器
 │   │   └── CMakeLists.txt
-│   └── util/src/config.h/cpp
+│   ├── util/src/
+│   │   ├── config.h/cpp
+│   │   ├── log.h
+│   │   └── event_bus.h
+│   └── cli/src/
+│       ├── main.cpp / tui.h/cpp        # FTXUI TUI
+│       ├── acp_client.h/cpp            # connect() / send_async()
+│       └── tool_format.h
 │
 ├── config/config.toml
 └── bot/feishu_bot.py

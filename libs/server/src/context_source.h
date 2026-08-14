@@ -1,6 +1,6 @@
 #pragma once
 
-#include "types.h"
+#include "messages.h"
 #include "tool.h"
 #include "session_store.h"
 

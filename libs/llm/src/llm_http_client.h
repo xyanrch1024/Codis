@@ -9,7 +9,7 @@
 
 #include <nlohmann/json.hpp>
 #include <httplib.h>
-#include "types.h"
+#include "messages.h"
 
 namespace codis {
 

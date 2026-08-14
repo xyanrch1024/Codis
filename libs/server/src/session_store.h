@@ -1,6 +1,6 @@
 #pragma once
 
-#include "types.h"
+#include "messages.h"
 #include <nlohmann/json.hpp>
 
 #include <string>

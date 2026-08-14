@@ -15,6 +15,7 @@ target_link_libraries(codis PRIVATE
     ftxui::dom
     ftxui::screen
     codis_llm
+    codis_protocol
     codis_util
     Threads::Threads
 )
