@@ -341,7 +341,7 @@ int TuiClient::run() {
             text("  ·  " + (state_->processing ? std::string("processing...")
                                                : std::string("idle"))) |
                 dim,
-            text("  ·  " + std::to_string(state_->items.size()) + " items") | dim,
+            text("  ·  context " + state_->context_size_str()) | dim,
             flex(text("")),
             notice_.empty()
                 ? text("")

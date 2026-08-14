@@ -92,6 +92,18 @@ struct TuiState {
 
     int pending_count() const { return (int)pending_queue.size(); }
 
+    // 上下文大小（system_prompt + history 全部消息字符数），供状态栏显示。
+    // 流式回复尚未进入 history，实时计入其增量，保证每次渲染反映最新上下文。
+    std::string context_size_str() const {
+        size_t n = system_prompt.size();
+        for (auto& m : history) n += m.content.size();
+        for (auto& it : items)
+            if (it.streaming) n += it.text.size();
+        if (n >= 1000)
+            return std::to_string(n / 1000) + "." + std::to_string((n % 1000) / 100) + "K";
+        return std::to_string(n);
+    }
+
     // 取 pending 预览文本（状态栏展示）：最多 prefix 条 + 总长度限制
     std::string pending_preview(int max_items, int max_chars) const {
         if (pending_queue.empty()) return "";
