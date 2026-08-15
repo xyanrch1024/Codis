@@ -278,7 +278,8 @@ void CodisServer::handle_chat(const httplib::Request& req, httplib::Response& re
             msgs.push_back({"system", baseline});
             auto history = session_store_.load_messages(chat_req.session_id);
             for (auto& m : history)
-                if (m.role == "user" || m.role == "assistant") msgs.push_back(m);
+                if (m.role == "user" || (m.role == "assistant" && !m.tool_call_id))
+                    msgs.push_back(m);
             for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it)
                 if (it->role == "user" && !it->content.empty()) {
                     msgs.push_back(*it);
@@ -537,13 +538,17 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
 
     auto baseline = system_context_.build_baseline(session_id, session_store_);
     // store 历史已含 queue_chat_request 刚 append 的当前 user 消息，整体重放：
-    // 顺序 = system baseline + 历史正序（仅 user/assistant）。
-    // 不能逆序 insert(begin)——那会把 system 挤到中间，且客户端消息会重复。
+    // 顺序 = system baseline + 历史正序。重放只取 user 与无工具引用的 assistant
+    // 纯文本——带 tool_call_id 的中转消息（无正文）直接跳过：
+    // 同轮工具往返已在本轮 req.messages 中，跨轮重放悬浮 tool_call 会导致
+    // OpenAI 格式断链（严格 provider 报错/模型困惑），且白白多占 token。
     auto history = session_store_.load_messages(session_id);
     std::vector<Message> msgs;
     msgs.push_back({"system", baseline});
-    for (auto& m : history)
-        if (m.role == "user" || m.role == "assistant") msgs.push_back(m);
+    for (auto& m : history) {
+        if (m.role == "user" || (m.role == "assistant" && !m.tool_call_id))
+            msgs.push_back(m);
+    }
     req.messages = std::move(msgs);
 
     std::string assistant_content;

@@ -229,14 +229,13 @@ public:
     
     void show_instructions() {
         cout << "\n=== 数独游戏说明 ===\n";
-        cout << "1. 输入行号和列号选择单元格 (1-9)\n";
-        cout << "2. 输入数字1-9在选中单元格放置数字\n";
-        cout << "3. 输入0清除选中单元格\n";
-        cout << "4. 输入'c'清除当前单元格\n";
-        cout << "5. 输入'h'获取提示\n";
-        cout << "6. 输入'check'检查答案\n";
-        cout << "7. 输入'new'开始新游戏\n";
-        cout << "8. 输入'quit'退出游戏\n";
+        cout << "1. 输入坐标选择单元格 (如 '23' 表示第2行第3列)\n";
+        cout << "2. 输入3位数字选择单元格并放置数字 (如 '234' 表示第2行第3列放置4)\n";
+        cout << "3. 输入 'c' 清除当前选中单元格\n";
+        cout << "4. 输入 'h' 获取提示\n";
+        cout << "5. 输入 'check' 检查答案\n";
+        cout << "6. 输入 'new' 开始新游戏\n";
+        cout << "7. 输入 'quit' 退出游戏\n";
         cout << "==================\n";
     }
 };
@@ -297,17 +296,8 @@ int main() {
         
         // 尝试解析坐标或数字
         try {
-            if (input.length() == 1 && input[0] >= '1' && input[0] <= '9') {
-                // 选择行
-                int row = stoi(input) - 1;
-                cout << "请输入列号 (1-9)：";
-                string col_input;
-                cin >> col_input;
-                int col = stoi(col_input) - 1;
-                game.select_cell(row, col);
-            }
-            else if (input.length() == 2 && input[0] >= '1' && input[0] <= '9' && 
-                     input[1] >= '1' && input[1] <= '9') {
+            if (input.length() == 2 && input[0] >= '1' && input[0] <= '9' && 
+                input[1] >= '1' && input[1] <= '9') {
                 // 选择单元格
                 int row = stoi(input.substr(0, 1)) - 1;
                 int col = stoi(input.substr(1, 2)) - 1;
@@ -321,6 +311,10 @@ int main() {
                 int num = stoi(input.substr(2, 3));
                 game.select_cell(row, col);
                 game.place_number(num);
+            }
+            else if (input.length() == 1 && input[0] == '0') {
+                // 清除当前单元格
+                game.clear_cell();
             }
             else {
                 cout << "无效的输入！请输入有效的坐标或命令。\n";
