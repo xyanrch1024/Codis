@@ -22,6 +22,18 @@ server {
     listen 80;
     server_name codis.chat;
 
+    location /.well-known/acme-challenge/ { root /var/www/codis.chat; }
+
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name codis.chat;
+
+    ssl_certificate     /etc/letsencrypt/live/codis.chat/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/codis.chat/privkey.pem;
+
     root /var/www/codis.chat;
     index index.html;
 
@@ -40,14 +52,9 @@ server {
 
     access_log /var/log/nginx/codis.access.log;
     error_log  /var/log/nginx/codis.error.log;
-
-    # HTTPS（证书就绪后取消注释，并把 80 改为跳转）
-    # listen 443 ssl http2;
-    # ssl_certificate     /etc/letsencrypt/live/codis.chat/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/codis.chat/privkey.pem;
 }
 EOF
 sudo cp /tmp/codis-site.conf /etc/nginx/conf.d/codis.conf
 sudo nginx -t && sudo systemctl reload nginx'
 
-echo "== done: http://codis.chat =="
+echo "== done: https://codis.chat =="
