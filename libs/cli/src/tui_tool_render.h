@@ -304,14 +304,6 @@ inline std::vector<std::string> tool_content_lines(const ConvItem& item) {
     return split_diff_lines(item.result_text);
 }
 
-// 折叠时标记显示的结果行数（按渲染同宽 wrap 计数）
-inline int tool_block_rows_count(const ConvItem& item, int width) {
-    int n = 0;
-    int w = std::max(1, width - 2);
-    for (auto& ln : tool_content_lines(item)) n += (int)wrap_by_width(ln, w).size();
-    return n;
-}
-
 // 命令显示行 + 绿色字节数：
 //   bash     → "$ <command>"（$+命令名绿色）
 //   write/edit → block_title（"# Wrote <path>" / "← Edit <path>"，标题随失败态着色）
@@ -353,6 +345,17 @@ inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
         item.tool_name == "read" || item.tool_name == "glob" || item.tool_name == "grep";
     const bool foldable = tool_foldable(item);
 
+    // 结果块行追加：write/edit 用 diff 着色（新增/删除/上下文），其余统一灰
+    auto push_block_rows = [&](std::vector<UiRow>& out, const std::string& ln) {
+        if (item.tool_name == "write" || item.tool_name == "edit") {
+            auto dw = diff_block_rows(ln, width);
+            for (auto& r : dw) out.push_back(std::move(r));
+        } else {
+            auto bw = block_wrap(ln, width, kToolMuted);
+            for (auto& r : bw) out.push_back(std::move(r));
+        }
+    };
+
     if (pending)
         return {{text("~ " + item.tool_pending), "~ " + item.tool_pending}};
 
@@ -380,34 +383,29 @@ inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
         return rows;
     }
 
-    // 折叠：只显示命令行 + 标记 + 行数
+    // 截断态：命令行 + 前 kAutoFoldLines 行 + more...（点击 more 全部展开）
     if (foldable && item.folded) {
-        int n = tool_block_rows_count(item, width);
         size_t gb = 0;
         std::string cmd = tool_cmd_line(item, &gb);
-        cmd += "  (" + std::to_string(n) + (n == 1 ? " line" : " lines") + ")";
-        return tool_command_split(cmd, gb, width, tool_cmd_color(item, false), "▸ ");
+        auto rows = tool_command_split(cmd, gb, width, tool_cmd_color(item, false));
+        rows.push_back({text(""), ""});
+        int shown = 0;
+        for (auto& ln : tool_content_lines(item)) {
+            if (shown >= kAutoFoldLines) break;
+            shown++;
+            push_block_rows(rows, ln);
+        }
+        rows.push_back({text("  more...") | dim, "  more..."});
+        return rows;
     }
 
-    // 展开：命令行（▾ 标记 + 绿色命令名） + 空行 + 结果块
+    // 展开：命令行（▾ 标记 + 绿色命令名） + 空行 + 完整结果块
     if (foldable) {
         size_t gb = 0;
         std::string cmd = tool_cmd_line(item, &gb);
         auto rows = tool_command_split(cmd, gb, width, tool_cmd_color(item, false), "▾ ");
         rows.push_back({text(""), ""});
-        Color bc = kToolMuted;
-        if (item.tool_name == "bash") bc = kToolMuted;
-        if (item.tool_name == "write" || item.tool_name == "edit") {
-            for (auto& ln : tool_content_lines(item)) {
-                auto dw = diff_block_rows(ln, width);
-                for (auto& r : dw) rows.push_back(std::move(r));
-            }
-        } else {
-            for (auto& ln : tool_content_lines(item)) {
-                auto bw = block_wrap(ln, width, bc);
-                for (auto& r : bw) rows.push_back(std::move(r));
-            }
-        }
+        for (auto& ln : tool_content_lines(item)) push_block_rows(rows, ln);
         return rows;
     }
 
@@ -417,10 +415,7 @@ inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
         std::string cmd = tool_cmd_line(item, &gb);
         auto rows = tool_command_split(cmd, gb, width, tool_cmd_color(item, false));
         rows.push_back({text(""), ""});
-        for (auto& ln : tool_content_lines(item)) {
-            auto dw = diff_block_rows(ln, width);
-            for (auto& r : dw) rows.push_back(std::move(r));
-        }
+        for (auto& ln : tool_content_lines(item)) push_block_rows(rows, ln);
         return rows;
     }
 
@@ -432,10 +427,7 @@ inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
         std::string cmd = tool_cmd_line(item, &gb);
         auto rows = tool_command_split(cmd, gb, width, Color::Default);
         rows.push_back({text(""), ""});
-        for (auto& ln : tool_content_lines(item)) {
-            auto bw = block_wrap(ln, width, kToolMuted);
-            for (auto& r : bw) rows.push_back(std::move(r));
-        }
+        for (auto& ln : tool_content_lines(item)) push_block_rows(rows, ln);
         return rows;
     }
 
@@ -445,10 +437,7 @@ inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
         std::string cmd = tool_cmd_line(item, &gb);
         auto rows = tool_command_split(cmd, gb, width, kToolMuted);
         rows.push_back({text(""), ""});
-        for (auto& ln : tool_content_lines(item)) {
-            auto bw = block_wrap(ln, width, kToolMuted);
-            for (auto& r : bw) rows.push_back(std::move(r));
-        }
+        for (auto& ln : tool_content_lines(item)) push_block_rows(rows, ln);
         return rows;
     }
 

@@ -408,13 +408,12 @@ int TuiClient::run() {
         if (owner < 0 || owner >= (int)state_->items.size()) return;
         auto& it = state_->items[owner];
         if (it.kind != ItemKind::ToolCall || !tool_foldable(it)) return;
-        // 展开态仅命令行（▸/▾ 标记行）可折叠，避免误收结果块；
-        // 折叠态整行可点（命令行可能换行，只有首行带标记）
-        if (!it.folded) {
-            const std::string& sig = row_sigs_[content_row];
-            bool mark = sig.size() >= 3 &&
-                        (sig.rfind("▸ ", 0) == 0 || sig.rfind("▾ ", 0) == 0);
-            if (!mark) return;
+        // 截断态：仅 "  more..." 行可点击展开；展开态：仅 ▾ 命令行可点击收回
+        const std::string& sig = row_sigs_[content_row];
+        if (it.folded) {
+            if (sig != "  more...") return;
+        } else {
+            if (sig.size() < 3 || sig.rfind("▾ ", 0) != 0) return;
         }
         it.folded = !it.folded;
         show_notice(it.folded ? "[Output collapsed]" : "[Output expanded]");
