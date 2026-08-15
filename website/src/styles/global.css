@@ -58,15 +58,19 @@ header {
 
 .install-cmd {
   display: inline-flex; align-items: center; gap: 10px;
-  margin-top: 28px; padding: 10px 18px;
+  margin-top: 28px; padding: 6px 6px 6px 18px;
   background: #010409; border: 1px solid var(--accent-dim); border-radius: 10px;
-  font-size: 14.5px; user-select: all;
+  font-size: 14.5px;
 }
-.install-cmd .label {
-  font-size: 12px; color: var(--fg-dim); padding: 3px 8px;
-  border: 1px solid var(--border); border-radius: 6px; white-space: nowrap;
+.install-cmd .cmd { color: var(--fg); user-select: all; }
+.install-cmd .copy {
+  border: 1px solid var(--border); background: var(--bg-soft);
+  color: var(--fg-dim); border-radius: 6px; padding: 5px 12px;
+  font-size: 12.5px; cursor: pointer; font-family: inherit;
+  transition: all 0.15s ease;
 }
-.install-cmd .cmd { color: var(--fg); }
+.install-cmd .copy:hover { color: var(--fg); border-color: var(--accent-dim); }
+.install-cmd .copy.copied { color: var(--accent); border-color: var(--accent-dim); }
 
 .hero .cta { margin-top: 24px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 

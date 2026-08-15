@@ -57,9 +57,27 @@ const downloads = [
         流式输出、工具调用、SQLite 会话持久化，以及一个用 FTXUI 构建的终端 TUI。
       </p>
       <div class="install-cmd mono">
-        <span class="label">一键安装</span>
         <span class="cmd"><span style="color:var(--accent)">$</span> curl -fsSL https://codis.chat/install | bash</span>
+        <button class="copy" id="copy-install" type="button">Copy</button>
       </div>
+      <script is:inline>
+        const btn = document.getElementById("copy-install");
+        btn?.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(
+              "curl -fsSL https://codis.chat/install | bash"
+            );
+            btn.textContent = "已复制";
+            btn.classList.add("copied");
+            setTimeout(() => {
+              btn.textContent = "Copy";
+              btn.classList.remove("copied");
+            }, 1500);
+          } catch {
+            /* 剪贴板不可用时忽略 */
+          }
+        });
+      </script>
       <div class="cta">
         <a class="btn btn-primary" href="#download">下载 Codis</a>
         <a class="btn" href="#quickstart">快速开始</a>
