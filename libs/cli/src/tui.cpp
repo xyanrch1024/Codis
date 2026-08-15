@@ -361,6 +361,8 @@ int TuiClient::run() {
         if (my < conv_top || my >= conv_bottom) return;
         int VH = conv_bottom - conv_top;
         if (VH <= 0 || row_sigs_.empty()) return;
+        LOG_DEBUG("fold click ({},{}) conv=[{},{}) VH={} total={} auto={}", mx, my, conv_top,
+                  conv_bottom, VH, (int)row_sigs_.size(), (int)auto_scroll_);
 
         // 复现真实帧：相同元素树 + 相同视口盒
         auto content = conversation_view->Render();
@@ -382,29 +384,41 @@ int TuiClient::run() {
             if (c < 0 || c >= total) return false;
             return render_row_text(y) == row_sigs_[c];
         };
-        // 顶部 3 行 + 点击行都匹配才可信
+        // 顶部 3 行 + 点击行都匹配才可信；内容不足一屏时行号以内容行数为准
         int best_o = -1;
         for (int o = 0; o <= max_o; o++) {
-            bool ok = row_matches(o, 0);
-            for (int y = 1; y <= 2 && y < VH; y++) ok = ok && row_matches(o, y);
-            ok = ok && row_matches(o, vis_y);
-            if (ok) { best_o = o; break; }
+            bool ok = true;
+            for (int y : {0, 1, 2, vis_y}) {
+                if (y >= VH) continue;
+                if (!row_matches(o, y)) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
+                best_o = o;
+                break;
+            }
         }
         if (best_o < 0) return;
 
         int content_row = best_o + vis_y;
-        const std::string& sig = row_sigs_[content_row];
-        bool fold_mark = sig.size() >= 3 &&
-                         (sig.rfind("▸ ", 0) == 0 || sig.rfind("▾ ", 0) == 0);
-        if (!fold_mark) return;
+        if (content_row < 0 || content_row >= total) return;
         int owner = row_owner_[content_row];
         if (owner < 0 || owner >= (int)state_->items.size()) return;
         auto& it = state_->items[owner];
-        if (it.kind != ItemKind::ToolCall || !it.has_result || !it.tool_success) return;
+        if (it.kind != ItemKind::ToolCall || !tool_foldable(it)) return;
+        // 展开态仅命令行（▸/▾ 标记行）可折叠，避免误收结果块；
+        // 折叠态整行可点（命令行可能换行，只有首行带标记）
+        if (!it.folded) {
+            const std::string& sig = row_sigs_[content_row];
+            bool mark = sig.size() >= 3 &&
+                        (sig.rfind("▸ ", 0) == 0 || sig.rfind("▾ ", 0) == 0);
+            if (!mark) return;
+        }
         it.folded = !it.folded;
-        auto_scroll_ = true;
-        scroll_px_ = 0;
         show_notice(it.folded ? "[Output collapsed]" : "[Output expanded]");
+        LOG_DEBUG("fold toggle owner={} folded={} row={}", owner, it.folded, content_row);
     };
 
     auto main_container = Container::Vertical({conversation_view, input_bar});

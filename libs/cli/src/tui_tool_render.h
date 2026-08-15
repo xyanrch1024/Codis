@@ -330,6 +330,14 @@ inline std::string tool_cmd_line(const ConvItem& item, size_t* green_bytes) {
     return "# " + item.text;
 }
 
+// 成功工具结果是否可折叠（有结果块：write/edit 恒有；bash/通用需有输出）
+inline bool tool_foldable(const ConvItem& item) {
+    if (!item.has_result || !item.tool_success) return false;
+    if (item.tool_name == "read" || item.tool_name == "glob" || item.tool_name == "grep")
+        return false;
+    return !tool_content_lines(item).empty();
+}
+
 inline Color tool_cmd_color(const ConvItem& item, bool failed) {
     if (failed) return kToolError;
     if (item.tool_name == "bash") return Color::Default;
@@ -343,9 +351,7 @@ inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
     const bool failed = item.has_result && !item.tool_success;
     const bool inline_only =
         item.tool_name == "read" || item.tool_name == "glob" || item.tool_name == "grep";
-    // 成功后且有结果块（bash/通用有输出、write/edit 恒有）才可折叠
-    const bool foldable = item.has_result && !failed && !inline_only &&
-                          !tool_content_lines(item).empty();
+    const bool foldable = tool_foldable(item);
 
     if (pending)
         return {{text("~ " + item.tool_pending), "~ " + item.tool_pending}};
