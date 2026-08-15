@@ -139,12 +139,12 @@ public:
     void set_selected_col(int col) { selected_col = col; }
     
     bool place_number(int num) {
-        if (selected_row == -1 || selected_col == -1) {
+        if (get_selected_row() == -1 || get_selected_col() == -1) {
             cout << "请先选择一个单元格！\n";
             return false;
         }
         
-        if (original_board[selected_row][selected_col] != 0) {
+        if (original_board[get_selected_row()][get_selected_col()] != 0) {
             cout << "这个单元格是固定的，不能修改！\n";
             return false;
         }
@@ -154,22 +154,22 @@ public:
             return false;
         }
         
-        board[selected_row][selected_col] = num;
+        board[get_selected_row()][get_selected_col()] = num;
         return true;
     }
     
     void clear_cell() {
-        if (selected_row == -1 || selected_col == -1) {
+        if (get_selected_row() == -1 || get_selected_col() == -1) {
             cout << "请先选择一个单元格！\n";
             return;
         }
         
-        if (original_board[selected_row][selected_col] != 0) {
+        if (original_board[get_selected_row()][get_selected_col()] != 0) {
             cout << "这个单元格是固定的，不能清除！\n";
             return;
         }
         
-        board[selected_row][selected_col] = 0;
+        board[get_selected_row()][get_selected_col()] = 0;
     }
     
     bool is_complete() {
@@ -214,16 +214,16 @@ public:
         int col = empty_cells[index].second;
         
         board[row][col] = solution[row][col];
-        selected_row = row;
-        selected_col = col;
+        set_selected_row(row);
+        set_selected_col(col);
         
         cout << "提示：单元格 (" << row + 1 << "," << col + 1 << ") 的答案是 " << solution[row][col] << "\n";
     }
     
     void new_game() {
         generate_sudoku();
-        selected_row = -1;
-        selected_col = -1;
+        set_selected_row(-1);
+        set_selected_col(-1);
         cout << "新游戏开始！\n";
     }
     
@@ -252,8 +252,8 @@ int main() {
         game.display_board();
         
         cout << "\n当前选择：";
-        if (game.selected_row != -1 && game.selected_col != -1) {
-            cout << "(" << game.selected_row + 1 << "," << game.selected_col + 1 << ")";
+        if (game.get_selected_row() != -1 && game.get_selected_col() != -1) {
+            cout << "(" << game.get_selected_row() + 1 << "," << game.get_selected_col() + 1 << ")";
         } else {
             cout << "无";
         }

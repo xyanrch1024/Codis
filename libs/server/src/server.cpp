@@ -536,14 +536,15 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
     req.tools = tools;
 
     auto baseline = system_context_.build_baseline(session_id, session_store_);
-    req.messages.insert(req.messages.begin(), {"system", baseline});
-
-    // 加载 session 历史到 LLM 上下文（实现多轮对话）
+    // store 历史已含 queue_chat_request 刚 append 的当前 user 消息，整体重放：
+    // 顺序 = system baseline + 历史正序（仅 user/assistant）。
+    // 不能逆序 insert(begin)——那会把 system 挤到中间，且客户端消息会重复。
     auto history = session_store_.load_messages(session_id);
-    for (auto it = history.rbegin(); it != history.rend(); ++it) {
-        if (it->role == "user" || it->role == "assistant")
-            req.messages.insert(req.messages.begin(), *it);
-    }
+    std::vector<Message> msgs;
+    msgs.push_back({"system", baseline});
+    for (auto& m : history)
+        if (m.role == "user" || m.role == "assistant") msgs.push_back(m);
+    req.messages = std::move(msgs);
 
     std::string assistant_content;
     auto turn = std::make_shared<int>(0);
