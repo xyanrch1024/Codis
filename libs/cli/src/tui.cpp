@@ -246,6 +246,10 @@ int TuiClient::run() {
     });
 
     // 对话区
+    // UI 线程每帧：吞事件 → 逐条目构建逐行元素（行数 = 实际行数）。
+    // row_sigs_/row_owner_ 与元素一一对应，供点击命中测试反查内容行。
+    std::vector<std::string> row_sigs_;
+    std::vector<int> row_owner_;
     auto conversation_view = Renderer([&] {
         // 单线程消费 WS 事件：先吞队列，再构建视图
         bool had = state_->drain_events();
@@ -256,81 +260,66 @@ int TuiClient::run() {
 
         int vw = std::max(10, Terminal::Size().dimx);
         int tw = vw - 2;  // 预留 vscroll_indicator 一列 + 1 列余量
-
         Elements els;
-        int total_rows = 0;
+        auto card_bg = bgcolor(Color(Color::Palette256::Grey7));
+
+        auto push_row = [&](Element el, std::string sig, int owner) {
+            els.push_back(std::move(el));
+            row_sigs_.push_back(std::move(sig));
+            row_owner_.push_back(owner);
+        };
+        auto card_row = [&](Color bar_color, Element body, std::string body_sig, int owner) {
+            push_row(hbox({text("┃ ") | color(bar_color) | bold, std::move(body) | flex}) | card_bg,
+                     "┃ " + std::move(body_sig), owner);
+        };
+
+        row_sigs_.clear();
+        row_owner_.clear();
         {
             bool first = true;
-            auto count_wrap = [&](const std::string& txt, int w) {
-                return (int)wrap_by_width(txt, w).size();
-            };
-            for (auto& item : state_->items) {
-                if (!first) { els.push_back(text("")); total_rows++; }
+            for (int oi = 0; oi < (int)state_->items.size(); oi++) {
+                auto& item = state_->items[oi];
+                if (!first) push_row(text(""), "", oi);
                 first = false;
 
-                Element el;
-                auto card_bg = bgcolor(Color(Color::Palette256::Grey7));
                 switch (item.kind) {
-                case ItemKind::User: {
-                    int r = count_wrap(item.text, tw - 2);
-                    el = hbox({text("┃ ") | color(Color::Cyan) | bold,
-                               wrapped_text(item.text, tw - 2) | color(Color::Cyan) | flex}) | card_bg;
-                    total_rows += r;
+                case ItemKind::User:
+                    for (auto& r : wrap_rows(item.text, tw - 2))
+                        card_row(Color::Cyan, std::move(r.el) | color(Color::Cyan),
+                                 std::move(r.sig), oi);
                     break;
-                }
                 case ItemKind::Assistant: {
-                    int r = md_row_count(item.text, tw - 2);
-                    el = hbox({text("┃ ") | color(Color::Green) | bold,
-                               md_render(item.text, tw - 2) |
-                                   (item.streaming ? color(Color::GreenLight) : color(Color::Green)) | flex}) | card_bg;
-                    total_rows += r;
+                    auto mrows = md_rows(item.text, tw - 2);
+                    for (auto& r : mrows)
+                        card_row(Color::Green,
+                                 std::move(r.el) |
+                                     (item.streaming ? color(Color::GreenLight)
+                                                     : color(Color::Green)),
+                                 std::move(r.sig), oi);
                     break;
                 }
-                case ItemKind::Reasoning: {
-                    int r = count_wrap("· " + item.text, tw - 2);
-                    el = hbox({text("┃ ") | color(Color::GrayDark) | dim,
-                               wrapped_text("· " + item.text, tw - 2) | color(Color::GrayDark) | dim | flex}) | card_bg;
-                    total_rows += r;
+                case ItemKind::Reasoning:
+                    for (auto& r : wrap_rows("· " + item.text, tw - 2, Color::GrayDark))
+                        card_row(Color::GrayDark, std::move(r.el) | dim, std::move(r.sig), oi);
                     break;
-                }
                 case ItemKind::ToolCall:
-                    el = render_tool_call(item, tw);
-                    // 估算工具调用行数（命令行在块外 + 结果/错误在块内）
-                    if (!item.has_result) { total_rows += 1; break; }
-                    if (item.tool_name == "write" || item.tool_name == "edit") {
-                        std::string header = !item.tool_title.empty() ? item.tool_title
-                                                                      : "# " + item.text;
-                        total_rows += 1 + count_wrap(header, tw) +
-                                      count_wrap(item.content_text, tw) +
-                                      count_wrap(item.error_text, tw);
-                    } else if (item.tool_name == "bash") {
-                        total_rows += 1 + count_wrap("$ " + item.text, tw) +
-                                      count_wrap(item.result_text, tw) +
-                                      count_wrap(item.error_text, tw);
-                    } else {
-                        total_rows += 1 + count_wrap("# " + item.text, tw) +
-                                      count_wrap(item.result_text, tw) +
-                                      count_wrap(item.error_text, tw);
-                    }
+                    for (auto& r : render_tool_call(item, tw)) push_row(std::move(r.el),
+                                                                        std::move(r.sig), oi);
                     break;
-                case ItemKind::ToolResult: {
-                    total_rows += count_wrap(item.text, tw);
-                    el = wrapped_text(item.text, tw) | color(Color::GrayLight);
+                case ItemKind::ToolResult:
+                    for (auto& r : wrap_rows(item.text, tw, Color::GrayLight))
+                        push_row(std::move(r.el), std::move(r.sig), oi);
                     break;
-                }
-                case ItemKind::Error: {
-                    int r = count_wrap(item.text, tw - 2);
-                    el = hbox({text("┃ ") | color(Color::Red) | bold,
-                               wrapped_text(item.text, tw - 2) | color(Color::Red) | flex}) | card_bg;
-                    total_rows += r;
+                case ItemKind::Error:
+                    for (auto& r : wrap_rows(item.text, tw - 2))
+                        card_row(Color::Red, std::move(r.el) | color(Color::Red),
+                                 std::move(r.sig), oi);
                     break;
-                }
                 case ItemKind::Status:
-                    total_rows += count_wrap(item.text, tw);
-                    el = wrapped_text(item.text, tw) | dim;
+                    for (auto& r : wrap_rows(item.text, tw))
+                        push_row(std::move(r.el) | dim, std::move(r.sig), oi);
                     break;
                 }
-                els.push_back(std::move(el));
             }
         }
 
@@ -340,6 +329,7 @@ int TuiClient::run() {
         content = content | size(WIDTH, LESS_THAN, vw);
 
         // 行级滚动 → focusPositionRelative 比例
+        int total_rows = (int)row_owner_.size();
         max_scroll_ = total_rows;
         if (auto_scroll_) {
             scroll_px_ = total_rows;
@@ -351,6 +341,71 @@ int TuiClient::run() {
 
         return content | frame | flex | vscroll_indicator;
     });
+
+    // 左键单击命令行 → 切换结果块折叠。
+    // 命中原理：以相同元素树 + 相同视口盒复现渲染，frame 滚动偏移必然一致；
+    // 再按"可视区行文本 == 内容行签名"反查真实偏移，命中 ▸/▾ 标记行才切换。
+    // 任何一步不匹配都忽略点击（宁可误伤也不折叠错块）。
+    auto toggle_fold_on_click = [&](int mx, int my) {
+        if (help_visible_ || sessions_visible_ || cmd_palette_visible_) return;
+        int dimx = Terminal::Size().dimx;
+        int dimy = Terminal::Size().dimy;
+        int input_lines = 1;
+        for (char c : input_text)
+            if (c == '\n') input_lines++;
+        input_lines = std::clamp(input_lines, 1, kMaxInputRows);
+        int input_h = input_lines + 2 + (state_->pending_count() > 0 ? 1 : 0);
+        // Header 2 行（Codis + 分隔线）+ 对话视口 + 输入区 + 状态栏 5 行
+        const int conv_top = 2;
+        const int conv_bottom = dimy - 5 - input_h;  // [conv_top, conv_bottom) 为对话视口
+        if (my < conv_top || my >= conv_bottom) return;
+        int VH = conv_bottom - conv_top;
+        if (VH <= 0 || row_sigs_.empty()) return;
+
+        // 复现真实帧：相同元素树 + 相同视口盒
+        auto content = conversation_view->Render();
+        auto snap = Screen::Create(Dimension::Fixed(dimx), Dimension::Fixed(VH));
+        Render(snap, content);
+
+        auto render_row_text = [&](int y) {
+            std::string s;
+            for (int x = 0; x < dimx - 1; x++)  // 去掉 vscroll_indicator 列
+                s += snap.PixelAt(x, y).character;
+            while (!s.empty() && s.back() == ' ') s.pop_back();
+            return s;
+        };
+        int total = (int)row_sigs_.size();
+        int max_o = std::max(0, total - VH);
+        int vis_y = my - conv_top;
+        auto row_matches = [&](int o, int y) {
+            int c = o + y;
+            if (c < 0 || c >= total) return false;
+            return render_row_text(y) == row_sigs_[c];
+        };
+        // 顶部 3 行 + 点击行都匹配才可信
+        int best_o = -1;
+        for (int o = 0; o <= max_o; o++) {
+            bool ok = row_matches(o, 0);
+            for (int y = 1; y <= 2 && y < VH; y++) ok = ok && row_matches(o, y);
+            ok = ok && row_matches(o, vis_y);
+            if (ok) { best_o = o; break; }
+        }
+        if (best_o < 0) return;
+
+        int content_row = best_o + vis_y;
+        const std::string& sig = row_sigs_[content_row];
+        bool fold_mark = sig.size() >= 3 &&
+                         (sig.rfind("▸ ", 0) == 0 || sig.rfind("▾ ", 0) == 0);
+        if (!fold_mark) return;
+        int owner = row_owner_[content_row];
+        if (owner < 0 || owner >= (int)state_->items.size()) return;
+        auto& it = state_->items[owner];
+        if (it.kind != ItemKind::ToolCall || !it.has_result || !it.tool_success) return;
+        it.folded = !it.folded;
+        auto_scroll_ = true;
+        scroll_px_ = 0;
+        show_notice(it.folded ? "[Output collapsed]" : "[Output expanded]");
+    };
 
     auto main_container = Container::Vertical({conversation_view, input_bar});
 
@@ -492,6 +547,9 @@ int TuiClient::run() {
                             copy_to_clipboard(sel);
                             show_notice("[Copied " + std::to_string(sel.size()) + " chars]");
                         }
+                    } else {
+                        // 无拖动的单击：命中折叠命令行则切换
+                        toggle_fold_on_click(event.mouse().x, event.mouse().y);
                     }
                 }
             }
@@ -966,6 +1024,7 @@ void TuiClient::load_history(const std::vector<Message>& msgs) {
                     it->has_result = true;
                     it->tool_success = true;
                     it->result_text = m.content;
+                    it->folded = tool_auto_fold(*it);
                     matched = true;
                     break;
                 }

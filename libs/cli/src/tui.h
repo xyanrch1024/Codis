@@ -30,6 +30,9 @@ enum class ItemKind {
     Status,     // 本地状态消息（切换 session、balance 等）
 };
 
+// 工具结果源行数超过该值时结果块自动折叠（仅成功结果；失败恒展开）
+inline constexpr int kAutoFoldLines = 10;
+
 struct ConvItem {
     ItemKind kind;
     std::string text;
@@ -45,9 +48,24 @@ struct ConvItem {
     bool tool_block = false;    // 需要块布局
     bool has_result = false;    // tool_result 已到达
     bool tool_success = false;  // 结果成功
+    bool folded = false;        // 命令输出块折叠（失败结果恒展开）
     std::string result_text;    // 成功输出（bash 等）
     std::string error_text;     // 失败信息
 };
+
+// 工具结果源行数超过阈值时结果块自动折叠（仅成功结果；失败恒展开）。
+// 行级判定在结果到达且写入时确定，之后仅由用户单击切换。
+inline bool tool_auto_fold(const ConvItem& item) {
+    if (!item.tool_success) return false;
+    const std::string& src = (item.tool_name == "write" || item.tool_name == "edit")
+                                 ? item.content_text
+                                 : item.result_text;
+    int n = 1;
+    for (char c : src)
+        if (c == '\n') n++;
+    if (item.tool_name == "write" || item.tool_name == "edit") n--;  // 首行 (write <path>) 不计
+    return n > kAutoFoldLines;
+}
 
 // =============================================================================
 // ACP 事件 — WS 回调线程只 push 事件，UI 线程 drain 后改 items
@@ -234,6 +252,8 @@ private:
                         it->result_text = ev.tool_result.content;
                     else
                         it->error_text = ev.tool_result.content;
+                    if (ev.tool_result.success)
+                        it->folded = tool_auto_fold(*it);  // 输出超阈值自动折叠（失败恒展开）
                     matched = true;
                     break;
                 }

@@ -99,15 +99,112 @@ inline Element wrapped_text(const std::string& content, int width) {
     return vbox(std::move(els));
 }
 
-// 单条源行 → 若干已换行的单行 text 元素（同一颜色）
-inline Elements tool_wrapped(const std::string& line, int width, Color c) {
-    Elements out;
-    for (auto& wl : wrap_by_width(line, width)) out.push_back(text(wl) | color(c));
+// =============================================================================
+// 逐行渲染单元 — 元素 + 文本签名（命中测试/行数/渲染三者同源）
+// sig = 该行渲染后的可见字符序列（不含行尾空白），用于点击坐标反查。
+// =============================================================================
+
+struct UiRow {
+    Element el;
+    std::string sig;
+};
+
+// 纯文本行（可选颜色）
+inline std::vector<UiRow> wrap_rows(const std::string& src, int width, Color c = Color::Default) {
+    std::vector<UiRow> rows;
+    for (auto& wl : wrap_by_width(src, width)) {
+        auto el = text(wl);
+        if (c != Color::Default) el = el | color(c);
+        rows.push_back({std::move(el), wl});
+    }
+    return rows;
+}
+
+// 样式分段文本 → 按宽度换行成逐行元素; 行内样式按字节边界切分
+// （行尾空格丢弃逻辑与 wrap_by_width 一致）
+struct MdSeg {
+    std::string text;
+    Color fg = Color::Default;
+    bool bold = false;
+    bool dim = false;
+    bool italic = false;
+    bool code = false;   // 行内代码: 纸片底色（与代码块同色系）
+    bool strike = false;
+};
+
+inline int md_utf8_len(char c) {
+    unsigned char u = (unsigned char)c;
+    if (u >= 0xF0) return 4;
+    if (u >= 0xE0) return 3;
+    if (u >= 0xC0) return 2;
+    return 1;
+}
+
+// 样式分段 → 拼接文本（可选每段字节边界）
+inline std::string md_text_of(const std::vector<MdSeg>& segs, std::vector<size_t>* bounds) {
+    std::string out;
+    if (bounds) {
+        bounds->clear();
+        bounds->push_back(0);
+    }
+    for (auto& s : segs) {
+        out += s.text;
+        if (bounds) bounds->push_back(out.size());
+    }
     return out;
 }
 
+inline Element md_seg_el(const MdSeg& s) {
+    auto el = text(s.text);
+    if (s.bold) el = el | bold;
+    if (s.dim) el = el | dim;
+    if (s.italic) el = el | italic;
+    if (s.strike) el = el | strikethrough;
+    if (s.code) el = el | bgcolor(Color(Color::Palette256::Grey19));
+    if (s.fg != Color::Default) el = el | color(s.fg);
+    return el;
+}
+
+// 样式分段 → 逐行渲染; 每行一条 hbox<分段>（sig = 该行可见文本）
+inline std::vector<UiRow> md_styled_rows(const std::vector<MdSeg>& segs, int width) {
+    std::vector<size_t> bounds;
+    std::string text = md_text_of(segs, &bounds);
+    std::vector<UiRow> rows;
+    size_t pos = 0;  // 原串已消费字节
+    for (auto& ln : wrap_by_width(text, width)) {
+        size_t start = pos;
+        size_t k = 0;
+        while (k < ln.size()) {
+            int cl = md_utf8_len(ln[k]);
+            k += (size_t)cl;
+            pos += (size_t)cl;
+        }
+        while (pos < text.size() && text[pos] == ' ') pos++;  // 行尾被丢弃的空格
+        size_t end = pos;
+        Elements parts;
+        size_t si = 0;
+        while (si + 1 < bounds.size() && bounds[si + 1] <= start) si++;
+        size_t cursor = start;
+        while (cursor < end && si + 1 < bounds.size()) {
+            size_t s_end = std::min(bounds[si + 1], end);
+            if (s_end > cursor) {
+                MdSeg seg = segs[si];
+                seg.text = ln.substr(cursor - start, s_end - cursor);
+                parts.push_back(md_seg_el(seg));
+            }
+            cursor = s_end;
+            if (cursor >= bounds[si + 1]) si++;
+        }
+        std::string sig = ln;
+        while (!sig.empty() && sig.back() == ' ') sig.pop_back();
+        rows.push_back({hbox(std::move(parts)), sig});
+    }
+    return rows;
+}
+
 // =============================================================================
-// openCode 风格的工具调用渲染（ToolCall 条目 → Element）
+// openCode 风格的工具调用渲染（ToolCall 条目 → 逐行元素）
+// 命令行在块外（命令名绿色），结果/错误在块内；成功结果块可折叠。
 // =============================================================================
 
 // 完成态颜色（暗灰，低调）
@@ -116,21 +213,40 @@ inline const Color kToolError = Color::RedLight;
 inline const Color kToolAdded = Color::GreenLight;
 inline const Color kToolRemoved = Color::RedLight;
 
-// diff 行逐行着色（edit/write 块内容），返回换行后的 Elements
-inline Elements tool_diff_lines(const std::string& line, int width) {
-    switch (classify_diff_line(line)) {
-        case DiffLineKind::Added:   return tool_wrapped(line, width, kToolAdded);
-        case DiffLineKind::Removed: return tool_wrapped(line, width, kToolRemoved);
-        default:                    return tool_wrapped(line, width, kToolMuted);
-    }
+// 工具块逐行版本（每行 │ 左边框 + 面板底色，对应 openCode BlockTool）
+inline std::vector<UiRow> block_wrap(const std::string& src, int width, Color c) {
+    std::vector<UiRow> rows;
+    int w = std::max(1, width - 2);
+    for (auto& wl : wrap_by_width(src, w))
+        rows.push_back({hbox({text("│ "), text(wl) | color(c) | flex}) |
+                            bgcolor(Color(Color::Palette256::Grey19)),
+                        "│ " + wl});
+    return rows;
 }
 
-// 工具块：左边框 + 面板底色（对应 openCode BlockTool）
-// 每行元素都必须已是单行 text（调用方需先按宽度展开），保证 "│ " 贯通每行
+// diff 行 → 块行（按宽度换行 + 逐行 diff 着色）
+inline std::vector<UiRow> diff_block_rows(const std::string& ln, int width) {
+    std::vector<UiRow> rows;
+    int w = std::max(1, width - 2);
+    for (auto& wl : wrap_by_width(ln, w)) {
+        auto el = text(wl);
+        switch (classify_diff_line(wl)) {
+            case DiffLineKind::Added:   el = el | color(kToolAdded); break;
+            case DiffLineKind::Removed: el = el | color(kToolRemoved); break;
+            default:                    el = el | color(kToolMuted); break;
+        }
+        rows.push_back({hbox({text("│ "), std::move(el) | flex}) |
+                            bgcolor(Color(Color::Palette256::Grey19)),
+                        "│ " + wl});
+    }
+    return rows;
+}
+
 inline Element tool_block(Elements lines) {
     Elements wrapped;
-    for (auto& el : lines) wrapped.push_back(hbox({text("│ "), std::move(el) | flex}));
-    return vbox(std::move(wrapped)) | bgcolor(Color(Color::Palette256::Grey19));
+    for (auto& el : lines) wrapped.push_back(hbox({text("│ "), std::move(el) | flex}) |
+                                            bgcolor(Color(Color::Palette256::Grey19)));
+    return vbox(std::move(wrapped));
 }
 
 // 单行工具行（对应 openCode InlineTool）：[icon 宽2] label
@@ -140,137 +256,197 @@ inline Element tool_inline(const std::string& icon, const std::string& label, Co
                  wrapped_text(label, width - 2) | flex}) | color(fg);
 }
 
-// 命令行（块外）：普通行，无左边框、无面板底色
-inline Element tool_command(const std::string& cmd, int width, Color c) {
-    return vbox(tool_wrapped(cmd, width, c));
-}
-
 // 命令名 = 首个空白前的词
 inline size_t command_name_len(const std::string& s) {
     auto sp = s.find_first_of(" \t");
     return sp == std::string::npos ? s.size() : sp;
 }
 
-// 命令行两段着色：前缀 [0, green_bytes) 绿色（命令名），其余保持 rest_c（参数/符号）
-// 与 wrap_by_width 同流换行，逐行推算绿色段与参数段的字节边界
-inline Element tool_command_split(const std::string& line_text, size_t green_bytes,
-                                  int width, Color rest_c) {
-    auto utf8_len = [](char c) {
-        unsigned char u = (unsigned char)c;
-        if (u >= 0xF0) return 4;
-        if (u >= 0xE0) return 3;
-        if (u >= 0xC0) return 2;
-        return 1;
-    };
-    Elements rows;
-    size_t pos = 0;  // 原串已消费字节
-    for (auto& ln : wrap_by_width(line_text, width)) {
-        size_t start = pos;
-        size_t k = 0;
-        while (k < ln.size()) {
-            int cl = utf8_len(ln[k]);
-            k += static_cast<size_t>(cl);
-            pos += static_cast<size_t>(cl);
-        }
-        while (pos < line_text.size() && line_text[pos] == ' ') pos++;  // 行尾被丢弃的空格
-        size_t end = pos;
-        Elements segs;
-        if (green_bytes > 0 && start < green_bytes) {
-            size_t split = std::min(end, green_bytes);
-            segs.push_back(text(ln.substr(0, split - start)) | color(Color::Green));
-            if (split < end) segs.push_back(text(ln.substr(split - start)) | color(rest_c));
-        } else {
-            segs.push_back(text(ln) | color(rest_c));
-        }
-        rows.push_back(hbox(std::move(segs)));
+// 命令行两段着色：前缀 [0, green_bytes) 绿色（命令名），其余保持 rest_c（参数/符号）；
+// 可选折叠标记（▸/▾，首行前，dim）。与 wrap_by_width 同流换行。
+inline std::vector<UiRow> tool_command_split(const std::string& line_text, size_t green_bytes,
+                                             int width, Color rest_c,
+                                             const std::string& marker = "") {
+    std::vector<MdSeg> segs;
+    if (!marker.empty()) {
+        MdSeg m;
+        m.text = marker;
+        m.dim = true;
+        segs.push_back(std::move(m));
     }
-    return vbox(std::move(rows));
+    if (green_bytes > 0) {
+        MdSeg g;
+        g.text = line_text.substr(0, green_bytes);
+        g.fg = Color::Green;
+        segs.push_back(std::move(g));
+    }
+    MdSeg r;
+    r.text = green_bytes < line_text.size() ? line_text.substr(green_bytes) : "";
+    if (!r.text.empty()) {
+        r.fg = rest_c;
+        segs.push_back(std::move(r));
+    }
+    auto rows = md_styled_rows(segs, width);
+    return rows;
 }
 
-// 命令行 + 空行 + 结果块
-inline Element tool_command_block(Element header, Element block) {
-    return vbox({std::move(header), text(""), std::move(block)});
+// 工具结果内容的行块（块内宽度 width-2，与 block_wrap 一致）：
+//   bash     → result_text
+//   write/edit → content_text（去掉 "edit/write <path>" 首行）
+//   通用工具 → result_text
+inline std::vector<std::string> tool_content_lines(const ConvItem& item) {
+    if (item.tool_name == "bash") return split_diff_lines(item.result_text);
+    if (item.tool_name == "write" || item.tool_name == "edit") {
+        auto lines = split_diff_lines(item.content_text);
+        if (!lines.empty()) lines.erase(lines.begin());  // "edit/write <path>"
+        return lines;
+    }
+    return split_diff_lines(item.result_text);
 }
 
-inline Element render_tool_call(const ConvItem& item, int width) {
+// 折叠时标记显示的结果行数（按渲染同宽 wrap 计数）
+inline int tool_block_rows_count(const ConvItem& item, int width) {
+    int n = 0;
+    int w = std::max(1, width - 2);
+    for (auto& ln : tool_content_lines(item)) n += (int)wrap_by_width(ln, w).size();
+    return n;
+}
+
+// 命令显示行 + 绿色字节数：
+//   bash     → "$ <command>"（$+命令名绿色）
+//   write/edit → block_title（"# Wrote <path>" / "← Edit <path>"，标题随失败态着色）
+//   通用工具 → "# <label>"（#+工具名绿色）
+inline std::string tool_cmd_line(const ConvItem& item, size_t* green_bytes) {
+    if (item.tool_name == "bash") {
+        std::string s = "$ " + item.text;
+        if (green_bytes) *green_bytes = 2 + command_name_len(item.text);
+        return s;
+    }
+    if (item.tool_name == "write" || item.tool_name == "edit") {
+        if (green_bytes) *green_bytes = 0;
+        return !item.tool_title.empty() ? item.tool_title : "# " + item.text;
+    }
+    if (green_bytes) *green_bytes = 2 + command_name_len(item.text);
+    return "# " + item.text;
+}
+
+inline Color tool_cmd_color(const ConvItem& item, bool failed) {
+    if (failed) return kToolError;
+    if (item.tool_name == "bash") return Color::Default;
+    if (item.tool_name == "write" || item.tool_name == "edit") return kToolMuted;
+    return kToolMuted;
+}
+
+// ToolCall 条目 → 逐行元素（含折叠）。结论由调用方（conversation renderer）统一使用。
+inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
     const bool pending = !item.has_result;
     const bool failed = item.has_result && !item.tool_success;
     const bool inline_only =
         item.tool_name == "read" || item.tool_name == "glob" || item.tool_name == "grep";
+    // 成功后且有结果块（bash/通用有输出、write/edit 恒有）才可折叠
+    const bool foldable = item.has_result && !failed && !inline_only &&
+                          !tool_content_lines(item).empty();
 
     if (pending)
-        return text("~ " + item.tool_pending);
+        return {{text("~ " + item.tool_pending), "~ " + item.tool_pending}};
 
+    // 失败：恒展开；命令行（红）在外，失败信息在块内
     if (failed) {
-        if (inline_only)
-            return tool_inline(item.tool_icon, item.text, kToolError, width);
-        // 命令行在块外（bash → "$ <command>"；write/edit → 保留 block_title；
-        // 通用工具 → "# <label>"），失败信息在块内
-        Element header;
-        if (item.tool_name == "bash")
-            header = tool_command_split("$ " + item.text, 2 + command_name_len(item.text),
-                                        width, kToolError);
-        else if (!item.tool_title.empty())
-            header = tool_command(item.tool_title, width, kToolError);
-        else
-            header = tool_command_split("# " + item.text, 2 + command_name_len(item.text),
-                                        width, kToolError);
-        Elements lines;
+        if (inline_only) return {{tool_inline(item.tool_icon, item.text, kToolError, width),
+                                  "→ " + item.text}};
+        size_t gb = 0;
+        std::string cmd = tool_cmd_line(item, &gb);
+        auto rows = tool_command_split(cmd, gb, width, kToolError);
+        std::vector<UiRow> inner;
         auto content = split_diff_lines(item.content_text);
-        if (!content.empty()) content.erase(content.begin());  // 去掉 "edit/write <path>" 首行
+        if (!content.empty()) content.erase(content.begin());  // "edit/write <path>"
         for (auto& ln : content) {
-            auto wrapped = tool_diff_lines(ln, width);
-            lines.insert(lines.end(), wrapped.begin(), wrapped.end());
+            auto dw = diff_block_rows(ln, width);
+            for (auto& r : dw) inner.push_back(std::move(r));
         }
-        for (auto& ln : split_diff_lines(item.error_text))
-            for (auto& wl : tool_wrapped(ln, width, kToolError)) lines.push_back(wl);
-        if (lines.empty()) return header;
-        return tool_command_block(header, tool_block(std::move(lines)));
+        for (auto& ln : split_diff_lines(item.error_text)) {
+            auto bw = block_wrap(ln, width, kToolError);
+            for (auto& r : bw) inner.push_back(std::move(r));
+        }
+        if (inner.empty()) return rows;
+        rows.push_back({text(""), ""});
+        for (auto& r : inner) rows.push_back(std::move(r));
+        return rows;
     }
 
-    if (item.tool_name == "write" || item.tool_name == "edit") {
-        // block_title（"# Wrote <path>" / "← Edit <path>"）在块外，diff 在块内
-        Element header;
-        if (!item.tool_title.empty())
-            header = tool_command(item.tool_title, width, kToolMuted);
-        else
-            header = tool_command("# " + item.text, width, kToolMuted);
-        Elements lines;
-        auto content = split_diff_lines(item.content_text);
-        if (!content.empty()) content.erase(content.begin());  // 去掉 "edit/write <path>" 首行
-        for (auto& ln : content) {
-            auto wrapped = tool_diff_lines(ln, width);
-            lines.insert(lines.end(), wrapped.begin(), wrapped.end());
+    // 折叠：只显示命令行 + 标记 + 行数
+    if (foldable && item.folded) {
+        int n = tool_block_rows_count(item, width);
+        size_t gb = 0;
+        std::string cmd = tool_cmd_line(item, &gb);
+        cmd += "  (" + std::to_string(n) + (n == 1 ? " line" : " lines") + ")";
+        return tool_command_split(cmd, gb, width, tool_cmd_color(item, false), "▸ ");
+    }
+
+    // 展开：命令行（▾ 标记 + 绿色命令名） + 空行 + 结果块
+    if (foldable) {
+        size_t gb = 0;
+        std::string cmd = tool_cmd_line(item, &gb);
+        auto rows = tool_command_split(cmd, gb, width, tool_cmd_color(item, false), "▾ ");
+        rows.push_back({text(""), ""});
+        Color bc = kToolMuted;
+        if (item.tool_name == "bash") bc = kToolMuted;
+        if (item.tool_name == "write" || item.tool_name == "edit") {
+            for (auto& ln : tool_content_lines(item)) {
+                auto dw = diff_block_rows(ln, width);
+                for (auto& r : dw) rows.push_back(std::move(r));
+            }
+        } else {
+            for (auto& ln : tool_content_lines(item)) {
+                auto bw = block_wrap(ln, width, bc);
+                for (auto& r : bw) rows.push_back(std::move(r));
+            }
         }
-        return tool_command_block(header, tool_block(std::move(lines)));
+        return rows;
+    }
+
+    // 无可折叠块的已完成工具
+    if (item.tool_name == "write" || item.tool_name == "edit") {
+        size_t gb = 0;
+        std::string cmd = tool_cmd_line(item, &gb);
+        auto rows = tool_command_split(cmd, gb, width, tool_cmd_color(item, false));
+        rows.push_back({text(""), ""});
+        for (auto& ln : tool_content_lines(item)) {
+            auto dw = diff_block_rows(ln, width);
+            for (auto& r : dw) rows.push_back(std::move(r));
+        }
+        return rows;
     }
 
     if (item.tool_name == "bash") {
-        auto out = split_diff_lines(item.result_text);
-        if (out.empty())
-            return tool_inline(item.tool_icon, item.text, kToolMuted, width);
-        // "$ <command>" 在块外：命令名绿色，参数原色；输出在块内
-        Elements lines;
-        for (auto& ln : out)
-            for (auto& wl : tool_wrapped(ln, width, kToolMuted)) lines.push_back(wl);
-        return tool_command_block(
-            tool_command_split("$ " + item.text, 2 + command_name_len(item.text),
-                               width, Color::Default),
-            tool_block(std::move(lines)));
+        if (item.result_text.empty())
+            return {{tool_inline(item.tool_icon, item.text, kToolMuted, width),
+                     "$ " + item.text}};
+        size_t gb = 0;
+        std::string cmd = tool_cmd_line(item, &gb);
+        auto rows = tool_command_split(cmd, gb, width, Color::Default);
+        rows.push_back({text(""), ""});
+        for (auto& ln : tool_content_lines(item)) {
+            auto bw = block_wrap(ln, width, kToolMuted);
+            for (auto& r : bw) rows.push_back(std::move(r));
+        }
+        return rows;
     }
 
-    // 通用工具：有输出则转块展示（"# <label>" 在块外，结果在块内）
+    // 通用工具
     if (!item.result_text.empty()) {
-        Elements lines;
-        for (auto& ln : split_diff_lines(item.result_text))
-            for (auto& wl : tool_wrapped(ln, width, kToolMuted)) lines.push_back(wl);
-        return tool_command_block(
-            tool_command_split("# " + item.text, 2 + command_name_len(item.text),
-                               width, kToolMuted),
-            tool_block(std::move(lines)));
+        size_t gb = 0;
+        std::string cmd = tool_cmd_line(item, &gb);
+        auto rows = tool_command_split(cmd, gb, width, kToolMuted);
+        rows.push_back({text(""), ""});
+        for (auto& ln : tool_content_lines(item)) {
+            auto bw = block_wrap(ln, width, kToolMuted);
+            for (auto& r : bw) rows.push_back(std::move(r));
+        }
+        return rows;
     }
 
-    return tool_inline(item.tool_icon, item.text, kToolMuted, width);
+    return {{tool_inline(item.tool_icon, item.text, kToolMuted, width), "# " + item.text}};
 }
 
 } // namespace codis
