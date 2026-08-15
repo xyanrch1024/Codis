@@ -830,9 +830,10 @@ void TuiClient::send_request(const std::string& text) {
 
     state_->history.push_back({"user", text});
 
+    // 上下文由服务端从 SQLite 重建（session 历史 + baseline + tools），
+    // 客户端只发当前这一条 user 消息，整段 history 不再重复传输。
     std::vector<Message> msgs;
-    msgs.push_back({"system", state_->system_prompt});
-    for (auto& m : state_->history) msgs.push_back(m);
+    msgs.push_back({"user", text});
 
     ChatRequest req;
     req.model = model_;

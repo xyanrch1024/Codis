@@ -269,6 +269,24 @@ void CodisServer::handle_chat(const httplib::Request& req, httplib::Response& re
         }
         chat_req.tools = tools;
 
+        // 与 ACP 循环对称：session 存在时忽略请求自带 messages，
+        // 上下文改为 baseline + SQLite 历史 + 请求中最后一条 user 消息，
+        // 客户端无需再传输整段历史。
+        if (!chat_req.session_id.empty() && session_store_.load_session(chat_req.session_id)) {
+            auto baseline = system_context_.build_baseline(chat_req.session_id, session_store_);
+            std::vector<Message> msgs;
+            msgs.push_back({"system", baseline});
+            auto history = session_store_.load_messages(chat_req.session_id);
+            for (auto& m : history)
+                if (m.role == "user" || m.role == "assistant") msgs.push_back(m);
+            for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it)
+                if (it->role == "user" && !it->content.empty()) {
+                    msgs.push_back(*it);
+                    break;
+                }
+            chat_req.messages = std::move(msgs);
+        }
+
         std::string result = call_llm(chat_req);
 
         json resp;
