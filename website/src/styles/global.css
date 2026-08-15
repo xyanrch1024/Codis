@@ -65,7 +65,7 @@ header {
 
 .install-cmd {
   display: inline-flex; align-items: center; gap: 10px;
-  margin: 28px 0; padding: 6px 6px 6px 18px;
+  margin: 16px 0; padding: 6px 6px 6px 18px;
   background: #010409; border: 1px solid var(--accent-dim); border-radius: 10px;
   font-size: 14.5px;
 }
