@@ -28,7 +28,6 @@ enum class ItemKind {
     ToolResult, // 工具执行结果
     Error,      // 错误
     Status,     // 本地状态消息（切换 session、balance 等）
-    Banner,     // 启动 logo（本地展示，不入库）
 };
 
 // 工具结果源行数超过该值时结果块自动折叠（仅成功结果；失败恒展开）

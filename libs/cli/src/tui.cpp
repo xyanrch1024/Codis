@@ -75,18 +75,6 @@ int TuiClient::run() {
         auto s = acp_.create_session();
         if (s) {
             state_->current_session = *s;
-            // 新会话：顶部展示启动 logo
-            // 纯整格方块字形（与官网 codis.svg 同源）：不用 ╔╗╝║═ 框线字符，
-            // 因为多数终端字体的框线字符只有半格高，与 █ 拼接会视觉断线。
-            static constexpr const char* kBanner[] = {
-                " ██████  ██████ ██████   ██ ███████",
-                "██      ██    ████   ███ ██ ██      ",
-                "██      ██    ████████ █ ██ ███████",
-                "██      ██    ████   ███ ██      ██",
-                " ██████  ██████ ██   ██  ██ ███████",
-            };
-            for (auto& line : kBanner)
-                state_->add_item(ItemKind::Banner, line);
             state_->add_item(ItemKind::Status,
                              "Codis AI coding agent — type /help for commands");
         }
@@ -334,10 +322,6 @@ int TuiClient::run() {
                 case ItemKind::Status:
                     for (auto& r : wrap_rows(item.text, tw))
                         push_row(std::move(r.el) | dim, std::move(r.sig), oi);
-                    break;
-                case ItemKind::Banner:
-                    push_row(text(item.text) | color(Color::Green) | bold,
-                             item.text, oi);
                     break;
                 }
             }
