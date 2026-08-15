@@ -69,7 +69,6 @@ header {
   overflow-x: auto;
   max-width: 100%;
 }
-.ascii-tagline { color: var(--fg-dim); font-size: 11px; }
 
 .hero h1 { font-size: 44px; font-weight: 800; letter-spacing: -0.5px; }
 .hero h1 .term { color: var(--accent); }

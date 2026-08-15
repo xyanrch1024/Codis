@@ -56,7 +56,6 @@ cat <<'EOF'
   ██║     ██║   ██║██╔══██╗██║╚════██║
   ╚██████╗╚██████╔╝██║  ██║██║███████║
    ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝╚══════╝
-          Codis AI‑Coding Agent
 EOF
 echo
 echo "==> Codis installed to $INSTALL_DIR"
