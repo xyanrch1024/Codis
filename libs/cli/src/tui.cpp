@@ -294,13 +294,23 @@ int TuiClient::run() {
                 }
                 case ItemKind::ToolCall:
                     el = render_tool_call(item, tw);
-                    // 估算工具调用行数
+                    // 估算工具调用行数（命令行在块外 + 结果/错误在块内）
                     if (!item.has_result) { total_rows += 1; break; }
-                    if (item.tool_name == "write" || item.tool_name == "edit")
-                        total_rows += 1 + count_wrap(item.content_text, tw);
-                    else if (item.tool_name == "bash")
-                        total_rows += 1 + count_wrap(item.result_text, tw);
-                    else total_rows += 2;
+                    if (item.tool_name == "write" || item.tool_name == "edit") {
+                        std::string header = !item.tool_title.empty() ? item.tool_title
+                                                                      : "# " + item.text;
+                        total_rows += 1 + count_wrap(header, tw) +
+                                      count_wrap(item.content_text, tw) +
+                                      count_wrap(item.error_text, tw);
+                    } else if (item.tool_name == "bash") {
+                        total_rows += 1 + count_wrap("$ " + item.text, tw) +
+                                      count_wrap(item.result_text, tw) +
+                                      count_wrap(item.error_text, tw);
+                    } else {
+                        total_rows += 1 + count_wrap("# " + item.text, tw) +
+                                      count_wrap(item.result_text, tw) +
+                                      count_wrap(item.error_text, tw);
+                    }
                     break;
                 case ItemKind::ToolResult: {
                     total_rows += count_wrap(item.text, tw);
