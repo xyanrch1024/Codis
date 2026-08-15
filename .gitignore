@@ -25,9 +25,6 @@ __pycache__/
 start.sh
 
 # 临时测试产物
-calculator
-calculator.cpp
-calculator.cpp.bak
 greeting_program
 greeting_program.cpp
 greeting_program.cpp.bak
