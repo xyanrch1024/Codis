@@ -63,7 +63,6 @@ public:
 
 private:
     void init_tables();
-    void migrate_messages_columns();
     void exec(const std::string& sql);
     int64_t last_insert_id();
 

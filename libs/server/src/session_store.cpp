@@ -53,8 +53,6 @@ void SessionStore::init_tables() {
     exec(R"(
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)
     )");
-    // 旧库迁移：早期版本没有 tool_arguments 列
-    migrate_messages_columns();
     exec(R"(
         CREATE TABLE IF NOT EXISTS context_snapshots (
             session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -75,24 +73,6 @@ void SessionStore::exec(const std::string& sql) {
         LOG_ERROR("SQL error: {}", err ? err : "unknown");
         sqlite3_free(err);
     }
-}
-
-// 检查 messages 表是否缺少 tool_arguments 列，缺则 ALTER TABLE 补上
-void SessionStore::migrate_messages_columns() {
-    std::lock_guard lock(mutex_);
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, "PRAGMA table_info(messages)", -1, &stmt, nullptr) != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        return;
-    }
-    bool has_args = false;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        auto name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        if (name && std::string(name) == "tool_arguments") has_args = true;
-    }
-    sqlite3_finalize(stmt);
-    if (!has_args)
-        exec("ALTER TABLE messages ADD COLUMN tool_arguments TEXT");
 }
 
 int64_t SessionStore::last_insert_id() {
