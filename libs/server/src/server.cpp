@@ -9,12 +9,20 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <cctype>
 #include <sys/socket.h>
 
 namespace codis {
 
 // 定义在 Tool call 提取段（extract_tool_calls 前），供存历史时剥离内嵌 JSON 使用
 static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content);
+
+// 纯空白判断（剥掉 tool_calls JSON 后模型输出可能只剩换行）
+static bool is_blank(const std::string& s) {
+    for (char c : s)
+        if (!std::isspace(static_cast<unsigned char>(c))) return false;
+    return true;
+}
 
 // =============================================================================
 // FrameQueue
@@ -278,7 +286,8 @@ void CodisServer::handle_chat(const httplib::Request& req, httplib::Response& re
             msgs.push_back({"system", baseline});
             auto history = session_store_.load_messages(chat_req.session_id);
             for (auto& m : history)
-                if (m.role == "user" || (m.role == "assistant" && !m.tool_call_id))
+                if (m.role == "user" ||
+                    (m.role == "assistant" && !m.tool_call_id && !is_blank(m.content)))
                     msgs.push_back(m);
             for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it)
                 if (it->role == "user" && !it->content.empty()) {
@@ -546,7 +555,8 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
     std::vector<Message> msgs;
     msgs.push_back({"system", baseline});
     for (auto& m : history) {
-        if (m.role == "user" || (m.role == "assistant" && !m.tool_call_id))
+        if (m.role == "user" ||
+            (m.role == "assistant" && !m.tool_call_id && !is_blank(m.content)))
             msgs.push_back(m);
     }
     req.messages = std::move(msgs);
@@ -637,7 +647,9 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
             if (jbegin != std::string::npos && jbegin < jend)
                 assistant_text = assistant_content.substr(0, jbegin) + assistant_content.substr(jend);
         }
-        if (!assistant_text.empty())
+        // 剥完 JSON 后若只剩空白（模型输出只用 tool_calls JSON 时残留换行），
+        // 不入库，避免空白 assistant 条目污染展示与重放上下文
+        if (!assistant_text.empty() && !is_blank(assistant_text))
             session_store_.append_message(session_id, {"assistant", assistant_text});
 
         auto call_list = extract_tool_calls(assistant_content);
