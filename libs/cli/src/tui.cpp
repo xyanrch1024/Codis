@@ -1,5 +1,6 @@
 #include "tui.h"
 #include "tui_tool_render.h"
+#include "md_render.h"
 #include "log.h"
 #include "tool_format.h"
 #include "clipboard.h"
@@ -278,9 +279,9 @@ int TuiClient::run() {
                     break;
                 }
                 case ItemKind::Assistant: {
-                    int r = count_wrap(item.text, tw - 2);
+                    int r = md_row_count(item.text, tw - 2);
                     el = hbox({text("┃ ") | color(Color::Green) | bold,
-                               wrapped_text(item.text, tw - 2) |
+                               md_render(item.text, tw - 2) |
                                    (item.streaming ? color(Color::GreenLight) : color(Color::Green)) | flex}) | card_bg;
                     total_rows += r;
                     break;
