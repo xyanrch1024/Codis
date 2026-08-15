@@ -343,9 +343,15 @@ private:
     bool cmd_palette_visible_ = false;
     int cmd_selected_ = 0;
 
-    // 鼠标拖拽选择（FTXUI 内置选择）→ 松开自动复制
+    // 鼠标拖拽选择（FTXUI 内置选择）→ 松开自动复制；
+    // 位移累计 ≥3 格才算拖选（手抖不再误判为复制），否则视为单击（折叠切换）
     bool drag_active_ = false;  // 左键按下中
     bool drag_moved_ = false;   // 是否发生了实际拖动（区分点击/拖拽）
+    int press_x_ = -1;          // 按下位置（位移阈值依据）
+    int press_y_ = -1;
+
+    // 悬停内容行（-1 = 无）：折叠目标行（more... / ▾ 命令行）渲染下划线提示可点击
+    int hover_row_ = -1;
 
     // 状态栏瞬时提示（复制/取消等）；定时线程轮询 notice_pending_ 触发自动消失
     std::string notice_;

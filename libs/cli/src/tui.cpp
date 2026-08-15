@@ -323,6 +323,20 @@ int TuiClient::run() {
             }
         }
 
+        // 悬停的折叠目标行高亮（下划线），点击前即可确认可点
+        if (hover_row_ >= 0 && hover_row_ < (int)els.size()) {
+            int owner = row_owner_[hover_row_];
+            if (owner >= 0 && owner < (int)state_->items.size()) {
+                auto& it = state_->items[owner];
+                if (it.kind == ItemKind::ToolCall && tool_foldable(it)) {
+                    const std::string& sig = row_sigs_[hover_row_];
+                    bool target = it.folded ? (sig == "  more...")
+                                            : (sig.size() >= 3 && sig.rfind("▾ ", 0) == 0);
+                    if (target) els[hover_row_] = els[hover_row_] | underlined;
+                }
+            }
+        }
+
         Element content = vbox(std::move(els));
 
         // 限制内容宽度 ≤ 视口宽
@@ -342,13 +356,14 @@ int TuiClient::run() {
         return content | frame | flex | vscroll_indicator;
     });
 
-    // 左键单击命令行 → 切换结果块折叠。
-    // 命中原理：以相同元素树 + 相同视口盒复现渲染，frame 滚动偏移必然一致；
-    // 再按"可视区行文本 == 内容行签名"反查真实偏移，命中 ▸/▾ 标记行才切换。
-    // 任何一步不匹配都忽略点击（宁可误伤也不折叠错块）。
-    auto toggle_fold_on_click = [&](int mx, int my) {
-        if (help_visible_ || sessions_visible_ || cmd_palette_visible_) return;
-        int dimx = Terminal::Size().dimx;
+    // 屏幕坐标 → 对话内容行号。
+    // 滚动偏移由 FTXUI frame/focusPositionRelative 的确定性公式直接算出
+    // （已对照 v7.0.0 源码 frame.cpp/focus.cpp 并实证）：
+    //   dy = clamp( int(total·y) − (VH−1)/2 , 0, max(total,VH) − VH )
+    // 不再依赖二次渲染/像素匹配，点击命中不会因为匹配失败而静默失效。
+    // 返回 -1 = 弹出层打开 / 不在对话区 / 超出内容范围。
+    auto content_row_at = [&](int mx, int my) {
+        if (help_visible_ || sessions_visible_ || cmd_palette_visible_) return -1;
         int dimy = Terminal::Size().dimy;
         int input_lines = 1;
         for (char c : input_text)
@@ -358,52 +373,21 @@ int TuiClient::run() {
         // Header 2 行（Codis + 分隔线）+ 对话视口 + 输入区 + 状态栏 5 行
         const int conv_top = 2;
         const int conv_bottom = dimy - 5 - input_h;  // [conv_top, conv_bottom) 为对话视口
-        if (my < conv_top || my >= conv_bottom) return;
+        if (my < conv_top || my >= conv_bottom) return -1;
         int VH = conv_bottom - conv_top;
-        if (VH <= 0 || row_sigs_.empty()) return;
-        LOG_DEBUG("fold click ({},{}) conv=[{},{}) VH={} total={} auto={}", mx, my, conv_top,
-                  conv_bottom, VH, (int)row_sigs_.size(), (int)auto_scroll_);
+        int total = (int)row_owner_.size();
+        if (VH <= 0 || total == 0) return -1;
+        float yfrac = auto_scroll_ ? 1.f : std::min(1.0f, (float)scroll_px_ / std::max(1, total));
+        int dy = (int)((float)total * yfrac) - (VH - 1) / 2;
+        dy = std::clamp(dy, 0, std::max(total, VH) - VH);
+        int row = dy + (my - conv_top);
+        return (row >= 0 && row < total) ? row : -1;
+    };
 
-        // 复现真实帧：相同元素树 + 相同视口盒
-        auto content = conversation_view->Render();
-        auto snap = Screen::Create(Dimension::Fixed(dimx), Dimension::Fixed(VH));
-        Render(snap, content);
-
-        auto render_row_text = [&](int y) {
-            std::string s;
-            for (int x = 0; x < dimx - 1; x++)  // 去掉 vscroll_indicator 列
-                s += snap.PixelAt(x, y).character;
-            while (!s.empty() && s.back() == ' ') s.pop_back();
-            return s;
-        };
-        int total = (int)row_sigs_.size();
-        int max_o = std::max(0, total - VH);
-        int vis_y = my - conv_top;
-        auto row_matches = [&](int o, int y) {
-            int c = o + y;
-            if (c < 0 || c >= total) return false;
-            return render_row_text(y) == row_sigs_[c];
-        };
-        // 顶部 3 行 + 点击行都匹配才可信；内容不足一屏时行号以内容行数为准
-        int best_o = -1;
-        for (int o = 0; o <= max_o; o++) {
-            bool ok = true;
-            for (int y : {0, 1, 2, vis_y}) {
-                if (y >= VH) continue;
-                if (!row_matches(o, y)) {
-                    ok = false;
-                    break;
-                }
-            }
-            if (ok) {
-                best_o = o;
-                break;
-            }
-        }
-        if (best_o < 0) return;
-
-        int content_row = best_o + vis_y;
-        if (content_row < 0 || content_row >= total) return;
+    // 左键单击（无拖动）→ 命中折叠目标行则切换展开/截断
+    auto toggle_fold_on_click = [&](int mx, int my) {
+        int content_row = content_row_at(mx, my);
+        if (content_row < 0) return;
         int owner = row_owner_[content_row];
         if (owner < 0 || owner >= (int)state_->items.size()) return;
         auto& it = state_->items[owner];
@@ -416,6 +400,7 @@ int TuiClient::run() {
             if (sig.size() < 3 || sig.rfind("▾ ", 0) != 0) return;
         }
         it.folded = !it.folded;
+        hover_row_ = -1;
         show_notice(it.folded ? "[Output collapsed]" : "[Output expanded]");
         LOG_DEBUG("fold toggle owner={} folded={} row={}", owner, it.folded, content_row);
     };
@@ -548,8 +533,16 @@ int TuiClient::run() {
             if (event.mouse().motion == Mouse::Pressed) {
                 drag_active_ = true;
                 drag_moved_ = false;
+                press_x_ = event.mouse().x;
+                press_y_ = event.mouse().y;
             } else if (event.mouse().motion == Mouse::Moved) {
-                if (drag_active_) drag_moved_ = true;
+                // 位移累计 ≥3 格才算拖选（消除手抖误判为复制）
+                if (drag_active_) {
+                    int dist = std::abs(event.mouse().x - press_x_) +
+                               std::abs(event.mouse().y - press_y_);
+                    if (dist >= 3) drag_moved_ = true;
+                }
+                hover_row_ = content_row_at(event.mouse().x, event.mouse().y);
             } else if (event.mouse().motion == Mouse::Released) {
                 if (drag_active_) {
                     drag_active_ = false;
