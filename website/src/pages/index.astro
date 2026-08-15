@@ -34,29 +34,6 @@ const downloads = [
         FTXUI-powered terminal TUI. One server, many clients.
       </p>
 
-      <div class="install-cmd mono">
-        <span class="cmd"><span style="color:var(--accent)">$</span> curl -fsSL https://codis.chat/install | bash</span>
-        <button class="copy" id="copy-install" type="button" data-i18n="copy">Copy</button>
-      </div>
-      <script is:inline>
-        const btn = document.getElementById("copy-install");
-        btn?.addEventListener("click", async () => {
-          try {
-            await navigator.clipboard.writeText(
-              "curl -fsSL https://codis.chat/install | bash"
-            );
-            const t = btn.textContent;
-            btn.textContent = "✓ " + (btn.dataset.lang === "zh" ? "已复制" : "Copied");
-            btn.classList.add("copied");
-            setTimeout(() => {
-              btn.textContent = t;
-              btn.classList.remove("copied");
-            }, 1500);
-          } catch {
-            /* 剪贴板不可用时忽略 */
-          }
-        });
-      </script>
       <div class="cta">
         <a class="btn btn-primary" href="#download" data-i18n="hero.download">Download Codis</a>
         <a class="btn" href="#quickstart" data-i18n="hero.quickstart">Quickstart</a>
@@ -129,6 +106,30 @@ cmake --build build -j$(nproc)</pre>
   <section id="quickstart">
     <div class="container">
       <h2 data-i18n="qs.title">Quickstart</h2>
+      <p class="lead" data-i18n="qs.install">One-line install from GitHub Releases</p>
+      <div class="install-cmd mono" style="margin-top:0">
+        <span class="cmd"><span style="color:var(--accent)">$</span> curl -fsSL https://codis.chat/install | bash</span>
+        <button class="copy" id="copy-install" type="button" data-i18n="copy">Copy</button>
+      </div>
+      <script is:inline>
+        const btn = document.getElementById("copy-install");
+        btn?.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(
+              "curl -fsSL https://codis.chat/install | bash"
+            );
+            const t = btn.textContent;
+            btn.textContent = "✓ " + (btn.dataset.lang === "zh" ? "已复制" : "Copied");
+            btn.classList.add("copied");
+            setTimeout(() => {
+              btn.textContent = t;
+              btn.classList.remove("copied");
+            }, 1500);
+          } catch {
+            /* 剪贴板不可用时忽略 */
+          }
+        });
+      </script>
       <p class="lead" data-i18n="qs.lead">Set your API key, then run — the CLI auto-starts the server</p>
       <pre class="code mono"><span class="c">$</span> export GLM_API_KEY="your-api-key"
 <span class="c">$</span> codis
