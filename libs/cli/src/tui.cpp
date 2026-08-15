@@ -73,7 +73,22 @@ int TuiClient::run() {
         state_->current_session = session_arg_;
     } else {
         auto s = acp_.create_session();
-        if (s) state_->current_session = *s;
+        if (s) {
+            state_->current_session = *s;
+            // 新会话：顶部展示启动 logo（ANSI Shadow 字形，与官网 SVG 同源）
+            static constexpr const char* kBanner[] = {
+                " ██████╗ ██████╗ ██████╗ ██╗███████╗",
+                "██╔════╝██╔═══██╗██╔══██╗██║██╔════╝",
+                "██║     ██║   ██║██║  ██║██║███████╗",
+                "██║     ██║   ██║██║  ██║██║╚════██║",
+                "╚██████╗╚██████╔╝██║  ██║██║███████║",
+                " ╚═════╝ ╚═════╝ ╚═════╝ ╚═╝╚══════╝",
+            };
+            for (auto& line : kBanner)
+                state_->add_item(ItemKind::Banner, line);
+            state_->add_item(ItemKind::Status,
+                             "Codis AI coding agent — type /help for commands");
+        }
     }
     if (state_->current_session.empty()) {
         LOG_ERROR("Failed to create session");
@@ -318,6 +333,10 @@ int TuiClient::run() {
                 case ItemKind::Status:
                     for (auto& r : wrap_rows(item.text, tw))
                         push_row(std::move(r.el) | dim, std::move(r.sig), oi);
+                    break;
+                case ItemKind::Banner:
+                    push_row(text(item.text) | color(Color::Green) | bold,
+                             item.text, oi);
                     break;
                 }
             }
