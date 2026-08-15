@@ -15,6 +15,8 @@ fi
 echo "== uploading dist/ =="
 ssh "$SERVER" "sudo mkdir -p $ROOT && sudo chown -R \$USER $ROOT"
 rsync -az --delete "$DIST/" "$SERVER:$ROOT/"
+# 一键安装脚本双份发布：/install 与 /install.sh（rsync --delete 后补）
+ssh "$SERVER" "cp $ROOT/install.sh $ROOT/install && echo install-script-ready"
 
 echo "== nginx config =="
 ssh "$SERVER" 'cat > /tmp/codis-site.conf <<'"'"'EOF'"'"'
