@@ -40,22 +40,6 @@ const downloads = [
         <a class="btn" href={repo} target="_blank" rel="noopener">GitHub ↗</a>
       </div>
 
-      <div class="terminal mono">
-        <div class="bar">
-          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-          <span class="term-title">codis</span>
-        </div>
-        <pre><span class="c">$</span> codis -c
-<span class="c">▌ User</span>  <span data-i18n="demo.q1">list all TODOs in this repo</span>
-<span class="c">▌ Codis</span> <span data-i18n="demo.a1">Let me search for them.</span>
-<span class="c">▾ bash</span> grep -rn "TODO" --include="*.cpp" .
-<span class="b">│ libs/server/src/server.cpp:42:  // TODO: retry on 429</span>
-<span class="b">│ libs/cli/src/tui.cpp:110:  // TODO: fold long outputs</span>
-<span class="c">▾ grep</span> TODO --include="*.cpp"
-<span class="b">│ 2 results in 0.02s</span>
-<span class="c">▌ Codis</span> <span data-i18n="demo.a2">Found 2 TODOs (see tool output above). Want me to fix them?</span></pre>
-      </div>
-
       <div class="install-cmd mono">
         <span class="cmd"><span style="color:var(--accent)">$</span> curl -fsSL https://codis.chat/install | bash</span>
         <button class="copy" id="copy-install" type="button" data-i18n="copy">Copy</button>
@@ -79,6 +63,22 @@ const downloads = [
           }
         });
       </script>
+
+      <div class="terminal mono">
+        <div class="bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="term-title">codis</span>
+        </div>
+        <pre><span class="c">$</span> codis -c
+<span class="c">▌ User</span>  <span data-i18n="demo.q1">list all TODOs in this repo</span>
+<span class="c">▌ Codis</span> <span data-i18n="demo.a1">Let me search for them.</span>
+<span class="c">▾ bash</span> grep -rn "TODO" --include="*.cpp" .
+<span class="b">│ libs/server/src/server.cpp:42:  // TODO: retry on 429</span>
+<span class="b">│ libs/cli/src/tui.cpp:110:  // TODO: fold long outputs</span>
+<span class="c">▾ grep</span> TODO --include="*.cpp"
+<span class="b">│ 2 results in 0.02s</span>
+<span class="c">▌ Codis</span> <span data-i18n="demo.a2">Found 2 TODOs (see tool output above). Want me to fix them?</span></pre>
+      </div>
     </div>
   </section>
 
