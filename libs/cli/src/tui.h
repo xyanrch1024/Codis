@@ -97,7 +97,6 @@ struct TuiState {
     std::string current_session;
     std::string model;
     int server_port = 8711;
-    std::string system_prompt = "You are a helpful AI coding assistant.";
     bool processing = false;
     std::string status_msg;
     std::chrono::steady_clock::time_point request_start_;
@@ -112,10 +111,9 @@ struct TuiState {
 
     int pending_count() const { return (int)pending_queue.size(); }
 
-    // 上下文大小（system_prompt + history 全部消息字符数），供状态栏显示。
-    // 流式回复尚未进入 history，实时计入其增量，保证每次渲染反映最新上下文。
+    // 上下文大小（history 全部消息字符数 + 流式增量），供状态栏显示。
     std::string context_size_str() const {
-        size_t n = system_prompt.size();
+        size_t n = 0;
         for (auto& m : history) n += m.content.size();
         for (auto& it : items)
             if (it.streaming) n += it.text.size();
