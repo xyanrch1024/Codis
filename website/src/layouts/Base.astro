@@ -1,32 +1,32 @@
 ---
 import "../styles/global.css";
 
-const title = "Codis — C++ AI 编程助手";
 const description =
-  "基于 C++20 的 AI 编程助手：多 Provider、多客户端共享 Session、终端 TUI，一套服务端 + 多种客户端。";
+  "C++20 AI coding assistant: multi-provider, shared sessions, FTXUI TUI. One server, many clients.";
 ---
 
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
-    <meta property="og:title" content={title} />
+    <meta property="og:title" content="Codis — C++ AI Coding Assistant" />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://codis.chat" />
-    <title>{title}</title>
+    <title>Codis — C++ AI Coding Assistant</title>
   </head>
   <body>
     <header>
       <div class="container nav">
         <a class="nav-brand" href="/">codis<span>.chat</span></a>
         <nav class="nav-links">
-          <a href="#features">特性</a>
-          <a href="#download">下载</a>
-          <a href="#quickstart">快速开始</a>
+          <a href="#features" data-i18n="nav.features">Features</a>
+          <a href="#download" data-i18n="nav.download">Download</a>
+          <a href="#quickstart" data-i18n="nav.quickstart">Quickstart</a>
           <a href="https://github.com/xyanrch1024/Codis" target="_blank" rel="noopener">GitHub</a>
+          <button id="lang-toggle" class="lang-toggle" type="button">中文</button>
         </nav>
       </div>
     </header>
@@ -37,12 +37,143 @@ const description =
 
     <footer>
       <div class="container foot">
-        <span>© {new Date().getFullYear()} Codis · C++20 AI coding assistant</span>
+        <span>© {new Date().getFullYear()} Codis · <span data-i18n="foot.tagline">C++20 AI coding assistant</span></span>
         <span>
           <a href="https://github.com/xyanrch1024/Codis" target="_blank" rel="noopener">GitHub</a>
           &nbsp;·&nbsp; MIT License
         </span>
       </div>
     </footer>
+
+    <script is:inline>
+      const I18N = {
+        en: {
+          "nav.features": "Features",
+          "nav.download": "Download",
+          "nav.quickstart": "Quickstart",
+          "foot.tagline": "C++20 AI coding assistant",
+          "hero.title":
+            'Codis — C++ AI <span class="term">Coding Assistant</span>',
+          "hero.sub":
+            "Codis is a C++20-based AI coding assistant — multi-provider, full-duplex WebSocket streaming, tool calls, SQLite session persistence, and an FTXUI-powered terminal TUI. One server, many clients.",
+          "hero.download": "Download Codis",
+          "hero.quickstart": "Quickstart",
+          copy: "Copy",
+          "demo.q1": "list all TODOs in this repo",
+          "demo.a1": "Let me search for them.",
+          "demo.a2":
+            "Found 2 TODOs (see tool output above). Want me to fix them?",
+          "features.title": "Features",
+          "features.lead": "An AI coding assistant built for the terminal",
+          "f0.t": "Multi-Provider",
+          "f0.d": "OpenAI / DeepSeek / GLM / Groq, config-driven, switch anytime at runtime.",
+          "f1.t": "Full-Duplex WebSocket",
+          "f1.d": "One connection for requests and streamed responses; output arrives token by token, including reasoning.",
+          "f2.t": "Tool Calls",
+          "f2.d": "bash / read / write / edit / glob / grep, plus C ABI plugins for custom tools.",
+          "f3.t": "Shared Sessions",
+          "f3.d": "CLI / TUI / Feishu bot use the same session without cross-talk.",
+          "f4.t": "Session Persistence",
+          "f4.d": "SQLite-backed history with restore / switch / delete; queued requests never get lost.",
+          "f5.t": "Terminal TUI",
+          "f5.d": "FTXUI interface: color-coded messages, wheel scrolling, double-ESC cancels, auto-reconnect & flush.",
+          "f6.t": "Docker One-Click",
+          "f6.d": "Single container, runs out of the box.",
+          "f7.t": "Pure C++20",
+          "f7.d": "CMake + vcpkg, no runtime dependencies, open source.",
+          "dl.title": "Download",
+          "dl.lead": "Prebuilt binaries from GitHub Releases — extract and run",
+          "dl.get": "Download {os}",
+          "dl.build": "…or build from source",
+          "qs.title": "Quickstart",
+          "qs.lead": "Set your API key, then run — the CLI auto-starts the server",
+          "qs.c1": "continue last session",
+          "qs.c2": "port / model",
+          "qs.docker": "Docker deployment",
+          "qs.keys": "TUI shortcuts:",
+          "qs.wheel": "scroll",
+          "qs.cancel": "cancel",
+          "qs.sessions": "sessions",
+          "qs.quit": "quit",
+        },
+        zh: {
+          "nav.features": "特性",
+          "nav.download": "下载",
+          "nav.quickstart": "快速开始",
+          "foot.tagline": "C++20 AI 编程助手",
+          "hero.title":
+            'Codis — C++ AI <span class="term">编程助手</span>',
+          "hero.sub":
+            "基于 C++20 的 AI 编程助手——多 Provider、全双工 WebSocket 流式输出、工具调用、SQLite 会话持久化，以及一个用 FTXUI 构建的终端 TUI。一套服务端，多种客户端。",
+          "hero.download": "下载 Codis",
+          "hero.quickstart": "快速开始",
+          copy: "Copy",
+          "demo.q1": "帮我查一下项目里的 TODO",
+          "demo.a1": "让我先搜索一下。",
+          "demo.a2": "共找到 2 处 TODO（见上面工具输出），需要我一并处理吗？",
+          "features.title": "特性",
+          "features.lead": "为终端而生的 AI 编程助手",
+          "f0.t": "多 Provider",
+          "f0.d": "OpenAI / DeepSeek / GLM / Groq，配置文件驱动，运行时可随时切换。",
+          "f1.t": "全双工 WebSocket",
+          "f1.d": "一条连接既发请求又收流式推送，模型输出按 token 实时到达，含思维链。",
+          "f2.t": "工具调用",
+          "f2.d": "bash / read / write / edit / glob / grep，支持 C ABI 插件动态扩展。",
+          "f3.t": "多客户端共享会话",
+          "f3.d": "CLI / TUI / 飞书机器人共用同一 session，互不干扰。",
+          "f4.t": "会话持久化",
+          "f4.d": "SQLite 存储，支持恢复历史、切换、删除、搜索；消息排队补跑不丢失。",
+          "f5.t": "终端 TUI",
+          "f5.d": "FTXUI 界面：颜色区分消息、滚轮滚动、双击 ESC 取消任务、断线自动重连补发。",
+          "f6.t": "Docker 一键部署",
+          "f6.d": "单容器运行，开箱即用。",
+          "f7.t": "纯 C++20",
+          "f7.d": "CMake + vcpkg 构建，无运行时依赖，开源自托管。",
+          "dl.title": "下载",
+          "dl.lead": "预编译二进制，解压即用（GitHub Releases）",
+          "dl.get": "下载 {os}",
+          "dl.build": "或从源码构建",
+          "qs.title": "快速开始",
+          "qs.lead": "设置 API Key，一条命令启动（CLI 会自动拉起服务端）",
+          "qs.c1": "继续上次会话",
+          "qs.c2": "指定端口 / 模型",
+          "qs.docker": "Docker 部署",
+          "qs.keys": "TUI 快捷键：",
+          "qs.wheel": "滚动",
+          "qs.cancel": "取消任务",
+          "qs.sessions": "会话列表",
+          "qs.quit": "退出",
+        },
+      };
+
+      const LANG_KEY = "codis-lang";
+      let lang = localStorage.getItem(LANG_KEY) === "zh" ? "zh" : "en";
+
+      function apply(l) {
+        lang = l;
+        document.documentElement.lang = l;
+        const dict = I18N[l];
+        document.querySelectorAll("[data-i18n]").forEach((el) => {
+          let text = dict[el.dataset.i18n];
+          if (text === undefined) return;
+          // 下载按钮含平台名占位，取自元素原有文本
+          if (text.includes("{os}")) {
+            text = text.replace("{os}", el.dataset.os || el.textContent);
+          }
+          el.innerHTML = text;
+        });
+        const toggle = document.getElementById("lang-toggle");
+        if (toggle) toggle.textContent = l === "en" ? "中文" : "EN";
+        localStorage.setItem(LANG_KEY, l);
+        // copy 按钮的复制反馈文案语言
+        const copyBtn = document.getElementById("copy-install");
+        if (copyBtn) copyBtn.dataset.lang = l;
+      }
+
+      document.getElementById("lang-toggle")?.addEventListener("click", () =>
+        apply(lang === "en" ? "zh" : "en")
+      );
+      apply(lang);
+    </script>
   </body>
 </html>

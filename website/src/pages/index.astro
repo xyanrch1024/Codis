@@ -5,38 +5,14 @@ const releases = "https://github.com/xyanrch1024/Codis/releases/latest/download"
 const repo = "https://github.com/xyanrch1024/Codis";
 
 const features = [
-  {
-    title: "多 Provider",
-    desc: "OpenAI / DeepSeek / GLM / Groq，配置文件驱动，运行时可随时切换。",
-  },
-  {
-    title: "全双工 WebSocket",
-    desc: "一条连接既发请求又收流式推送，模型输出按 token 实时到达，含思维链。",
-  },
-  {
-    title: "工具调用",
-    desc: "bash / read / write / edit / glob / grep，支持 C ABI 插件动态扩展。",
-  },
-  {
-    title: "多客户端共享会话",
-    desc: "CLI / TUI / 飞书机器人共用同一 session，互不干扰。",
-  },
-  {
-    title: "会话持久化",
-    desc: "SQLite 存储，支持恢复历史、切换、删除、搜索；消息排队补跑不丢失。",
-  },
-  {
-    title: "终端 TUI",
-    desc: "FTXUI 界面：颜色区分消息、滚轮滚动、双击 ESC 取消任务、断线自动重连补发。",
-  },
-  {
-    title: "Docker 一键部署",
-    desc: "单容器运行，开箱即用。",
-  },
-  {
-    title: "纯 C++20",
-    desc: "CMake + vcpkg 构建，无运行时依赖，开源自托管。",
-  },
+  { t: "多 Provider", d: "OpenAI / DeepSeek / GLM / Groq，配置文件驱动，运行时可随时切换。" },
+  { t: "全双工 WebSocket", d: "一条连接既发请求又收流式推送，模型输出按 token 实时到达，含思维链。" },
+  { t: "工具调用", d: "bash / read / write / edit / glob / grep，支持 C ABI 插件动态扩展。" },
+  { t: "多客户端共享会话", d: "CLI / TUI / 飞书机器人共用同一 session，互不干扰。" },
+  { t: "会话持久化", d: "SQLite 存储，支持恢复历史、切换、删除、搜索；消息排队补跑不丢失。" },
+  { t: "终端 TUI", d: "FTXUI 界面：颜色区分消息、滚轮滚动、双击 ESC 取消任务、断线自动重连补发。" },
+  { t: "Docker 一键部署", d: "单容器运行，开箱即用。" },
+  { t: "纯 C++20", d: "CMake + vcpkg 构建，无运行时依赖，开源自托管。" },
 ];
 
 const downloads = [
@@ -51,14 +27,16 @@ const downloads = [
   <section class="hero">
     <div class="container">
       <span class="badge mono">C++20 · MIT · FTXUI TUI</span>
-      <h1>一套服务端，<span class="term">多种客户端</span></h1>
-      <p class="sub">
-        Codis 是一个基于 C++20 的 AI 编程助手——多 Provider、全双工 WebSocket
-        流式输出、工具调用、SQLite 会话持久化，以及一个用 FTXUI 构建的终端 TUI。
+      <h1 data-i18n="hero.title">Codis — C++ AI <span class="term">Coding Assistant</span></h1>
+      <p class="sub" data-i18n="hero.sub">
+        Codis is a C++20-based AI coding assistant — multi-provider, full-duplex
+        WebSocket streaming, tool calls, SQLite session persistence, and an
+        FTXUI-powered terminal TUI. One server, many clients.
       </p>
+
       <div class="install-cmd mono">
         <span class="cmd"><span style="color:var(--accent)">$</span> curl -fsSL https://codis.chat/install | bash</span>
-        <button class="copy" id="copy-install" type="button">Copy</button>
+        <button class="copy" id="copy-install" type="button" data-i18n="copy">Copy</button>
       </div>
       <script is:inline>
         const btn = document.getElementById("copy-install");
@@ -67,10 +45,11 @@ const downloads = [
             await navigator.clipboard.writeText(
               "curl -fsSL https://codis.chat/install | bash"
             );
-            btn.textContent = "已复制";
+            const t = btn.textContent;
+            btn.textContent = "✓ " + (btn.dataset.lang === "zh" ? "已复制" : "Copied");
             btn.classList.add("copied");
             setTimeout(() => {
-              btn.textContent = "Copy";
+              btn.textContent = t;
               btn.classList.remove("copied");
             }, 1500);
           } catch {
@@ -79,25 +58,25 @@ const downloads = [
         });
       </script>
       <div class="cta">
-        <a class="btn btn-primary" href="#download">下载 Codis</a>
-        <a class="btn" href="#quickstart">快速开始</a>
+        <a class="btn btn-primary" href="#download" data-i18n="hero.download">Download Codis</a>
+        <a class="btn" href="#quickstart" data-i18n="hero.quickstart">Quickstart</a>
         <a class="btn" href={repo} target="_blank" rel="noopener">GitHub ↗</a>
       </div>
 
       <div class="terminal mono">
         <div class="bar">
           <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-          <span class="term-title">codis — 终端 AI 助手</span>
+          <span class="term-title">codis</span>
         </div>
         <pre><span class="c">$</span> codis -c
-<span class="c">▌ User</span> 帮我查一下项目里的 TODO
-<span class="c">▌ Codis</span> 让我先搜索一下。
+<span class="c">▌ User</span>  <span data-i18n="demo.q1">list all TODOs in this repo</span>
+<span class="c">▌ Codis</span> <span data-i18n="demo.a1">Let me search for them.</span>
 <span class="c">▾ bash</span> grep -rn "TODO" --include="*.cpp" .
 <span class="b">│ libs/server/src/server.cpp:42:  // TODO: retry on 429</span>
 <span class="b">│ libs/cli/src/tui.cpp:110:  // TODO: fold long outputs</span>
 <span class="c">▾ grep</span> TODO --include="*.cpp"
 <span class="b">│ 2 results in 0.02s</span>
-<span class="c">▌ Codis</span> 共找到 2 处 TODO（详见上面工具输出），需要我一并处理吗？</pre>
+<span class="c">▌ Codis</span> <span data-i18n="demo.a2">Found 2 TODOs (see tool output above). Want me to fix them?</span></pre>
       </div>
     </div>
   </section>
@@ -105,13 +84,13 @@ const downloads = [
   <!-- Features -->
   <section id="features">
     <div class="container">
-      <h2>特性</h2>
-      <p class="lead">为终端而生的 AI 编程助手</p>
+      <h2 data-i18n="features.title">Features</h2>
+      <p class="lead" data-i18n="features.lead">An AI coding assistant built for the terminal</p>
       <div class="grid">
-        {features.map((f) => (
+        {features.map((f, i) => (
           <div class="card">
-            <h3><code>{f.title}</code></h3>
-            <p>{f.desc}</p>
+            <h3><code data-i18n={`f${i}.t`}>{f.t}</code></h3>
+            <p data-i18n={`f${i}.d`}>{f.d}</p>
           </div>
         ))}
       </div>
@@ -121,21 +100,21 @@ const downloads = [
   <!-- Download -->
   <section id="download">
     <div class="container">
-      <h2>下载</h2>
-      <p class="lead">预编译二进制，解压即用（GitHub Releases）</p>
+      <h2 data-i18n="dl.title">Download</h2>
+      <p class="lead" data-i18n="dl.lead">Prebuilt binaries from GitHub Releases — extract and run</p>
       <div class="downloads">
         {downloads.map((d) => (
           <div class="dl">
             <div class="os">{d.os} <span>{d.arch}</span></div>
-            <a class="btn" href={d.url}>下载 {d.os}</a>
+            <a class="btn" href={d.url} data-i18n="dl.get" data-os={d.os}>Download {d.os}</a>
           </div>
         ))}
         <div class="dl">
-          <div class="os">源码 <span>GitHub</span></div>
+          <div class="os">Source <span>GitHub</span></div>
           <a class="btn" href={repo} target="_blank" rel="noopener">Clone ↗</a>
         </div>
       </div>
-      <p class="lead" style="margin-top:28px">或从源码构建</p>
+      <p class="lead" style="margin-top:28px" data-i18n="dl.build">…or build from source</p>
       <div class="build-steps">
         <pre class="code mono"><span class="c"># 依赖：CMake 3.20+ / vcpkg / C++20 编译器</span>
 git clone https://github.com/xyanrch1024/Codis.git
@@ -149,20 +128,22 @@ cmake --build build -j$(nproc)</pre>
   <!-- Quickstart -->
   <section id="quickstart">
     <div class="container">
-      <h2>快速开始</h2>
-      <p class="lead">设置 API Key，一条命令启动（CLI 会自动拉起服务端）</p>
+      <h2 data-i18n="qs.title">Quickstart</h2>
+      <p class="lead" data-i18n="qs.lead">Set your API key, then run — the CLI auto-starts the server</p>
       <pre class="code mono"><span class="c">$</span> export GLM_API_KEY="your-api-key"
 <span class="c">$</span> codis
-<span class="c">$</span> codis -c          <span class="d"># 继续上次会话</span>
-<span class="c">$</span> codis -p 8711 -m glm-4.5-flash   <span class="d"># 指定端口 / 模型</span></pre>
-      <p class="lead" style="margin-top:28px">Docker 部署</p>
+<span class="c">$</span> codis -c          <span class="d"># <span data-i18n="qs.c1">continue last session</span></span>
+<span class="c">$</span> codis -p 8711 -m glm-4.5-flash   <span class="d"># <span data-i18n="qs.c2">port / model</span></span></pre>
+      <p class="lead" style="margin-top:28px" data-i18n="qs.docker">Docker deployment</p>
       <pre class="code mono"><span class="c">$</span> docker run -d --name codis \
   -e GLM_API_KEY="xxx" \
   -p 8711:8711 \
   ghcr.io/xyanrch1024/codis:latest</pre>
       <p class="lead" style="margin-top:28px">
-        TUI 快捷键：<code>↑↓</code> / 滚轮滚动 · <code>ESC ESC</code> 取消任务 ·
-        <code>Ctrl+S</code> 会话列表 · <code>Ctrl+C</code> 退出
+        <span data-i18n="qs.keys">TUI shortcuts:</span> <code>↑↓</code> / <span data-i18n="qs.wheel">scroll</span> ·
+        <code>ESC ESC</code> <span data-i18n="qs.cancel">cancel</span> ·
+        <code>Ctrl+S</code> <span data-i18n="qs.sessions">sessions</span> ·
+        <code>Ctrl+C</code> <span data-i18n="qs.quit">quit</span>
       </p>
     </div>
   </section>

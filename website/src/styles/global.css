@@ -42,8 +42,15 @@ header {
 .nav-brand { font-weight: 700; font-size: 18px; color: var(--fg); }
 .nav-brand span { color: var(--accent); }
 .nav-links { display: flex; gap: 24px; }
-.nav-links a { color: var(--fg-dim); font-size: 14px; }
+.nav-links a, .lang-toggle { color: var(--fg-dim); font-size: 14px; }
 .nav-links a:hover { color: var(--fg); text-decoration: none; }
+.lang-toggle {
+  background: var(--bg-soft); border: 1px solid var(--border);
+  color: var(--fg); border-radius: 6px; padding: 3px 12px;
+  font-size: 13px; cursor: pointer; font-family: inherit;
+  transition: all 0.15s ease;
+}
+.lang-toggle:hover { border-color: var(--accent-dim); color: var(--accent); }
 
 /* ---------- hero ---------- */
 .hero { padding: 88px 0 64px; text-align: center; }
