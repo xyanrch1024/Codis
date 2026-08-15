@@ -59,6 +59,18 @@ header {
   border: 1px solid var(--border); color: var(--fg-dim);
   font-size: 13px; margin-bottom: 20px;
 }
+.ascii-logo {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--accent);
+  text-align: left;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.ascii-tagline { color: var(--fg-dim); font-size: 11px; }
+
 .hero h1 { font-size: 44px; font-weight: 800; letter-spacing: -0.5px; }
 .hero h1 .term { color: var(--accent); }
 .hero .sub { color: var(--fg-dim); font-size: 18px; margin-top: 14px; max-width: 640px; margin-inline: auto; }
