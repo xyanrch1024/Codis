@@ -1,0 +1,48 @@
+---
+import "../styles/global.css";
+
+const title = "Codis — C++ AI 编程助手";
+const description =
+  "基于 C++20 的 AI 编程助手：多 Provider、多客户端共享 Session、终端 TUI，一套服务端 + 多种客户端。";
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://codis.chat" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <header>
+      <div class="container nav">
+        <a class="nav-brand" href="/">codis<span>.chat</span></a>
+        <nav class="nav-links">
+          <a href="#features">特性</a>
+          <a href="#download">下载</a>
+          <a href="#quickstart">快速开始</a>
+          <a href="https://github.com/xyanrch1024/Codis" target="_blank" rel="noopener">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <slot />
+    </main>
+
+    <footer>
+      <div class="container foot">
+        <span>© {new Date().getFullYear()} Codis · C++20 AI coding assistant</span>
+        <span>
+          <a href="https://github.com/xyanrch1024/Codis" target="_blank" rel="noopener">GitHub</a>
+          &nbsp;·&nbsp; MIT License
+        </span>
+      </div>
+    </footer>
+  </body>
+</html>
