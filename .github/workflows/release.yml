@@ -1,0 +1,82 @@
+name: release
+
+# 打 tag（v*）时自动构建三平台并上传 Release 资产
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: codis-linux-x64.tar.gz
+          - os: macos-13
+            asset: codis-macos-x64.tar.gz
+          - os: windows-latest
+            asset: codis-windows-x64.zip
+    steps:
+      - uses: actions/checkout@v4
+
+      # vcpkg manifest 模式（vcpkg.json 锁定 builtin-baseline）
+      - name: Setup vcpkg
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+          cd "$HOME/vcpkg"
+          git checkout --quiet cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+          ./bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.HOME }}/vcpkg
+            ${{ env.HOME }}/.cache/vcpkg
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Configure (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -B build -S . \
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md \
+            -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build build --config Release -j4
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          tar -C build/bin -czf "${{ matrix.asset }}" codis codis-server
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          powershell -Command "Compress-Archive -Path build/bin/codis.exe, build/bin/codis-server.exe -DestinationPath ${{ matrix.asset }}"
+
+      - name: Upload to Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
