@@ -3,7 +3,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <unistd.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <fstream>
@@ -38,13 +40,17 @@ ToolResult BashTool::execute(const ToolCall& call) {
     LOG_DEBUG("bash executing: {}", cmd);
 
     int out_pipe[2], err_pipe[2];
-    if (pipe(out_pipe) == -1 || pipe(err_pipe) == -1) {
+    if (pipe(out_pipe) == -1) return {call.id, false, "pipe() failed"};
+    if (pipe(err_pipe) == -1) {
+        // 第二个管道失败时释放第一个，避免 fd 泄漏
+        close(out_pipe[0]); close(out_pipe[1]);
         return {call.id, false, "pipe() failed"};
     }
 
     pid_t pid = fork();
     if (pid == 0) {
-        // 子进程
+        // 子进程：独立进程组，超时可整组击杀（连后代进程一起）
+        setpgid(0, 0);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
         close(out_pipe[0]); close(out_pipe[1]);
@@ -59,32 +65,55 @@ ToolResult BashTool::execute(const ToolCall& call) {
 
     close(out_pipe[1]); close(err_pipe[1]);
 
-    // 等待超时 (30 秒)
-    int status;
-    int waited = 0;
-    while (waited < 30000) {
-        pid_t w = waitpid(pid, &status, WNOHANG);
-        if (w > 0) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        waited += 100;
-    }
-    if (waited >= 30000) {
-        kill(pid, SIGKILL);
-        waitpid(pid, &status, 0);
-        close(out_pipe[0]); close(err_pipe[0]);
-        return {call.id, false, "Command timed out after 30 seconds"};
+    constexpr auto kTimeout = std::chrono::milliseconds(30000);
+    auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    std::ostringstream out_oss, err_oss;
+    char buf[4096];
+    int status = 0;
+    bool child_done = false;
+    bool timed_out = false;
+    int open_fds = 2;  // 两个管道读端尚未 EOF
+
+    // 并发读取 stdout/stderr：顺序读会被占着管道不关的后台进程堵死
+    while (!child_done || open_fds > 0) {
+        if (!child_done) {
+            pid_t w = waitpid(pid, &status, WNOHANG);
+            if (w > 0) child_done = true;
+            else if (w == -1) { child_done = true; status = -1; break; }
+        }
+        if (open_fds == 0) continue;
+
+        pollfd fds[2] = {{out_pipe[0], POLLIN, 0}, {err_pipe[0], POLLIN, 0}};
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        int rc = poll(fds, 2, std::max(0L, remaining.count()));
+        if (rc == 0) { timed_out = true; break; }
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (fds[i].revents & (POLLERR | POLLNVAL)) { open_fds--; continue; }
+            if (!(fds[i].revents & (POLLIN | POLLHUP))) continue;
+            ssize_t n = read(fds[i].fd, buf, sizeof(buf));
+            if (n > 0)
+                (i == 0 ? out_oss : err_oss).write(buf, n);
+            else  // EOF 或读错误：该管道关闭
+                open_fds--;
+        }
     }
 
-    // 读取输出
-    std::ostringstream oss;
-    char buf[4096];
-    ssize_t n;
-    while ((n = read(out_pipe[0], buf, sizeof(buf))) > 0) oss.write(buf, n);
-    while ((n = read(err_pipe[0], buf, sizeof(buf))) > 0) oss.write(buf, n);
+    if (timed_out) {
+        kill(-pid, SIGKILL);  // 击杀整个进程组，避免后台子进程继续存活
+        kill(pid, SIGKILL);   // 兜底（setpgid 异常时）
+    }
+    if (!child_done) waitpid(pid, &status, 0);
 
     close(out_pipe[0]); close(err_pipe[0]);
 
-    std::string output = oss.str();
+    if (timed_out) return {call.id, false, "Command timed out after 30 seconds"};
+
+    std::string output = out_oss.str() + err_oss.str();
     if (output.size() > 64000) {
         output = output.substr(0, 32000) + "\n... [truncated " +
                  std::to_string(output.size() - 64000) + " bytes] ...\n" +

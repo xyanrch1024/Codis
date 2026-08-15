@@ -280,7 +280,14 @@ std::optional<nlohmann::json> SessionStore::load_context_snapshot(
 
     std::optional<nlohmann::json> result;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-        result = nlohmann::json::parse(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+        if (auto col = sqlite3_column_text(stmt, 0)) {
+            try {
+                result = nlohmann::json::parse(reinterpret_cast<const char*>(col));
+            } catch (const nlohmann::json::exception&) {
+                // 损坏的快照行：跳过而非让异常穿过 detached 线程终止进程
+                result = std::nullopt;
+            }
+        }
     }
     sqlite3_finalize(stmt);
     return result;
@@ -305,9 +312,14 @@ std::vector<SessionInfo> SessionStore::list_sessions_info() {
         info.created_at = sqlite3_column_int64(stmt, 2);
         info.updated_at = sqlite3_column_int64(stmt, 3);
         info.message_count = sqlite3_column_int(stmt, 4);
-        auto meta = nlohmann::json::parse(
-            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
-        info.title = meta.value("title", "Untitled");
+        try {
+            auto col = sqlite3_column_text(stmt, 1);
+            auto meta = col ? nlohmann::json::parse(reinterpret_cast<const char*>(col))
+                            : nlohmann::json::object();
+            info.title = meta.value("title", "Untitled");
+        } catch (const nlohmann::json::exception&) {
+            info.title = "Untitled";
+        }
         result.push_back(info);
     }
     sqlite3_finalize(stmt);

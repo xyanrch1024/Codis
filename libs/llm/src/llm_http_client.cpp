@@ -210,6 +210,9 @@ bool LLMHttpClient::parse_sse_line(const std::string& line,
                     for (auto& tc : delta["tool_calls"]) {
                         int idx = tc.value("index", 0);
                         auto& entry = tool_calls[idx];
+                        // 首个 delta 块若只有 function（无 id/type），entry 仍是 null json，
+                        // 此时 value() 会抛 type_error.306 → 进程 abort
+                        if (entry.is_null()) entry = json::object();
                         if (tc.contains("id")) entry["id"] = tc["id"];
                         if (tc.contains("type")) entry["type"] = tc["type"];
                         if (tc.contains("function")) {
@@ -217,7 +220,14 @@ bool LLMHttpClient::parse_sse_line(const std::string& line,
                             if (func.contains("name")) entry["name"] = func["name"];
                             if (func.contains("arguments")) {
                                 std::string prev = entry.value("arguments", "");
-                                entry["arguments"] = prev + func["arguments"].get<std::string>();
+                                auto& args = func["arguments"];
+                                if (args.is_string()) {
+                                    entry["arguments"] = prev + args.get<std::string>();
+                                } else if (args.is_object() || args.is_array()) {
+                                    // 个别兼容层把 arguments 直接吐成对象/数组，序列化兜底
+                                    // （get<std::string> 会抛 type_error，从这里逃逸导致进程 abort）
+                                    entry["arguments"] = prev + args.dump();
+                                }
                             }
                         }
                     }
@@ -225,7 +235,8 @@ bool LLMHttpClient::parse_sse_line(const std::string& line,
             }
         }
         if (j.contains("delta") && j["delta"].contains("text")) {
-            if (on_token) on_token(j["delta"]["text"].get<std::string>());
+            auto& text = j["delta"]["text"];
+            if (text.is_string() && on_token) on_token(text.get<std::string>());
         }
     } catch (const json::parse_error&) {}
     return true;

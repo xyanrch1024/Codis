@@ -505,8 +505,8 @@ void CodisServer::handle_acp_switch(const httplib::Request& req, httplib::Respon
 // run_acp_loop_broadcast — 推送到指定 connection 的 queue
 // =============================================================================
 
-void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
-                                             const std::string& conn_id, ChatRequest req) {
+void CodisServer::run_acp_task(const std::string& session_id,
+                               const std::string& conn_id, ChatRequest req) {
     static const int MAX_TURNS = 100;
     static const int MAX_EMPTY_RETRIES = 2;
     static const int MAX_MALFORMED_RETRIES = 3;
@@ -709,10 +709,41 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
         broadcast(acp::error_frame("Max turns reached"));
 
     broadcast(acp::done_frame());
+}
 
-    // 标记完成；若有排队请求则保持 processing 并在本线程内循环补跑下一轮
-    // （同一 session 串行执行，无需每次新建线程）
+// =============================================================================
+// run_acp_loop_broadcast — 顶层异常防护 + 排队请求迭代补跑
+// run_acp_task 抛出异常（数据库损坏、Provider 返回畸形 JSON 等）时不能让
+// detached 线程终止进程；排队请求用循环补跑而不是递归，避免刷帧导致栈溢出。
+// =============================================================================
+
+void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
+                                         const std::string& conn_id, ChatRequest req) {
+    auto broadcast = [&](const std::string& frame) {
+        std::lock_guard lock(sessions_mutex_);
+        auto it = sessions_.find(session_id);
+        if (it == sessions_.end()) return;
+        if (conn_id.empty()) {
+            for (auto& [_, q] : it->second.conns) q->push(frame);
+        } else {
+            auto qit = it->second.conns.find(conn_id);
+            if (qit != it->second.conns.end()) qit->second->push(frame);
+        }
+    };
+
     for (;;) {
+        try {
+            run_acp_task(session_id, conn_id, std::move(req));
+        } catch (const std::exception& e) {
+            LOG_ERROR("ACP task crashed, session {}: {}", session_id.substr(0, 8), e.what());
+            broadcast(acp::error_frame(std::string("internal error: ") + e.what()));
+            broadcast(acp::done_frame());
+        } catch (...) {
+            LOG_ERROR("ACP task crashed, session {}: unknown exception", session_id.substr(0, 8));
+            broadcast(acp::error_frame("internal error: unknown exception"));
+            broadcast(acp::done_frame());
+        }
+        // 有排队请求则保持 processing，在本线程内迭代补跑（不递归、不新建线程）
         std::optional<ChatRequest> next;
         {
             std::lock_guard lock(sessions_mutex_);
@@ -728,7 +759,7 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
         }
         if (!next) break;
         LOG_DEBUG("session {} rerun for queued message", session_id.substr(0, 8));
-        run_acp_loop_broadcast(session_id, conn_id, std::move(*next));
+        req = std::move(*next);
     }
     LOG_DEBUG("session {} completed", session_id.substr(0, 8));
 }

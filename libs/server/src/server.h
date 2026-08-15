@@ -119,6 +119,8 @@ private:
     bool move_connection(const std::string& conn_id, const std::string& new_sid);
     void run_acp_loop_broadcast(const std::string& session_id,
                                  const std::string& conn_id, ChatRequest req);
+    void run_acp_task(const std::string& session_id,
+                      const std::string& conn_id, ChatRequest req);
     void cleanup_connection(const std::string& session_id, const std::string& conn_id);
     std::string generate_conn_id();
 
