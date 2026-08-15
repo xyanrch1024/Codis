@@ -112,7 +112,6 @@ struct ChatRequest {
     std::string session_id;
     std::vector<Message> messages;
     std::optional<int> max_tokens;
-    std::optional<double> temperature;
     json tools = json::array();
     bool stream = false;
 
@@ -123,7 +122,6 @@ struct ChatRequest {
         j["messages"] = json::array();
         for (auto& m : messages) j["messages"].push_back(m.to_json());
         if (max_tokens) j["max_tokens"] = *max_tokens;
-        if (temperature) j["temperature"] = *temperature;
         if (!tools.empty()) j["tools"] = tools;
         j["stream"] = stream;
         return j;
@@ -134,7 +132,6 @@ struct ChatRequest {
         if (j.contains("provider")) r.provider = j["provider"].get<std::string>();
         r.model       = j.value("model", "gpt-4o");
         r.max_tokens  = j.contains("max_tokens")  ? std::optional(j["max_tokens"].get<int>())  : std::nullopt;
-        r.temperature = j.contains("temperature") ? std::optional(j["temperature"].get<double>()) : std::nullopt;
         r.stream      = j.value("stream", false);
         if (j.contains("tools")) r.tools = j["tools"];
         if (j.contains("messages")) {

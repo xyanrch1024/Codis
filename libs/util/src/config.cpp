@@ -29,7 +29,6 @@ AppConfig AppConfig::load(const std::filesystem::path& path) {
 
         if (auto llm = tbl["llm"].as_table()) {
             cfg.llm.max_tokens   = (*llm)["max_tokens"].value<int>();
-            cfg.llm.temperature  = (*llm)["temperature"].value<double>();
         }
 
         cfg.default_provider = tbl["default_provider"].value<std::string>().value_or("");

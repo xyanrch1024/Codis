@@ -32,7 +32,6 @@ struct ProviderConfig {
 
 struct LLMConfig {
     std::optional<int> max_tokens;
-    std::optional<double> temperature;
 };
 
 struct AppConfig {
