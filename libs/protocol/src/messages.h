@@ -90,7 +90,25 @@ struct Message {
 
     json to_json() const {
         json j{{"role", role}, {"content", content}};
-        if (tool_call_id) j["tool_call_id"] = *tool_call_id;
+        if (role == "assistant" && tool_call_id && tool_name) {
+            // 工具调用消息 → OpenAI 标准 tool_calls 数组。平铺的 name/arguments
+            // 会被部分 provider（GLM 等）忽略，模型看不到自己已调用过该工具，
+            // 每轮重复执行同一调用（如反复 write 同一文件）。
+            std::string args = tool_arguments ? json_dump_safe(*tool_arguments) : "{}";
+            j["content"] = nullptr;
+            j["tool_calls"] = json::array({{
+                {"id", *tool_call_id},
+                {"type", "function"},
+                {"function", {{"name", *tool_name}, {"arguments", args}}}
+            }});
+            // 兼容旧格式的平铺字段（部分宽松 provider 仍读取）
+            j["tool_call_id"] = *tool_call_id;
+            j["name"] = *tool_name;
+            if (tool_arguments) j["arguments"] = *tool_arguments;
+        } else if (tool_call_id) {
+            // tool 结果消息
+            j["tool_call_id"] = *tool_call_id;
+        }
         if (tool_name) j["name"] = *tool_name;
         if (tool_arguments) j["arguments"] = *tool_arguments;
         return j;
@@ -98,7 +116,10 @@ struct Message {
     static Message from_json(const json& j) {
         Message m;
         m.role = j["role"].get<std::string>();
-        m.content = j.value("content", "");
+        // content 可能缺失或为 null（assistant 工具调用消息标准格式），
+        // 不能直接 value("content","")——nlohmann 对 null 调 get<string> 会抛
+        m.content = (j.contains("content") && j["content"].is_string())
+                        ? j["content"].get<std::string>() : std::string();
         if (j.contains("tool_call_id")) m.tool_call_id = j["tool_call_id"].get<std::string>();
         if (j.contains("name")) m.tool_name = j["name"].get<std::string>();
         if (j.contains("arguments")) m.tool_arguments = j["arguments"];

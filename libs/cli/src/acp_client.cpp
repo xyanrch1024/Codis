@@ -167,6 +167,11 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                     if (callbacks_.on_assistant) callbacks_.on_assistant(event->data.value("delta", ""));
                     break;
                 case acp::EventType::reasoning:
+                    // 服务端已过滤空 delta；若仍收到空帧，说明是旧版服务端或第三方客户端
+                    if (event->data.value("delta", "").empty()) {
+                        LOG_WARN("WS reasoning frame with empty delta");
+                        break;
+                    }
                     LOG_DEBUG("WS reasoning delta ({} bytes)", event->data.value("delta", "").size());
                     if (callbacks_.on_reasoning) callbacks_.on_reasoning(event->data.value("delta", ""));
                     break;
@@ -287,7 +292,10 @@ std::optional<SessionInfo> AcpClient::get_session(const std::string& id) {
                 info.messages.push_back(Message::from_json(m));
         }
         return info;
-    } catch (...) { return std::nullopt; }
+    } catch (const std::exception& e) {
+        LOG_WARN("get_session {}: parse failed: {}", id.substr(0, 8), e.what());
+        return std::nullopt;
+    }
 }
 
 bool AcpClient::delete_session(const std::string& id) {

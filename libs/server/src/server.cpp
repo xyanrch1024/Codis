@@ -294,8 +294,8 @@ void CodisServer::handle_chat(const httplib::Request& req, httplib::Response& re
             msgs.push_back({"system", baseline});
             auto history = session_store_.load_messages(chat_req.session_id);
             for (auto& m : history)
-                if (m.role == "user" ||
-                    (m.role == "assistant" && !m.tool_call_id && !is_blank(m.content)))
+                if (m.role == "user" || m.role == "tool" ||
+                    (m.role == "assistant" && (m.tool_call_id || !is_blank(m.content))))
                     msgs.push_back(m);
             for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it)
                 if (it->role == "user" && !it->content.empty()) {
@@ -600,8 +600,11 @@ void CodisServer::run_acp_task(const std::string& session_id,
     std::vector<Message> msgs;
     msgs.push_back({"system", baseline});
     for (auto& m : history) {
-        if (m.role == "user" ||
-            (m.role == "assistant" && !m.tool_call_id && !is_blank(m.content)))
+        // 重放：user 消息 + 纯文本 assistant + 完整工具往返
+        // （assistant 中转带 tool_call_id；tool 结果成对紧随其后，序列化
+        // 已输出标准 tool_calls 数组，模型能识别历史调用，避免重复执行）
+        if (m.role == "user" || m.role == "tool" ||
+            (m.role == "assistant" && (m.tool_call_id || !is_blank(m.content))))
             msgs.push_back(m);
     }
     req.messages = std::move(msgs);
@@ -651,6 +654,12 @@ void CodisServer::run_acp_task(const std::string& session_id,
                 broadcast(acp::assistant_frame(delta));
             },
             [&](std::string_view delta) {
+                // 空 reasoning delta（混合思考模型的非思考请求会发 ""）：
+                // 直接透传会让客户端渲染出只有标签的空思维链块
+                if (delta.empty()) {
+                    LOG_TRACE("session {} reasoning empty delta skipped", session_id.substr(0, 8));
+                    return;
+                }
                 broadcast(acp::reasoning_frame(delta));
             },
             cancel_flag.get());

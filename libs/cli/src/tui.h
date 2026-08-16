@@ -228,13 +228,19 @@ private:
                 pending_streaming_ = true;
             }
             break;
-        case AcpEvent::Kind::ReasoningDelta:
+        case AcpEvent::Kind::ReasoningDelta: {
+            // 空/纯空白 delta 不创建思维链条目（否则渲染出只含 💭 标签的空块）
+            bool blank = true;
+            for (char c : ev.text)
+                if (!std::isspace((unsigned char)c)) { blank = false; break; }
+            if (blank) break;
             if (!items.empty() && items.back().kind == ItemKind::Reasoning) {
                 items.back().text += ev.text;
             } else {
                 items.push_back({ItemKind::Reasoning, ev.text});
             }
             break;
+        }
         case AcpEvent::Kind::ToolCall: {
             finalize_streaming();
             auto d = tool_display(ev.tool_call.name, ev.tool_call.arguments);
