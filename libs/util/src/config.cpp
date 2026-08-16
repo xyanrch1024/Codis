@@ -64,6 +64,34 @@ AppConfig AppConfig::load(const std::filesystem::path& path) {
                         cfg.skills.dirs.emplace_back(*s);
         }
 
+        if (auto mcp = tbl["mcp"].as_table()) {
+            if (auto servers = (*mcp)["servers"].as_array()) {
+                for (auto& node : *servers) {
+                    auto& t = *node.as_table();
+                    McpServerConfig sc;
+                    sc.name = t["name"].value<std::string>().value_or("");
+                    sc.transport = t["transport"].value<std::string>().value_or("stdio");
+                    sc.command = t["command"].value<std::string>().value_or("");
+                    if (auto a = t["args"].as_array())
+                        for (auto& v : *a)
+                            if (auto s = v.value<std::string>()) sc.args.push_back(*s);
+                    if (auto e = t["env"].as_array())
+                        for (auto& v : *e)
+                            if (auto s = v.value<std::string>()) sc.env.push_back(*s);
+                    sc.url = t["url"].value<std::string>().value_or("");
+                    sc.api_key_env = t["api_key_env"].value<std::string>().value_or("");
+                    sc.timeout_seconds = t["timeout_seconds"].value<int>().value_or(30);
+                    if (!sc.name.empty() && (!sc.command.empty() || !sc.url.empty())) {
+                        if (!sc.api_key_env.empty()) {
+                            if (const char* k = std::getenv(sc.api_key_env.c_str()))
+                                sc.bearer_token = k;
+                        }
+                        cfg.mcp.servers.push_back(std::move(sc));
+                    }
+                }
+            }
+        }
+
     } catch (const toml::parse_error& e) {
         std::cerr << "Config parse error: " << e.what() << "\n";
     }

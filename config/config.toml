@@ -58,3 +58,40 @@ timeout_seconds = 15
 #   dirs: 扫描目录（相对路径相对 server 工作目录）；默认额外扫描 ~/.codis/skills
 [skills]
 dirs = ["skills/"]
+
+# MCP 服务器（Model Context Protocol）
+#   transport = stdio（默认）| http
+#   stdio: command/args 启动子进程（如 npx @modelcontextprotocol/server-xxx）
+#   http:  url = "https://host/path"，api_key_env 可选（Bearer 认证）
+#   MCP 工具默认 Ask 权限，可用 [permissions] ask/allow 按名覆写
+#   示例（需要 Node.js）:
+# [[mcp.servers]]
+# name = "filesystem"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+# 
+# [[mcp.servers]]
+# name = "remote"
+# transport = "http"
+# url = "https://mcp.example.com/mcp"
+# api_key_env = "MCP_API_KEY"
+[[mcp.servers]]
+name = "fs"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/wsl-ubuntu-1/projects"]
+timeout_seconds = 15
+
+[[mcp.servers]]
+name = "fastmcp"
+transport = "http"
+url = "http://127.0.0.1:8767/mcp"
+timeout_seconds = 5
+
+[[mcp.servers]]
+name = "github"
+transport = "http"
+url = "https://api.githubcopilot.com/mcp/"
+api_key_env = "GITHUB_PAT"
+timeout_seconds = 15

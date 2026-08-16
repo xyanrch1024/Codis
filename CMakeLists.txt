@@ -24,6 +24,7 @@ add_subdirectory(libs/protocol)
 add_subdirectory(libs/tool)
 add_subdirectory(libs/plugin)
 add_subdirectory(libs/llm)
+add_subdirectory(libs/mcp)
 add_subdirectory(libs/cli)
 add_subdirectory(libs/server)
 

@@ -6,6 +6,7 @@
 #include "config.h"
 #include "provider_registry.h"
 #include "tool_registry.h"
+#include "mcp_manager.h"
 #include "session_store.h"
 #include "context_source.h"
 #include "plugin_loader.h"
@@ -158,6 +159,7 @@ private:
     std::unordered_map<std::string, SessionState> sessions_;
     std::mutex sessions_mutex_;
     PluginLoader plugin_loader_;
+    std::unique_ptr<mcp::McpManager> mcp_manager_;
 };
 
 } // namespace codis

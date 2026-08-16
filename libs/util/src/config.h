@@ -64,6 +64,23 @@ struct SkillConfig {
     std::vector<std::filesystem::path> dirs;
 };
 
+// MCP 服务器配置（stdio 子进程或 Streamable HTTP）
+struct McpServerConfig {
+    std::string name;                    // 唯一标识（工具名冲突时作前缀）
+    std::string transport = "stdio";     // stdio | http
+    std::string command;                 // stdio: 可执行命令
+    std::vector<std::string> args;       // stdio: 命令参数
+    std::vector<std::string> env;        // stdio: 附加环境变量 "KEY=VALUE"
+    std::string url;                     // http: https://host[:port]/path
+    std::string api_key_env;             // http: Bearer token 的环境变量名（可选）
+    std::string bearer_token;            // http: 解析后的 token（内部）
+    int timeout_seconds = 30;
+};
+
+struct McpConfig {
+    std::vector<McpServerConfig> servers;
+};
+
 struct AppConfig {
     std::vector<ProviderConfig> providers;
     LLMConfig llm;
@@ -72,6 +89,7 @@ struct AppConfig {
     PermissionConfig permissions;
     WebSearchConfig websearch;
     SkillConfig skills;
+    McpConfig mcp;
 
     static AppConfig load(const std::filesystem::path& path);
     static AppConfig default_config();

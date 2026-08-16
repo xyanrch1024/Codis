@@ -20,4 +20,5 @@ target_link_libraries(codis-server PRIVATE
     codis_util
     codis_tool
     codis_plugin
+    codis_mcp
 )

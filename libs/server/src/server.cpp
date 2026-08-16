@@ -159,6 +159,25 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
     if (plugin_dir) plugin_loader_.load_directory(plugin_dir);
     else plugin_loader_.load_directory("plugins");
 
+    // MCP 服务器：连接 + tools/list + 注册（std::move 转换配置结构）
+    {
+        std::vector<mcp::McpServerOptions> opts;
+        for (auto& s : config_.mcp.servers) {
+            mcp::McpServerOptions o;
+            o.name = s.name;
+            o.transport = s.transport;
+            o.command = s.command;
+            o.args = s.args;
+            o.env = s.env;
+            o.url = s.url;
+            o.bearer_token = s.bearer_token;
+            o.timeout_seconds = s.timeout_seconds;
+            opts.push_back(std::move(o));
+        }
+        mcp_manager_ = std::make_unique<mcp::McpManager>(std::move(opts), &tool_registry_);
+        mcp_manager_->start_all();
+    }
+
     init_context_sources();
     register_routes();
 }
@@ -197,6 +216,7 @@ void CodisServer::start() {
 }
 void CodisServer::stop() {
     if (running_.exchange(false)) { server_->stop(); if (thread_ && thread_->joinable()) thread_->join(); }
+    if (mcp_manager_) mcp_manager_->stop_all();
     LOG_INFO("Server stopped");
 }
 
