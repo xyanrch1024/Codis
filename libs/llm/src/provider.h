@@ -17,6 +17,7 @@ public:
 
     virtual ~LLMProvider() = default;
     virtual std::string name() const = 0;
+    virtual std::string get_model() const { return ""; }
     virtual ChatResponse chat(const ChatRequest& req) = 0;
     virtual ChatResponse stream_chat(const ChatRequest& req, TokenCallback on_token,
                                      ReasoningCallback on_reasoning = nullptr,

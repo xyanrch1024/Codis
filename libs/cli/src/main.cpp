@@ -67,8 +67,8 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
 int main(int argc, char** argv) {
     CLI::App app{"Codis C++ Client — ACP + SSE (v0.3.0)"};
 
-    std::string model         = "glm-4.5-flash";
-    std::string provider      = "glm";
+    std::string model;
+    std::string provider;
     int  server_port = 8711;
     std::string server_bin;
     std::string session_arg;

@@ -1197,6 +1197,8 @@ std::shared_ptr<LLMProvider> CodisServer::resolve_provider(const ChatRequest& re
 std::string CodisServer::call_llm(const ChatRequest& req) {
     auto prov = resolve_provider(req);
     if (!prov) throw std::runtime_error("No provider configured. Set API key env var (e.g. GLM_API_KEY)");
+    LOG_INFO("LLM call: provider='{}' model='{}' (req.model='{}')",
+             prov->name(), prov->get_model(), req.model);
     auto result = prov->chat(req);
     if (!result.success) {
         LOG_ERROR("LLM call failed: {}", result.error);

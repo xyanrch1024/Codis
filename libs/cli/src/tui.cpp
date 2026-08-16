@@ -68,6 +68,15 @@ TuiClient::TuiClient(int server_port, std::string model, std::string provider,
     , acp_(server_port)
     , state_(std::make_shared<TuiState>())
 {
+    // 未显式指定 -m/-p 时，从 server 拉默认 provider 与模型（与配置一致）
+    if (model_.empty()) {
+        auto info = acp_.get_server_info();
+        if (info && !info->default_provider.empty()) {
+            provider_ = info->default_provider;
+            auto it = info->provider_models.find(info->default_provider);
+            if (it != info->provider_models.end()) model_ = it->second;
+        }
+    }
     state_->model = model_;
     state_->server_port = server_port_;
 }

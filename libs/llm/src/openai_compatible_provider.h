@@ -25,7 +25,7 @@ public:
 
     ChatResponse chat(const ChatRequest& req) override {
         ChatResponse result;
-        LOG_DEBUG("{}::chat model={} messages={}", name_, req.model, req.messages.size());
+        LOG_DEBUG("{}::chat model={} messages={}", name_, model_, req.messages.size());
 
         json body = build_body(req);
         body["stream"] = false;
