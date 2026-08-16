@@ -129,6 +129,9 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
     tool_registry_.register_tool(std::make_unique<tools::BashTool>());
     tool_registry_.register_tool(std::make_unique<tools::GlobTool>());
     tool_registry_.register_tool(std::make_unique<tools::GrepTool>());
+    tool_registry_.register_tool(std::make_unique<tools::WebSearchTool>(tools::WebSearchOptions{
+        config_.websearch.backend, config_.websearch.api_key,
+        config_.websearch.max_results, config_.websearch.timeout_seconds}));
 
     // [permissions] 策略覆盖工具默认权限（deny > allow > ask，均覆盖默认）
     for (auto& name : config_.permissions.allow)

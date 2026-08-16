@@ -1,9 +1,14 @@
 #include "tools.h"
 #include "log.h"
+#include "messages.h"
+#include <httplib.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
+#include <cstring>
+#include <cctype>
+#include <algorithm>
 #include <unistd.h>
 #include <poll.h>
 #include <sys/wait.h>
@@ -408,6 +413,306 @@ ToolResult GrepTool::execute(const ToolCall& call) {
     }
 
     return {call.id, true, oss.str().empty() ? "No matches found" : oss.str()};
+}
+
+// =============================================================================
+// WebSearch — 联网搜索，返回标题 + URL + 摘要
+// =============================================================================
+
+namespace {
+
+// URL 百分号编码（query 参数用）
+std::string url_encode(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 3);
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += (char)c;
+        } else {
+            char buf[4];
+            std::snprintf(buf, sizeof(buf), "%%%02X", c);
+            out += buf;
+        }
+    }
+    return out;
+}
+
+// HTML 实体解码（常见子集 + 十进制/十六进制数字实体）
+void decode_html_entities(std::string& s) {
+    static const std::pair<const char*, const char*> kEnts[] = {
+        {"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""},
+        {"&#39;", "'"}, {"&apos;", "'"}, {"&nbsp;", " "}, {"&ensp;", " "},
+        {"&emsp;", " "}, {"&middot;", "\xC2\xB7"}, {"&ndash;", "-"},
+    };
+    for (auto& [ent, rep] : kEnts) {
+        size_t pos;
+        while ((pos = s.find(ent)) != std::string::npos) {
+            s.replace(pos, std::strlen(ent), rep);
+            // 跳过替换段，避免重叠替换死循环（如 &amp;lt;）
+            pos += strlen(rep);
+        }
+    }
+    // &#123; 与 &#xAB; 数字实体 → UTF-8
+    std::regex num_ent(R"(&#(?:0*([1-9]\d{1,6})|x0*([0-9a-fA-F]{1,6}));?)");
+    std::smatch m;
+    std::string out;
+    size_t last = 0;
+    std::string::const_iterator it = s.cbegin();
+    while (std::regex_search(it, s.cend(), m, num_ent)) {
+        out.append(it, m[0].first);
+        unsigned cp = m[1].matched ? (unsigned)std::stoul(m[1].str())
+                                   : (unsigned)std::stoul(m[2].str(), nullptr, 16);
+        if (cp <= 0x7F) out += (char)cp;
+        else if (cp <= 0x7FF) {
+            out += (char)(0xC0 | (cp >> 6));
+            out += (char)(0x80 | (cp & 0x3F));
+        } else if (cp <= 0xFFFF) {
+            out += (char)(0xE0 | (cp >> 12));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F));
+            out += (char)(0x80 | (cp & 0x3F));
+        } else {
+            out += (char)(0xF0 | (cp >> 18));
+            out += (char)(0x80 | ((cp >> 12) & 0x3F));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F));
+            out += (char)(0x80 | (cp & 0x3F));
+        }
+        it = m[0].second;
+    }
+    out.append(it, s.cend());
+    s = std::move(out);
+}
+
+// 去掉 HTML 标签并折叠空白（供摘要清洗）
+std::string strip_html(const std::string& src) {
+    std::string out;
+    out.reserve(src.size());
+    bool in_tag = false;
+    for (char c : src) {
+        if (c == '<') { in_tag = true; continue; }
+        if (c == '>') { in_tag = false; continue; }
+        if (in_tag) continue;
+        out += c;
+    }
+    decode_html_entities(out);
+    // 折叠空白：连续空白 → 单个空格，去行首尾
+    std::string flat;
+    flat.reserve(out.size());
+    bool prev_space = true;
+    for (char c : out) {
+        if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+            if (!prev_space) flat += ' ';
+            prev_space = true;
+        } else {
+            flat += c;
+            prev_space = false;
+        }
+    }
+    while (!flat.empty() && flat.back() == ' ') flat.pop_back();
+    return flat;
+}
+
+// 截断到 max 字符（UTF-8 安全：不切断多字节字符）
+std::string utf8_truncate(std::string s, size_t max) {
+    if (s.size() <= max) return s;
+    size_t cut = max;
+    while (cut > 0 && cut < s.size() && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) cut--;
+    s.resize(cut);
+    s += "…";
+    return s;
+}
+
+// 后端 → HTTP 主机
+std::string websearch_host(const std::string& backend) {
+    if (backend == "bing")   return "https://www.bing.com";
+    if (backend == "serpapi") return "https://serpapi.com";
+    if (backend == "brave")  return "https://api.search.brave.com";
+    if (backend == "tavily") return "https://api.tavily.com";
+    return "https://www.bing.com";
+}
+
+// Bing RSS → 结果列表（title / url / snippet）
+struct SearchHit { std::string title, url, snippet; };
+
+std::vector<SearchHit> parse_bing_rss(const std::string& xml, int max) {
+    std::vector<SearchHit> hits;
+    size_t pos = 0;
+    const std::string kItem = "<item>";
+    while (hits.size() < (size_t)max &&
+           (pos = xml.find(kItem, pos)) != std::string::npos) {
+        size_t end = xml.find("</item>", pos);
+        if (end == std::string::npos) break;
+        std::string block = xml.substr(pos, end - pos);
+        pos = end;
+
+        SearchHit h;
+        auto grab = [&](const std::string& tag) -> std::string {
+            size_t t0 = block.find("<" + tag + ">");
+            if (t0 == std::string::npos) return "";
+            size_t t1 = block.find("</" + tag + ">", t0);
+            if (t1 == std::string::npos) return "";
+            std::string v = block.substr(t0 + tag.size() + 2, t1 - t0 - tag.size() - 2);
+            decode_html_entities(v);
+            if (tag == "description") v = strip_html(v);
+            return v;
+        };
+        h.title = grab("title");
+        h.url = grab("link");
+        h.snippet = grab("description");
+        if (!h.title.empty() && !h.url.empty()) hits.push_back(std::move(h));
+    }
+    return hits;
+}
+
+} // namespace
+
+ToolSchema WebSearchTool::schema() const {
+    ToolSchema s;
+    s.name = "websearch";
+    s.description =
+        "Search the web for current information and return ranked results "
+        "(title, URL, snippet). Use for recent events, docs, prices, news. "
+        "Backend configured by [websearch] in config.toml.";
+    s.parameters = {{"type", "object"}, {"properties", {
+        {"query", {{"type", "string"}, {"description", "Search query"}}},
+        {"max_results", {{"type", "integer"}, {"description",
+            "Number of results (default: configured max, <= 10)"}}}
+    }}, {"required", json::array({"query"})}};
+    return s;
+}
+
+ToolResult WebSearchTool::execute(const ToolCall& call) {
+    std::string query = call.arguments.value("query", "");
+    if (query.empty()) return {call.id, false, "query is empty"};
+    int max = call.arguments.value("max_results", opts_.max_results);
+    max = std::clamp(max, 1, 10);
+
+    LOG_INFO("websearch[{}] query: {}", opts_.backend, query);
+
+    const std::string backend = opts_.backend.empty() ? "bing" : opts_.backend;
+    std::string body;
+    bool ok = false;
+
+    httplib::Client client(websearch_host(backend));
+    client.set_follow_location(true);
+    client.set_connection_timeout(opts_.timeout_seconds, 0);
+    client.set_read_timeout(opts_.timeout_seconds, 0);
+
+    if (backend == "bing") {
+        auto res = client.Get((std::string("/search?format=rss&q=") + url_encode(query) +
+                               "&mkt=zh-CN").c_str(),
+                              {{"User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                                               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"}});
+        if (res && res->status == 200) { body = res->body; ok = true; }
+        else LOG_WARN("websearch bing failed: {}", res ? std::to_string(res->status) : "no response");
+    } else if (backend == "serpapi") {
+        auto res = client.Get(("/search.json?engine=google&q=" + url_encode(query) +
+                               "&num=" + std::to_string(max) +
+                               "&api_key=" + url_encode(opts_.api_key)).c_str());
+        if (res && res->status == 200) { body = res->body; ok = true; }
+        else LOG_WARN("websearch serpapi failed: {}", res ? std::to_string(res->status) : "no response");
+    } else if (backend == "brave") {
+        auto res = client.Get(("/web/search?q=" + url_encode(query) +
+                               "&count=" + std::to_string(max)).c_str(),
+                              {{"X-Subscription-Token", opts_.api_key}});
+        if (res && res->status == 200) { body = res->body; ok = true; }
+        else LOG_WARN("websearch brave failed: {}", res ? std::to_string(res->status) : "no response");
+    } else if (backend == "tavily") {
+        json payload = {{"api_key", opts_.api_key}, {"query", query},
+                        {"max_results", max}, {"include_answer", false}};
+        auto res = client.Post("/search", json_dump_safe(payload), "application/json");
+        if (res && res->status == 200) { body = res->body; ok = true; }
+        else LOG_WARN("websearch tavily failed: {}", res ? std::to_string(res->status) : "no response");
+    } else {
+        return {call.id, false, "unknown websearch backend: " + backend};
+    }
+
+    if (!ok) return {call.id, false, "Web search request failed (backend: " + backend +
+                                     "). Try again later or check [websearch] config."};
+
+    // ---- 结果解析：统一输出 "1. title\n   url\n   snippet" ----
+    std::vector<SearchHit> hits;
+    json parsed;
+    bool parsed_ok = false;
+    try { parsed = json::parse(body); parsed_ok = true; } catch (...) {}
+
+    if (backend == "bing") {
+        hits = parse_bing_rss(body, max);
+        // 相关性检测：数据中心 IP 常被 Bing 返回无关模板页（RSS 缓存内容）
+        if (!hits.empty()) {
+            bool relevant = false;
+            std::string corpus;
+            // 只统计 title+snippet：URL 里的 http/https 子串会污染匹配
+            for (auto& h : hits) corpus += h.title + " " + h.snippet + " ";
+            static const char* kStopwords[] = {
+                "http", "https", "www", "com", "org", "the", "and", "for",
+                "with", "from", "that", "this", "are", "was", "not", "you",
+            };
+            std::string q;
+            std::istringstream qss(query);
+            while (qss >> q) {
+                bool stop = false;
+                for (auto* w : kStopwords) if (q == w) { stop = true; break; }
+                if (q.size() >= 3 && !stop &&
+                    corpus.find(q) != std::string::npos) { relevant = true; break; }
+            }
+            if (!relevant) {
+                LOG_WARN("websearch bing results look unrelated (datacenter IP?) for query: {}", query);
+                return {call.id, false,
+                    "Bing returned unrelated cached content (common on datacenter IPs). "
+                    "Configure a key-based backend ([websearch] backend = \"brave\"|\"serpapi\"|\"tavily\" "
+                    "with api_key) or retry later."};
+            }
+        }
+    } else if (backend == "serpapi" && parsed_ok) {
+        if (parsed.contains("organic_results") && parsed["organic_results"].is_array()) {
+            for (auto& r : parsed["organic_results"]) {
+                if ((int)hits.size() >= max) break;
+                SearchHit h;
+                h.title = r.value("title", "");
+                h.url = r.value("link", "");
+                h.snippet = r.value("snippet", "");
+                if (!h.title.empty() || !h.snippet.empty()) hits.push_back(std::move(h));
+            }
+        }
+    } else if (backend == "brave" && parsed_ok) {
+        if (parsed.contains("web") && parsed["web"].contains("results")) {
+            for (auto& r : parsed["web"]["results"]) {
+                if ((int)hits.size() >= max) break;
+                SearchHit h;
+                h.title = r.value("title", "");
+                h.url = r.value("url", "");
+                h.snippet = r.value("description", "");
+                if (!h.title.empty() || !h.snippet.empty()) hits.push_back(std::move(h));
+            }
+        }
+    } else if (backend == "tavily" && parsed_ok) {
+        if (parsed.contains("results") && parsed["results"].is_array()) {
+            for (auto& r : parsed["results"]) {
+                if ((int)hits.size() >= max) break;
+                SearchHit h;
+                h.title = r.value("title", "");
+                h.url = r.value("url", "");
+                h.snippet = r.value("content", "");
+                if (!h.title.empty() || !h.snippet.empty()) hits.push_back(std::move(h));
+            }
+        }
+    }
+
+    if (hits.empty())
+        return {call.id, true, "No results found for: " + query};
+
+    // 统一输出格式，控制总长度（每结果最多 ~700 字符）
+    std::string out;
+    out.reserve(4096);
+    for (int i = 0; i < (int)hits.size(); i++) {
+        auto& h = hits[i];
+        out += std::to_string(i + 1) + ". " + utf8_truncate(h.title, 160) + "\n";
+        out += "   " + utf8_truncate(h.url, 200) + "\n";
+        if (!h.snippet.empty())
+            out += "   " + utf8_truncate(h.snippet, 300) + "\n";
+        out += "\n";
+    }
+    return {call.id, true, out};
 }
 
 } // namespace codis::tools

@@ -26,7 +26,7 @@ base_url = "https://api.deepseek.com"
 [[providers]]
 name = "glm"
 api_key_env = "GLM_API_KEY"
-    model = "glm-4.5-flash"
+    model = "glm-4.7-flash"
     base_url = "https://open.bigmodel.cn/api/paas/v4"
 
 [feishu]
@@ -40,7 +40,16 @@ enabled = false
 #   deny  = 永远拒绝
 # confirm_timeout = Ask 工具等待确认的秒数，超时视为拒绝
 [permissions]
-allow = ["read", "glob", "grep", "bash"]
+allow = ["read", "glob", "grep", "bash", "websearch"]
 ask = ["write", "edit"]
 # deny = []
 confirm_timeout = 120
+
+# WebSearch 工具
+#   backend: bing(免 key, 默认) | serpapi | brave | tavily(后三者需要 api_key)
+#   api_key_env: 从环境变量读 key（推荐，不写明文）
+[websearch]
+backend = "bing"
+# api_key_env = "SERPAPI_API_KEY"
+max_results = 5
+timeout_seconds = 15

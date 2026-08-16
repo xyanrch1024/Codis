@@ -48,6 +48,15 @@ AppConfig AppConfig::load(const std::filesystem::path& path) {
                 (*perm)["confirm_timeout"].value<int>().value_or(120);
         }
 
+        if (auto ws = tbl["websearch"].as_table()) {
+            cfg.websearch.backend = (*ws)["backend"].value<std::string>().value_or("bing");
+            cfg.websearch.api_key = (*ws)["api_key"].value<std::string>().value_or("");
+            cfg.websearch.api_key_env = (*ws)["api_key_env"].value<std::string>().value_or("");
+            cfg.websearch.max_results = (*ws)["max_results"].value<int>().value_or(5);
+            cfg.websearch.timeout_seconds = (*ws)["timeout_seconds"].value<int>().value_or(15);
+            cfg.websearch.resolve_api_key();
+        }
+
     } catch (const toml::parse_error& e) {
         std::cerr << "Config parse error: " << e.what() << "\n";
     }

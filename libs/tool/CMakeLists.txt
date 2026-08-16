@@ -5,6 +5,7 @@ add_library(codis_tool STATIC
 target_include_directories(codis_tool PUBLIC src)
 target_link_libraries(codis_tool PUBLIC
     nlohmann_json::nlohmann_json
+    httplib::httplib
     codis_protocol
     codis_util
 )
