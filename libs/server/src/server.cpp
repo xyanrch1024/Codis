@@ -242,14 +242,19 @@ std::string CodisServer::generate_conn_id() {
     return util::gen_short_id();
 }
 
-void CodisServer::cleanup_connection(const std::string& sid, const std::string& conn_id) {
+void CodisServer::cleanup_connection(const std::string& sid, const std::string& conn_id,
+                                     const std::shared_ptr<FrameQueue>& queue) {
     LOG_INFO("WS connection detached session {} conn_id={}", sid.substr(0, 8), conn_id);
     std::lock_guard lock(sessions_mutex_);
     auto it = sessions_.find(sid);
     if (it == sessions_.end()) return;
-    it->second.conns.erase(conn_id);
-    if (it->second.conns.empty())
-        sessions_.erase(it);
+    // 按队列值删除：正常键 + 重连别名键（旧 conn_id → 同一 queue）一并清理
+    auto& conns = it->second.conns;
+    for (auto cit = conns.begin(); cit != conns.end();) {
+        if (cit->second == queue) cit = conns.erase(cit);
+        else ++cit;
+    }
+    if (conns.empty()) sessions_.erase(it);
 }
 
 // =============================================================================
@@ -408,6 +413,24 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
         sessions_[sid].conns[conn_id] = queue;
     }
 
+    // 断线重连身份迁移：客户端重连时带 ?reconnect=<旧 conn_id>，
+    // 把该会话上仍在执行的任务的投递目标（旧 conn_id）指向本新连接，
+    // 任务输出继续送达，而不是丢失或广播给同会话所有连接。
+    if (auto old_conn = req.get_param_value("reconnect");
+        !old_conn.empty() && old_conn != conn_id) {
+        std::lock_guard lock(sessions_mutex_);
+        for (auto sit = sessions_.begin(); sit != sessions_.end(); ++sit) {
+            auto oit = sit->second.conns.find(old_conn);
+            if (oit != sit->second.conns.end()) {
+                sit->second.conns.erase(oit);
+                break;
+            }
+        }
+        sessions_[sid].conns[old_conn] = queue;
+        LOG_INFO("WS reconnect {} -> {} session {}",
+                 old_conn.substr(0, 8), conn_id.substr(0, 8), sid.substr(0, 8));
+    }
+
     // 首帧：告知客户端其 conn_id
     queue->push(acp::connected_frame(conn_id));
 
@@ -545,7 +568,7 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
 
     queue->close();
     if (sender.joinable()) sender.join();
-    cleanup_connection(sid, conn_id);
+    cleanup_connection(sid, conn_id, queue);
 }
 
 // =============================================================================
@@ -630,8 +653,9 @@ void CodisServer::run_acp_task(const std::string& session_id,
             if (qit != it->second.conns.end()) {
                 qit->second->push(frame);
             } else {
-                // 帧发不出去：目标 conn 不存在（已断连/换了端口/请求被其它实例接收）
-                // 打日志以便诊断"服务端有消息但客户端收不到"
+                // 目标 conn 不存在（未带 reconnect 重连/换端口/请求被其它实例接收）：
+                // 打日志以便诊断"服务端有消息但客户端收不到"。
+                // 正常重连场景由 handle_acp_ws 的别名迁移接管（见 WS reconnect）
                 LOG_WARN("broadcast drop: conn {} not in session {} ({} conns attached)",
                          conn_id, session_id.substr(0, 8), it->second.conns.size());
             }
@@ -1259,20 +1283,62 @@ int64_t est_tokens(const std::vector<Message>& msgs) {
     return n;
 }
 
+// 压缩模板来自 ~/crush/internal/agent/templates/summary.md（保持结构一致）
 constexpr const char* kCompactPrompt =
-    "你是上下文压缩器。用户把一段 AI 编程助手的历史对话发给你，"
-    "请把它压缩成一段结构化摘要，供后续对话继续使用。\n"
-    "必须保留：\n"
-    "- 用户的任务目标（原始诉求）\n"
-    "- 已做出的决定与结论\n"
-    "- 关键事实：文件路径、配置项、命令、环境约束\n"
-    "- 当前进度（已完成/进行中）\n"
-    "- 未完成事项与下一步计划\n"
-    "可以丢弃：\n"
-    "- 工具执行的原始输出、报错细节、试探性中间步骤\n"
-    "- 寒暄与无关闲谈\n"
-    "格式：简短段落概述 + 要点列表。语言与用户一致（中文）。"
-    "只输出摘要本身，不要任何前言或解释。";
+    "You are summarizing a conversation to preserve context for continuing work later.\n"
+    "\n"
+    "**Critical**: This summary will be the ONLY context available when the conversation "
+    "resumes. Assume all previous messages will be lost. Be thorough.\n"
+    "\n"
+    "**Required sections**:\n"
+    "\n"
+    "## Current State\n"
+    "\n"
+    "- What task is being worked on (exact user request)\n"
+    "- Current progress and what's been completed\n"
+    "- What's being worked on right now (incomplete work)\n"
+    "- What remains to be done (specific next steps, not vague)\n"
+    "\n"
+    "## Files & Changes\n"
+    "\n"
+    "- Files that were modified (with brief description of changes)\n"
+    "- Files that were read/analyzed (why they're relevant)\n"
+    "- Key files not yet touched but will need changes\n"
+    "- File paths and line numbers for important code locations\n"
+    "\n"
+    "## Technical Context\n"
+    "\n"
+    "- Architecture decisions made and why\n"
+    "- Patterns being followed (with examples)\n"
+    "- Libraries/frameworks being used\n"
+    "- Commands that worked (exact commands with context)\n"
+    "- Commands that failed (what was tried and why it didn't work)\n"
+    "- Environment details (language versions, dependencies, etc.)\n"
+    "\n"
+    "## Strategy & Approach\n"
+    "\n"
+    "- Overall approach being taken\n"
+    "- Why this approach was chosen over alternatives\n"
+    "- Key insights or gotchas discovered\n"
+    "- Assumptions made\n"
+    "- Any blockers or risks identified\n"
+    "\n"
+    "## Exact Next Steps\n"
+    "\n"
+    "Be specific. Don't write \"implement authentication\" - write:\n"
+    "\n"
+    "1. Add JWT middleware to src/middleware/auth.js:15\n"
+    "2. Update login handler in src/routes/user.js:45 to return token\n"
+    "3. Test with: npm test -- auth.test.js\n"
+    "\n"
+    "**Tone**: Write as if briefing a teammate taking over mid-task. Include everything "
+    "they'd need to continue without asking questions. No emojis ever.\n"
+    "\n"
+    "**Length**: No limit. Err on the side of too much detail rather than too little. "
+    "Critical context is worth the tokens.\n"
+    "\n"
+    "Write the summary in the same language the user used. "
+    "Output only the summary itself, no preamble or explanation.";
 
 } // namespace
 

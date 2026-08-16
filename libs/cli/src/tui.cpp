@@ -1247,6 +1247,10 @@ AcpClient::Callbacks TuiClient::build_callbacks() {
             ev.kind = AcpEvent::Kind::ContextStats;
             ev.context = cs;
             state_->push_event(ev);
+        },
+        .on_connection = [this](bool /*online*/) {
+            // 断线/重连：通知 UI 重绘，状态栏读取 acp_.connected() 反映最新状态
+            state_->notify_();
         }
     };
 }

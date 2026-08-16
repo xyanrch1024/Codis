@@ -116,7 +116,8 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
 
             auto ws = std::make_unique<httplib::ws::WebSocketClient>(
                 "ws://" + host_ + ":" + std::to_string(port_) +
-                "/api/v1/acp/ws/" + session_id);
+                "/api/v1/acp/ws/" + session_id +
+                (conn_id_.empty() ? "" : "?reconnect=" + conn_id_));
             ws->set_connection_timeout(5, 0);
             // read_timeout 不设 — keepalive WS 永不超时（心跳由 httplib 处理）
 
@@ -124,6 +125,8 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                 retry_count++;
                 LOG_WARN("WS connect failed ({}/{}), reconnecting in {}s...",
                          retry_count, 10, retry_delay);
+                if (ws_online_.exchange(false) && callbacks_.on_connection)
+                    callbacks_.on_connection(false);
                 if (callbacks_.on_error)
                     callbacks_.on_error("Connection lost, reconnecting...");
                 std::this_thread::sleep_for(std::chrono::seconds(retry_delay));
@@ -135,6 +138,10 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                 std::lock_guard lock(ws_mutex_);
                 ws_ = std::move(ws);
             }
+
+            // 重连成功：状态置在线并通知 UI（首次连接也触发，覆盖初始渲染）
+            if (!ws_online_.exchange(true) && callbacks_.on_connection)
+                callbacks_.on_connection(true);
 
             LOG_DEBUG("WS connected, session={}", session_id.substr(0, 8));
 
@@ -240,6 +247,10 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                 std::lock_guard lock(ws_mutex_);
                 ws_.reset();
             }
+
+            // 断线：状态置离线并通知 UI（状态栏转为 Disconnected）
+            if (ws_online_.exchange(false) && callbacks_.on_connection)
+                callbacks_.on_connection(false);
 
             if (!connected_) break;
 

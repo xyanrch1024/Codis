@@ -92,9 +92,9 @@ transport = "http"
 url = "http://127.0.0.1:8767/mcp"
 timeout_seconds = 5
 
-[[mcp.servers]]
-name = "github"
-transport = "http"
-url = "https://api.githubcopilot.com/mcp/"
-api_key_env = "GITHUB_PAT"
-timeout_seconds = 15
+# [[mcp.servers]]
+# name = "github"
+# transport = "http"
+# url = "https://api.githubcopilot.com/mcp/"
+# api_key_env = "GITHUB_PAT"
+# timeout_seconds = 15

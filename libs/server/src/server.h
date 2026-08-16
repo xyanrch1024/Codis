@@ -141,7 +141,8 @@ private:
                                const std::shared_ptr<std::atomic<bool>>& cancel_flag);
     // 上下文压缩：头部历史 LLM 摘要 + 保留尾部窗口，写回 session_store
     void run_compact(const std::string& session_id, int keep);
-    void cleanup_connection(const std::string& session_id, const std::string& conn_id);
+    void cleanup_connection(const std::string& session_id, const std::string& conn_id,
+                            const std::shared_ptr<FrameQueue>& queue);
     std::string generate_conn_id();
 
     void init_context_sources();

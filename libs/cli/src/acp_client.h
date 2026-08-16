@@ -47,6 +47,8 @@ public:
     using DoneCallback      = std::function<void()>;
     using CompactedCallback = std::function<void(const acp::CompactResultEvent&)>;
     using ContextStatsCallback = std::function<void(const acp::ContextStatsEvent&)>;
+    // 连接状态变化（true=WS 在线，false=断线/重连中），供 UI 刷新状态栏
+    using ConnectionCallback = std::function<void(bool online)>;
 
     struct Callbacks {
         AssistantCallback   on_assistant;
@@ -58,6 +60,7 @@ public:
         DoneCallback        on_done;
         CompactedCallback   on_compacted;
         ContextStatsCallback on_context_stats;
+        ConnectionCallback  on_connection;
     };
 
     AcpClient(int server_port = 8711);
@@ -90,7 +93,7 @@ public:
     std::optional<ServerInfo> get_server_info();
 
     // WebSocket 长连接是否已建立
-    bool connected() const { return connected_.load(); }
+    bool connected() const { return ws_online_.load(); }
 
 private:
     // WS 就绪前/断线期间的待发请求，connect 成功后 flush
@@ -101,6 +104,7 @@ private:
     std::unique_ptr<httplib::Client> http_;
     std::thread sse_thread_;
     std::atomic<bool> connected_{false};
+    std::atomic<bool> ws_online_{false};   // WS 实际在线状态（断线置 false，重连成功置 true）
     std::atomic<bool> thread_done_{true};
     std::mutex ws_mutex_;
     std::unique_ptr<httplib::ws::WebSocketClient> ws_;
