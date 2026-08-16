@@ -40,6 +40,9 @@ public:
     using ReasoningCallback = std::function<void(std::string_view delta)>;
     using ToolCallCallback  = std::function<void(const acp::ToolCallEvent&)>;
     using ToolResultCallback= std::function<void(const acp::ToolResultEvent&)>;
+    using ToolConfirmCallback = std::function<void(const std::string& confirm_id,
+                                                   const acp::ToolCallEvent& call,
+                                                   int timeout_seconds)>;
     using ErrorCallback     = std::function<void(std::string_view message)>;
     using DoneCallback      = std::function<void()>;
 
@@ -48,6 +51,7 @@ public:
         ReasoningCallback   on_reasoning;
         ToolCallCallback    on_tool_call;
         ToolResultCallback  on_tool_result;
+        ToolConfirmCallback on_tool_confirm;
         ErrorCallback       on_error;
         DoneCallback        on_done;
     };
@@ -56,6 +60,9 @@ public:
 
     // fire-and-forget: 通过 WS 全双工发送消息，不等待回复
     bool send_async(const ChatRequest& request);
+
+    // 工具确认回执：approved=true 批准，false 拒绝（WS 未就绪时入待发队列）
+    void send_confirmation(const std::string& confirm_id, bool approved);
 
     // 长连接模式：打开 WebSocket 流，后台持续回调
     bool connect(const std::string& session_id, Callbacks callbacks);

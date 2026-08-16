@@ -29,6 +29,10 @@ static constexpr int kMaxSessionRows = 12;
 // 输入框的最大可见行数（超出后内部滚动，避免多行消息挤掉对话区）
 static constexpr int kMaxInputRows = 6;
 
+// 工具确认对话框（Ask 权限）：卡片宽度上限 / 参数区行数上限
+static constexpr int kConfirmW = 72;
+static constexpr int kConfirmArgLines = 9;
+
 // Alt/Ctrl/Shift+Enter 换行（不同终端编码：xterm ESC+CR/LF、kitty/WezTerm 等 CSI-u）
 static bool is_newline_key(const Event& ev) {
     const auto& s = ev.input();
@@ -51,14 +55,16 @@ static const std::vector<std::pair<std::string, std::string>> kCommands = {
     {"/balance", "Check balance"},
     {"/model", "Switch model"},
     {"/clearsessions", "Delete all sessions"},
+    {"/yolo", "YOLO mode: auto-approve all tools"},
 };
 
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
-                     std::string session_arg)
+                     std::string session_arg, bool auto_approve)
     : server_port_(server_port)
     , model_(std::move(model))
     , provider_(std::move(provider))
     , session_arg_(std::move(session_arg))
+    , auto_approve_(auto_approve)
     , acp_(server_port)
     , state_(std::make_shared<TuiState>())
 {
@@ -302,10 +308,24 @@ int TuiClient::run() {
                                  std::move(r.sig), oi);
                     break;
                 }
-                case ItemKind::Reasoning:
-                    for (auto& r : wrap_rows("· " + item.text, tw - 2, Color::GrayDark))
-                        card_row(Color::GrayDark, std::move(r.el) | dim, std::move(r.sig), oi);
+                case ItemKind::Reasoning: {
+                    // 独立思维链块：标签行 + 灰斜体内容，不用与消息同款的 "┃" 竖线卡片
+                    std::string rt = item.text;
+                    // 剥掉模型自带的 "thinking" 首行标记（GLM 思考模式 reasoning_content 以之开头）
+                    bool mark = (rt.rfind("thinking", 0) == 0 || rt.rfind("Thinking", 0) == 0) &&
+                                (rt.size() == 8 || std::isspace((unsigned char)rt[8]));
+                    if (mark) {
+                        size_t j = 8;
+                        while (j < rt.size() && std::isspace((unsigned char)rt[j])) j++;
+                        rt = rt.substr(std::min(j, rt.size()));
+                    }
+                    push_row(hbox({text(" 💭 thinking ") | italic | color(Color::GrayDark),
+                                   flex(text(""))}), "💭 thinking", oi);
+                    for (auto& r : wrap_rows(rt, tw - 3, Color::GrayDark))
+                        push_row(hbox({text("   "), std::move(r.el) | italic}) | card_bg,
+                                 std::move(r.sig), oi);
                     break;
+                }
                 case ItemKind::ToolCall:
                     for (auto& r : render_tool_call(item, tw)) push_row(std::move(r.el),
                                                                         std::move(r.sig), oi);
@@ -409,6 +429,15 @@ int TuiClient::run() {
         LOG_DEBUG("fold toggle owner={} folded={} row={}", owner, it.folded, content_row);
     };
 
+    // 工具确认（Ask 权限）：发送回执并关闭模态对话框
+    auto respond_confirm = [&](bool approve) {
+        auto& pc = *state_->pending_confirm;
+        acp_.send_confirmation(pc.confirm_id, approve);
+        show_notice(approve ? "[Tool approved]" : "[Tool rejected]");
+        state_->pending_confirm.reset();
+        post_job_();
+    };
+
     auto main_container = Container::Vertical({conversation_view, input_bar});
 
     // 工作目录（进程 cwd，渲染期间不变；长路径截断避免撑破布局）
@@ -435,6 +464,7 @@ int TuiClient::run() {
                 (acp_.connected() ? color(Color::Green) : color(Color::Red)),
             text("  │  " + model_) | dim,
             text("  │  context " + state_->context_size_str()) | dim,
+            yolo_mode_ ? text("  │  ⚡YOLO ") | color(Color::Yellow) | bold : text(""),
             flex(text("")),
             text("  " + state_->current_session.substr(0, 8)) | dim | inverted,
         }) | bgcolor(Color(Color::Palette256::Grey7)));
@@ -469,6 +499,92 @@ int TuiClient::run() {
         };
 
         auto body = vbox(std::move(header));
+
+        // Confirm overlay — Ask 权限工具执行确认（优先级最高：压过 help/sessions）
+        if (state_->pending_confirm) {
+            auto& pc = *state_->pending_confirm;
+            std::string tool = pc.call.name;
+            const auto& args = pc.call.arguments;
+
+            int tw = Terminal::Size().dimx;
+            int cw = std::min(kConfirmW, std::max(40, tw - 8));  // 对话框宽
+            int text_w = cw - 4;  // 参数行截断宽
+
+            Elements arg_lines;
+            auto push_line = [&](std::string s, Color c, bool b = false) {
+                if ((int)s.size() > text_w) s = s.substr(0, text_w - 1) + "…";
+                auto el = text(std::move(s)) | color(c);
+                if (b) el = el | bold;
+                arg_lines.push_back(std::move(el));
+            };
+            auto push_block = [&](const std::string& label, const std::string& s,
+                                  int max_lines, Color c) {
+                if (s.empty()) { push_line(label + " (empty)", c); return; }
+                std::istringstream iss(s);
+                std::string l;
+                int i = 0;
+                bool truncated = false;
+                for (; std::getline(iss, l); ++i) {
+                    if (i >= max_lines) { truncated = true; break; }
+                    push_line((i == 0 ? label : "") + (i == 0
+                        ? "" : std::string(std::min(text_w, (int)label.size()), ' ')) + l, c);
+                }
+                if (truncated) push_line(("… +" + std::to_string(i) + " more lines"), Color::GrayDark);
+            };
+
+            // 按工具类型渲染参数区
+            if (tool == "bash") {
+                std::string cmd = args.value("command", "");
+                if (cmd.empty()) push_line("$ (empty command)", Color::GrayDark);
+                else push_line("$ " + cmd, Color::Cyan, true);
+            } else if (tool == "write") {
+                push_line("path: " + args.value("filePath", ""), Color::Yellow);
+                push_block("content: ", args.value("content", ""), kConfirmArgLines - 1, Color::Green);
+            } else if (tool == "edit") {
+                push_line("path: " + args.value("filePath", ""), Color::Yellow);
+                push_block("old: ", args.value("oldString", ""), 4, Color::Red);
+                push_block("new: ", args.value("newString", ""), 4, Color::Green);
+            } else {
+                std::string dump = args.dump();
+                if ((int)dump.size() > text_w * (kConfirmArgLines + 1)) dump.resize(text_w * (kConfirmArgLines + 1));
+                push_block("args: ", dump, kConfirmArgLines, Color::White);
+            }
+
+            int n_args = (int)arg_lines.size();
+            confirm_overlay_h_ = n_args + 8;  // 内容 n_args+6 + 边框 2
+
+            // 倒计时
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - pc.received_at).count();
+            int remain = (int)(pc.timeout_seconds - elapsed);
+            if (remain < 0) remain = 0;
+
+            auto approve_el = text(confirm_focus_ ? " [ ✓ 批准 (y) ] " : " [ 批准 ] ");
+            approve_el = confirm_focus_ ? (approve_el | inverted) | bold : (approve_el | dim);
+            auto reject_el = text(!confirm_focus_ ? " [ ✗ 拒绝 (n) ] " : " [ 拒绝 ] ");
+            reject_el = !confirm_focus_ ? (reject_el | inverted) | bold : (reject_el | dim);
+
+            bool danger = tool == "bash";
+            auto overlay = window(
+                text(danger ? " ⚠ 执行确认 — bash " : " ⚠ 工具执行确认 ") | bold |
+                    color(danger ? Color::Red : Color::Yellow),
+                vbox({
+                    hbox({ text(" 工具 "), text(tool) | bold |
+                               color(danger ? Color::Red : Color::Yellow),
+                           flex(text("")) }),
+                    separator(),
+                    vbox(std::move(arg_lines)) | frame,
+                    separator(),
+                    text(" ⏳ " + std::to_string(remain) +
+                         (remain <= 10 ? "s 即将超时，未确认将自动拒绝 " : "s 内未确认将自动拒绝 ")) |
+                        (remain <= 10 ? color(Color::Red) : dim),
+                    hbox({ flex(text("")), approve_el, text("   "), reject_el,
+                           flex(text("")) }),
+                    text(" Tab/←→ 切换 · y/Enter 批准 · n/Esc 拒绝 ") | dim | center,
+                }) | size(WIDTH, LESS_THAN, cw) | size(HEIGHT, LESS_THAN, n_args + 6))
+                | clear_under | center | border;
+            return dbox({body, overlay});
+        }
 
         // Help overlay
         if (help_visible_) {
@@ -527,6 +643,46 @@ int TuiClient::run() {
         if (raw == "\x1b[201~") {
             in_paste_ = false;
             return true;
+        }
+
+        // 工具确认模态（Ask 权限）：锁定界面，仅接受确认相关输入
+        if (state_->pending_confirm) {
+            if (event == Event::Tab || event == Event::TabReverse ||
+                event == Event::ArrowLeft || event == Event::ArrowRight) {
+                confirm_focus_ = !confirm_focus_;
+                post_job_();
+                return true;
+            }
+            if (event == Event::Character('y') || event == Event::Character('Y')) {
+                respond_confirm(true);
+                return true;
+            }
+            if (event == Event::Character('n') || event == Event::Character('N') ||
+                event == Event::Escape) {
+                respond_confirm(false);
+                return true;
+            }
+            if (event == Event::Return) {
+                respond_confirm(confirm_focus_);  // Enter 激活焦点按钮（默认焦点=拒绝，安全默认）
+                return true;
+            }
+            if (event.is_mouse()) {
+                // 左键释放且命中按钮行：批准(左半) / 拒绝(右半)；其余鼠标输入模态吞掉
+                if (event.mouse().button == Mouse::Left &&
+                    event.mouse().motion == Mouse::Released &&
+                    confirm_overlay_h_ > 0) {
+                    int cw = std::min(kConfirmW, std::max(40, Terminal::Size().dimx - 8));
+                    int cx = (Terminal::Size().dimx - (cw + 2)) / 2;
+                    int top = (Terminal::Size().dimy - confirm_overlay_h_) / 2;
+                    int btn_y = top + confirm_overlay_h_ - 3;  // 内容倒数第 2 行（按钮行）
+                    if (event.mouse().y == btn_y &&
+                        event.mouse().x >= cx && event.mouse().x < cx + cw + 2) {
+                        respond_confirm(event.mouse().x < cx + (cw + 2) / 2);
+                    }
+                }
+                return true;
+            }
+            return true;  // 其它按键一律吞掉，不落入输入框
         }
 
         // 左键按下/拖动/松开：高亮交给 FTXUI 内置选择处理，这里只跟踪拖拽状态；
@@ -741,7 +897,10 @@ int TuiClient::run() {
     std::thread notice_timer([&] {
         while (!timer_stop.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            if (notice_pending_.load() || state_->processing) screen.Post(Event::Custom);
+            // 确认框打开时持续重绘：倒计时每秒跳动 + 超时临界变色
+            if (notice_pending_.load() || state_->processing ||
+                state_->pending_confirm.has_value())
+                screen.Post(Event::Custom);
         }
     });
 
@@ -809,6 +968,17 @@ void TuiClient::send_message(const std::string& text) {
     }
     if (text.starts_with("/model")) {
         cmd_model(text);
+        return;
+    }
+    if (text.starts_with("/yolo")) {
+        // YOLO 模式热切换：所有 Ask 工具自动批准，不再弹确认
+        std::string arg;
+        if (text.size() > 5) arg = text.substr(5);
+        for (char& c : arg) c = (char)std::tolower(c);
+        if (arg == " on")       yolo_mode_ = true;
+        else if (arg == " off") yolo_mode_ = false;
+        else                    yolo_mode_ = !yolo_mode_;
+        show_notice(yolo_mode_ ? "[YOLO mode ON — Ask 工具自动批准]" : "[YOLO mode OFF]");
         return;
     }
 
@@ -997,6 +1167,21 @@ AcpClient::Callbacks TuiClient::build_callbacks() {
             AcpEvent ev;
             ev.kind = AcpEvent::Kind::ToolResult;
             ev.tool_result = tr;
+            state_->push_event(ev);
+        },
+        .on_tool_confirm = [this](const std::string& confirm_id, const acp::ToolCallEvent& tc,
+                              int timeout_seconds) {
+            if (auto_approve_ || yolo_mode_) {
+                // -y 或 /yolo 模式：静默批准，不打扰交互
+                acp_.send_confirmation(confirm_id, true);
+                LOG_INFO("auto-approved tool '{}' ({})", tc.name, confirm_id);
+                return;
+            }
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::ToolConfirm;
+            ev.confirm_id = confirm_id;
+            ev.tool_call = tc;
+            ev.timeout_seconds = timeout_seconds;
             state_->push_event(ev);
         },
         .on_error = [this](std::string_view msg) {

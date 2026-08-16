@@ -74,9 +74,11 @@ int main(int argc, char** argv) {
     std::string session_arg;
     bool clear_sessions = false;
     bool cont_session = false;
+    bool auto_approve = false;
 
     app.add_flag("--clear-sessions",   clear_sessions, "Delete all sessions");
     app.add_flag("-c,--continue",      cont_session,   "Continue last session");
+    app.add_flag("-y,--yes",           auto_approve,   "Auto-approve tool confirmations");
     app.add_option("-p,--port",        server_port,   "Server port (default: 8711)");
     app.add_option("--server-bin",     server_bin,    "Server binary path");
     app.add_option("-m,--model",       model,         "Model name");
@@ -143,6 +145,6 @@ int main(int argc, char** argv) {
     // TUI 是唯一交互界面：默认启动，可选续接上次会话
     if (session_arg.empty() && cont_session)
         session_arg = acp.get_last_session();
-    TuiClient tui(server_port, model, provider, session_arg);
+    TuiClient tui(server_port, model, provider, session_arg, auto_approve);
     return tui.run();
 }

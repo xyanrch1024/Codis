@@ -46,6 +46,24 @@ bool AcpClient::send_async(const ChatRequest& request) {
     return true;
 }
 
+void AcpClient::send_confirmation(const std::string& confirm_id, bool approved) {
+    std::string frame = acp::confirm_ack_frame(confirm_id, approved);
+    {
+        std::lock_guard lock(ws_mutex_);
+        if (ws_ && ws_->is_open()) {
+            ws_->send(frame);
+            LOG_DEBUG("confirm_ack sent confirm_id={} approved={}", confirm_id, approved);
+            return;
+        }
+    }
+    // WS 未就绪：入队等重连后补发
+    LOG_INFO("confirm_ack queued (WS not ready) confirm_id={} approved={}", confirm_id, approved);
+    {
+        std::lock_guard lock(pending_mutex_);
+        pending_outbound_.push_back(std::move(frame));
+    }
+}
+
 // =============================================================================
 // 长连接模式 — 后台 WebSocket 线程, 实时接收广播
 // =============================================================================
@@ -161,6 +179,21 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                     if (callbacks_.on_tool_result) callbacks_.on_tool_result({
                         event->data.value("id",""), event->data.value("success",false),
                         event->data.value("content","")});
+                    break;
+                case acp::EventType::tool_confirm: {
+                    if (callbacks_.on_tool_confirm) {
+                        auto& call_json = event->data["call"];
+                        callbacks_.on_tool_confirm(
+                            event->data.value("confirm_id", ""),
+                            {call_json.value("id", ""), call_json.value("name", ""),
+                             call_json.value("arguments", acp::json::object())},
+                            event->data.value("timeout_seconds", 120));
+                    }
+                    break;
+                }
+                case acp::EventType::confirm_ack:
+                    // 上行专用帧，客户端不会收到
+                    LOG_WARN("WS received uplink-only frame: confirm_ack");
                     break;
                 case acp::EventType::error:
                     if (callbacks_.on_error) callbacks_.on_error(event->data.value("message",""));

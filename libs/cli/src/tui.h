@@ -72,11 +72,13 @@ inline bool tool_auto_fold(const ConvItem& item) {
 // =============================================================================
 
 struct AcpEvent {
-    enum class Kind { AssistantDelta, ReasoningDelta, ToolCall, ToolResult, Error, Done };
+    enum class Kind { AssistantDelta, ReasoningDelta, ToolCall, ToolResult, ToolConfirm, Error, Done };
     Kind kind;
     std::string text;                         // delta / error message
     acp::ToolCallEvent tool_call;             // Kind == ToolCall
     acp::ToolResultEvent tool_result;         // Kind == ToolResult
+    std::string confirm_id;                   // Kind == ToolConfirm
+    int timeout_seconds = 120;                // Kind == ToolConfirm
 };
 
 inline const char* acp_event_kind_str(AcpEvent::Kind k) {
@@ -85,6 +87,7 @@ inline const char* acp_event_kind_str(AcpEvent::Kind k) {
         case AcpEvent::Kind::ReasoningDelta: return "ReasoningDelta";
         case AcpEvent::Kind::ToolCall:       return "ToolCall";
         case AcpEvent::Kind::ToolResult:     return "ToolResult";
+        case AcpEvent::Kind::ToolConfirm:    return "ToolConfirm";
         case AcpEvent::Kind::Error:          return "Error";
         case AcpEvent::Kind::Done:           return "Done";
     }
@@ -147,6 +150,15 @@ struct TuiState {
 
     std::mutex mutex;                // 仅保护 queue_
 
+    // ---- 工具确认（Ask 权限）：服务端挂起等待本端回执 ----
+    struct ConfirmPrompt {
+        std::string confirm_id;
+        acp::ToolCallEvent call;
+        int timeout_seconds = 120;
+        std::chrono::steady_clock::time_point received_at;
+    };
+    std::optional<ConfirmPrompt> pending_confirm;
+
     // 由 TuiClient::run() 设置，指向 screen.Post（线程安全）
     std::function<void()> notify_;
 
@@ -169,6 +181,7 @@ struct TuiState {
         processing = false;
         pending_streaming_ = false;
         pending_queue.clear();
+        pending_confirm.reset();
         if (notify_) notify_();
     }
 
@@ -239,6 +252,11 @@ private:
             items.push_back(std::move(item));
             break;
         }
+        case AcpEvent::Kind::ToolConfirm:
+            pending_confirm = ConfirmPrompt{ev.confirm_id, ev.tool_call,
+                                            ev.timeout_seconds,
+                                            std::chrono::steady_clock::now()};
+            break;
         case AcpEvent::Kind::ToolResult: {
             // 按 id 合并进匹配的 ToolCall；未匹配则保底为独立条目
             bool matched = false;
@@ -262,12 +280,14 @@ private:
         }
         case AcpEvent::Kind::Error:
             finalize_streaming();
+            pending_confirm.reset();
             items.push_back({ItemKind::Error, ev.text});
             processing = false;
             if (on_idle_) on_idle_();
             break;
         case AcpEvent::Kind::Done: {
             finalize_streaming();
+            pending_confirm.reset();
             if (request_start_.time_since_epoch().count() > 0) {
                 auto dur = std::chrono::steady_clock::now() - request_start_;
                 auto secs = std::chrono::duration<double>(dur).count();
@@ -294,7 +314,7 @@ private:
 class TuiClient {
 public:
     TuiClient(int server_port, std::string model, std::string provider,
-              std::string session_arg);
+              std::string session_arg, bool auto_approve = false);
     int run();
 
 private:
@@ -310,6 +330,10 @@ private:
     std::string model_;
     std::string provider_;
     std::string session_arg_;
+    bool auto_approve_ = false;
+    bool yolo_mode_ = false;  // /yolo：所有 Ask 工具自动批准（deny 仍由服务端拦截）
+    bool confirm_focus_ = false;  // 确认对话框按钮焦点：false=拒绝（安全默认），true=批准
+    int confirm_overlay_h_ = 0;          // 最近一次渲染的确认框总高（鼠标命中几何用）
     AcpClient acp_;
     std::shared_ptr<TuiState> state_;
     std::function<void()> post_job_;
