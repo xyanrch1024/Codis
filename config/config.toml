@@ -33,3 +33,14 @@ api_key_env = "GLM_API_KEY"
 app_id = ""
 app_secret = ""
 enabled = false
+
+# 工具权限策略（可选，默认按工具内置声明）
+#   allow = 免确认直接执行
+#   ask   = 执行前在客户端弹确认（TUI 按 y/n；-y 自动批准）
+#   deny  = 永远拒绝
+# confirm_timeout = Ask 工具等待确认的秒数，超时视为拒绝
+[permissions]
+allow = ["read", "glob", "grep", "bash"]
+ask = ["write", "edit"]
+# deny = []
+confirm_timeout = 120

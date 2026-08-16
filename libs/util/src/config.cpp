@@ -34,6 +34,20 @@ AppConfig AppConfig::load(const std::filesystem::path& path) {
         cfg.default_provider = tbl["default_provider"].value<std::string>().value_or("");
         cfg.timeout_seconds  = tbl["timeout_seconds"].value<int>().value_or(60);
 
+        if (auto perm = tbl["permissions"].as_table()) {
+            if (auto a = (*perm)["allow"].as_array())
+                for (auto& v : *a)
+                    if (auto s = v.value<std::string>()) cfg.permissions.allow.push_back(*s);
+            if (auto a = (*perm)["ask"].as_array())
+                for (auto& v : *a)
+                    if (auto s = v.value<std::string>()) cfg.permissions.ask.push_back(*s);
+            if (auto a = (*perm)["deny"].as_array())
+                for (auto& v : *a)
+                    if (auto s = v.value<std::string>()) cfg.permissions.deny.push_back(*s);
+            cfg.permissions.confirm_timeout_seconds =
+                (*perm)["confirm_timeout"].value<int>().value_or(120);
+        }
+
     } catch (const toml::parse_error& e) {
         std::cerr << "Config parse error: " << e.what() << "\n";
     }

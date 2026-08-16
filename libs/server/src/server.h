@@ -66,6 +66,15 @@ private:
 // Session State — 每个 session 的 connections + processing 状态
 // =============================================================================
 
+// Ask 权限工具的挂起确认：服务端等待任意连接的 confirm_ack 回执
+struct PendingConfirm {
+    ToolCall call;
+    bool approved = false;
+    bool answered = false;
+    std::mutex mutex;
+    std::condition_variable cv;
+};
+
 struct SessionState {
     std::unordered_map<std::string, std::shared_ptr<FrameQueue>> conns;
     std::mutex mutex;
@@ -74,6 +83,8 @@ struct SessionState {
     // 清除后仍能安全读写该标志
     std::shared_ptr<std::atomic<bool>> cancel_requested{std::make_shared<std::atomic<bool>>(false)};
     std::deque<ChatRequest> pending;  // 处理期间到达的请求，当前轮结束后按序补跑
+    // confirm_id → 挂起的工具确认（等待 ack 帧唤醒）
+    std::unordered_map<std::string, std::shared_ptr<PendingConfirm>> pending_confirms;
 };
 
 // =============================================================================
@@ -121,6 +132,12 @@ private:
                                  const std::string& conn_id, ChatRequest req);
     void run_acp_task(const std::string& session_id,
                       const std::string& conn_id, ChatRequest req);
+    // Ask 权限工具：广播 tool_confirm 帧并挂起，等待 confirm_ack 回执。
+    // 返回 true=批准执行；false=拒绝/超时/任务被取消。
+    bool wait_for_confirmation(const std::string& session_id,
+                               const ToolCall& call,
+                               const std::function<void(const std::string&)>& broadcast,
+                               const std::shared_ptr<std::atomic<bool>>& cancel_flag);
     void cleanup_connection(const std::string& session_id, const std::string& conn_id);
     std::string generate_conn_id();
 

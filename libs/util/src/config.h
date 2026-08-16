@@ -34,11 +34,20 @@ struct LLMConfig {
     std::optional<int> max_tokens;
 };
 
+// 工具权限策略：按工具名列表配置，覆盖工具的默认权限声明
+struct PermissionConfig {
+    std::vector<std::string> allow;   // 免确认直接执行
+    std::vector<std::string> ask;     // 执行前征询用户确认
+    std::vector<std::string> deny;    // 永远拒绝
+    int confirm_timeout_seconds = 120; // Ask 工具等待用户确认的超时，超时视为拒绝
+};
+
 struct AppConfig {
     std::vector<ProviderConfig> providers;
     LLMConfig llm;
     std::string default_provider;
     int timeout_seconds = 60;
+    PermissionConfig permissions;
 
     static AppConfig load(const std::filesystem::path& path);
     static AppConfig default_config();

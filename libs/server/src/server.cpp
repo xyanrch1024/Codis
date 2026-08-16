@@ -130,6 +130,14 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
     tool_registry_.register_tool(std::make_unique<tools::GlobTool>());
     tool_registry_.register_tool(std::make_unique<tools::GrepTool>());
 
+    // [permissions] 策略覆盖工具默认权限（deny > allow > ask，均覆盖默认）
+    for (auto& name : config_.permissions.allow)
+        tool_registry_.set_permission(name, Permission::Allow);
+    for (auto& name : config_.permissions.ask)
+        tool_registry_.set_permission(name, Permission::Ask);
+    for (auto& name : config_.permissions.deny)
+        tool_registry_.set_permission(name, Permission::Denied);
+
     // 加载插件
     plugin_loader_.set_tool_registrar(
         [this](const std::string& name, const std::string& desc,
@@ -389,12 +397,41 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
         }
         if (event->type != acp::EventType::request &&
             event->type != acp::EventType::switch_session &&
-            event->type != acp::EventType::cancel) {
+            event->type != acp::EventType::cancel &&
+            event->type != acp::EventType::confirm_ack) {
             LOG_WARN("WS unexpected frame type: {}", acp::to_string(event->type));
             ws.send(acp::error_frame("unsupported frame type"));
             continue;
         }
         try {
+            if (event->type == acp::EventType::confirm_ack) {
+                // 工具确认回执：唤醒等待该 confirm_id 的挂起确认
+                std::string confirm_id = event->data.value("confirm_id", "");
+                bool approved = event->data.value("approved", false);
+                std::shared_ptr<PendingConfirm> slot;
+                {
+                    std::lock_guard lock(sessions_mutex_);
+                    for (auto& [sid, st] : sessions_) {
+                        auto it = st.pending_confirms.find(confirm_id);
+                        if (it != st.pending_confirms.end()) {
+                            slot = it->second;
+                            break;
+                        }
+                    }
+                }
+                if (slot) {
+                    {
+                        std::lock_guard lk(slot->mutex);
+                        slot->approved = approved;
+                        slot->answered = true;
+                    }
+                    slot->cv.notify_one();
+                    LOG_INFO("confirm_ack {} approved={}", confirm_id, approved);
+                } else {
+                    LOG_WARN("confirm_ack for unknown confirm_id: {}", confirm_id);
+                }
+                continue;
+            }
             if (event->type == acp::EventType::switch_session) {
                 std::string target_sid = event->data.value("session_id", "");
                 if (target_sid.empty()) {
@@ -422,6 +459,14 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
                     if (it != sessions_.end()) {
                         it->second.cancel_requested->store(true);
                         it->second.pending.clear();  // 取消后排队消息一并清空
+                        // 挂起的权限确认立即终止（视为拒绝），唤醒等待线程
+                        for (auto& [_, slot] : it->second.pending_confirms) {
+                            std::lock_guard lk(slot->mutex);
+                            slot->approved = false;
+                            slot->answered = true;
+                        }
+                        for (auto& [_, slot] : it->second.pending_confirms)
+                            slot->cv.notify_all();
                         LOG_INFO("session {} cancel requested by conn {}",
                                  target_sid.substr(0, 8), conn_id.substr(0, 8));
                     }
@@ -683,12 +728,23 @@ void CodisServer::run_acp_task(const std::string& session_id,
         }
 
         for (auto& call : call_list) {
-            broadcast(acp::tool_call_frame(call.id, call.name, call.arguments));
             auto perm = tool_registry_.check_permission(call.name);
             if (perm == Permission::Denied) {
+                broadcast(acp::tool_call_frame(call.id, call.name, call.arguments));
                 broadcast(acp::tool_result_frame(call.id, false, "Permission denied"));
                 continue;
             }
+            if (perm == Permission::Ask) {
+                // Ask 权限：先征询用户确认，批准后才广播 tool_call 帧并执行
+                if (!wait_for_confirmation(session_id, call, broadcast, cancel_flag)) {
+                    broadcast(acp::tool_result_frame(call.id, false,
+                        is_canceled() ? "Canceled while awaiting confirmation"
+                                      : "Tool call rejected (confirmation declined or timed out)"));
+                    if (is_canceled()) break;  // 任务被取消，结束整个 ACP 循环
+                    continue;
+                }
+            }
+            broadcast(acp::tool_call_frame(call.id, call.name, call.arguments));
             auto result = tool_registry_.execute(call);
             broadcast(acp::tool_result_frame(result.id, result.success, result.content));
 
@@ -762,6 +818,58 @@ void CodisServer::run_acp_loop_broadcast(const std::string& session_id,
         req = std::move(*next);
     }
     LOG_DEBUG("session {} completed", session_id.substr(0, 8));
+}
+
+// =============================================================================
+// wait_for_confirmation — Ask 权限工具的执行前确认
+// 广播 tool_confirm 帧给 session 的所有连接，挂起等待任一连接的 confirm_ack。
+// 超时（config [permissions].confirm_timeout）视为拒绝；任务被取消立即返回 false。
+// =============================================================================
+
+bool CodisServer::wait_for_confirmation(const std::string& session_id,
+                                        const ToolCall& call,
+                                        const std::function<void(const std::string&)>& broadcast,
+                                        const std::shared_ptr<std::atomic<bool>>& cancel_flag) {
+    auto slot = std::make_shared<PendingConfirm>();
+    slot->call = call;
+    std::string confirm_id = util::gen_short_id();
+
+    {
+        std::lock_guard lock(sessions_mutex_);
+        auto& st = sessions_[session_id];
+        st.pending_confirms[confirm_id] = slot;
+    }
+
+    LOG_INFO("session {} awaiting confirmation for tool '{}' ({})",
+             session_id.substr(0, 8), call.name, confirm_id);
+    broadcast(acp::tool_confirm_frame(confirm_id, call.id, call.name, call.arguments,
+                                      config_.permissions.confirm_timeout_seconds));
+
+    int timeout_s = config_.permissions.confirm_timeout_seconds;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_s);
+    bool canceled = false;
+    {
+        std::unique_lock lk(slot->mutex);
+        while (!slot->answered) {
+            if (cancel_flag && cancel_flag->load()) { canceled = true; break; }
+            if (std::chrono::steady_clock::now() >= deadline) break;
+            // 分段等待：200ms 粒度轮询取消标记，避免取消后空等整个超时
+            slot->cv.wait_until(
+                lk, std::chrono::steady_clock::now() + std::chrono::milliseconds(200));
+        }
+    }
+
+    bool approved = slot->answered && slot->approved;
+    {
+        std::lock_guard lock(sessions_mutex_);
+        auto it = sessions_.find(session_id);
+        if (it != sessions_.end()) it->second.pending_confirms.erase(confirm_id);
+    }
+
+    LOG_INFO("session {} confirmation for tool '{}': {}", session_id.substr(0, 8), call.name,
+             canceled ? "canceled"
+                      : (slot->answered ? (approved ? "approved" : "rejected") : "timed out"));
+    return approved;
 }
 
 // =============================================================================

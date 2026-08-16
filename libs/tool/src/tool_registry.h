@@ -22,6 +22,12 @@ public:
         tools_[name] = std::move(tool);
     }
 
+    // 配置覆盖：默认权限声明被 [permissions] 策略覆盖（Deny 优先于一切）
+    void set_permission(const std::string& name, Permission p) {
+        std::unique_lock lock(mutex_);
+        overrides_[name] = p;
+    }
+
     std::vector<ToolSchema> all_schemas() const {
         std::shared_lock lock(mutex_);
         std::vector<ToolSchema> schemas;
@@ -31,6 +37,8 @@ public:
 
     Permission check_permission(const std::string& name) const {
         std::shared_lock lock(mutex_);
+        if (auto it = overrides_.find(name); it != overrides_.end())
+            return it->second;
         auto it = tools_.find(name);
         if (it == tools_.end()) return Permission::Denied;
         return it->second->default_permission();
@@ -68,6 +76,7 @@ public:
 private:
     mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, std::unique_ptr<Tool>> tools_;
+    std::unordered_map<std::string, Permission> overrides_;
 };
 
 } // namespace codis

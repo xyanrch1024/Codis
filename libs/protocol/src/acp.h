@@ -24,6 +24,8 @@ enum class EventType {
     reasoning,    // 模型思维链增量文本（reasoning_content）
     tool_call,    // 模型请求调用工具
     tool_result,  // 工具执行结果
+    tool_confirm, // 服务端 → 客户端：Ask 权限工具执行前征询确认
+    confirm_ack,  // 客户端 → 服务端：确认回执（approved / rejected）
     error,        // 错误
     done          // 对话完成
 };
@@ -38,6 +40,8 @@ inline std::string to_string(EventType t) {
         case EventType::reasoning:  return "reasoning";
         case EventType::tool_call:  return "tool_call";
         case EventType::tool_result: return "tool_result";
+        case EventType::tool_confirm: return "tool_confirm";
+        case EventType::confirm_ack:  return "confirm_ack";
         case EventType::error:      return "error";
         case EventType::done:       return "done";
     }
@@ -104,6 +108,27 @@ inline std::string tool_result_frame(const std::string& id,
     });
 }
 
+// 服务端 → 客户端：Ask 权限工具执行前征询确认
+// timeout_seconds：客户端显示倒计时用（服务端以此超时视为拒绝）
+inline std::string tool_confirm_frame(const std::string& confirm_id,
+                                      const std::string& id,
+                                      const std::string& name,
+                                      const json& arguments,
+                                      int timeout_seconds = 120) {
+    return to_frame(EventType::tool_confirm, {
+        {"confirm_id", confirm_id},
+        {"timeout_seconds", timeout_seconds},
+        {"call", {{"id", id}, {"name", name}, {"arguments", arguments}}}
+    });
+}
+
+// 客户端 → 服务端：确认回执
+inline std::string confirm_ack_frame(const std::string& confirm_id, bool approved) {
+    return to_frame(EventType::confirm_ack, {
+        {"confirm_id", confirm_id}, {"approved", approved}
+    });
+}
+
 inline std::string error_frame(std::string_view message) {
     return to_frame(EventType::error, {{"message", message}});
 }
@@ -156,6 +181,8 @@ inline std::optional<ParsedEvent> parse_frame(const std::string& payload) {
         else if (type_str == "reasoning")   type = EventType::reasoning;
         else if (type_str == "tool_call")   type = EventType::tool_call;
         else if (type_str == "tool_result") type = EventType::tool_result;
+        else if (type_str == "tool_confirm") type = EventType::tool_confirm;
+        else if (type_str == "confirm_ack")  type = EventType::confirm_ack;
         else if (type_str == "error")       type = EventType::error;
         else if (type_str == "done")        type = EventType::done;
         else return std::nullopt;

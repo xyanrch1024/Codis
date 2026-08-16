@@ -8,7 +8,7 @@ namespace codis::tools {
 class BashTool : public Tool {
 public:
     ToolSchema schema() const override;
-    Permission default_permission() const override { return Permission::Ask; }
+    Permission default_permission() const override { return Permission::Allow; }
     ToolResult execute(const ToolCall& call) override;
 };
 
