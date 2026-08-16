@@ -563,6 +563,52 @@ std::vector<SearchHit> parse_bing_rss(const std::string& xml, int max) {
     return hits;
 }
 
+// 相关检测：query 的 token 须出现在结果文本。CJK 词无空格分词，
+// 整串匹配必然落空，按 2-gram 子串匹配；ASCII 词要求整词。
+bool results_relevant(const std::string& corpus, const std::string& query) {
+    static const char* kStopwords[] = {
+        "http", "https", "www", "com", "org", "the", "and", "for",
+        "with", "from", "that", "this", "are", "was", "not", "you",
+    };
+    std::istringstream qss(query);
+    std::string q;
+    while (qss >> q) {
+        bool stop = false;
+        for (auto* w : kStopwords) if (q == w) { stop = true; break; }
+        if (stop) continue;
+        bool has_cjk = false;
+        for (unsigned char c : q)
+            if (c >= 0xE4 && c <= 0xE9) { has_cjk = true; break; }
+        if (q.size() >= 3 && !has_cjk) {
+            if (corpus.find(q) != std::string::npos) return true;
+            continue;
+        }
+        // CJK：穷举 2-gram（"今天天气" → 今天/天天/天气），任一命中即相关；
+        // 中文字节 3 字节/字符，需从字符边界切
+        std::u32string q32;
+        for (size_t i = 0; i < q.size();) {
+            uint32_t cp = q[i];
+            int len = 1;
+            if ((q[i] & 0xF0) == 0xF0) { cp = ((q[i]&0x07)<<18)|((q[i+1]&0x3F)<<12)|((q[i+2]&0x3F)<<6)|(q[i+3]&0x3F); len = 4; }
+            else if ((q[i] & 0xE0) == 0xE0) { cp = ((q[i]&0x0F)<<12)|((q[i+1]&0x3F)<<6)|(q[i+2]&0x3F); len = 3; }
+            else if ((q[i] & 0xC0) == 0xC0) { cp = ((q[i]&0x1F)<<6)|(q[i+1]&0x3F); len = 2; }
+            q32 += cp; i += len;
+        }
+        if (q32.size() < 2) { q32 += 32; }  // 单字符 + 空格兜底，避免漏检
+        for (size_t i = 0; i + 1 < q32.size(); i++) {
+            std::u32string gram = q32.substr(i, 2);
+            std::string enc;
+            for (char32_t ch : gram) {
+                if (ch < 0x80) enc += (char)ch;
+                else if (ch < 0x800) { enc += (char)(0xC0 | (ch >> 6)); enc += (char)(0x80 | (ch & 0x3F)); }
+                else { enc += (char)(0xE0 | (ch >> 12)); enc += (char)(0x80 | ((ch >> 6) & 0x3F)); enc += (char)(0x80 | (ch & 0x3F)); }
+            }
+            if (corpus.find(enc) != std::string::npos) return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 ToolSchema WebSearchTool::schema() const {
@@ -643,24 +689,13 @@ ToolResult WebSearchTool::execute(const ToolCall& call) {
             std::string corpus;
             // 只统计 title+snippet：URL 里的 http/https 子串会污染匹配
             for (auto& h : hits) corpus += h.title + " " + h.snippet + " ";
-            static const char* kStopwords[] = {
-                "http", "https", "www", "com", "org", "the", "and", "for",
-                "with", "from", "that", "this", "are", "was", "not", "you",
-            };
-            std::string q;
-            std::istringstream qss(query);
-            while (qss >> q) {
-                bool stop = false;
-                for (auto* w : kStopwords) if (q == w) { stop = true; break; }
-                if (q.size() >= 3 && !stop &&
-                    corpus.find(q) != std::string::npos) { relevant = true; break; }
-            }
+            relevant = results_relevant(corpus, query);
             if (!relevant) {
                 LOG_WARN("websearch bing results look unrelated (datacenter IP?) for query: {}", query);
                 return {call.id, false,
-                    "Bing returned unrelated cached content (common on datacenter IPs). "
-                    "Configure a key-based backend ([websearch] backend = \"brave\"|\"serpapi\"|\"tavily\" "
-                    "with api_key) or retry later."};
+                    "Web search unavailable from this network (Bing returned unrelated cached "
+                    "content). Retry later, or configure a key-based backend ([websearch] "
+                    "backend = serpapi|brave|tavily with api_key)."};
             }
         }
     } else if (backend == "serpapi" && parsed_ok) {
