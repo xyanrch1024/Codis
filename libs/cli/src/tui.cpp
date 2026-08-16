@@ -56,6 +56,7 @@ static const std::vector<std::pair<std::string, std::string>> kCommands = {
     {"/model", "Switch model"},
     {"/clearsessions", "Delete all sessions"},
     {"/yolo", "YOLO mode: auto-approve all tools"},
+    {"/compact", "Compress context (LLM summary)"},
 };
 
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
@@ -468,6 +469,15 @@ int TuiClient::run() {
 
         // 底部状态栏（三行，状态在第二行）
         Elements status_lines;
+        {
+            // 状态栏 context 文本变化时打日志，确认渲染周期是否发生
+            static std::string last_ctx_str;
+            std::string cur_ctx = state_->context_size_str();
+            if (cur_ctx != last_ctx_str) {
+                LOG_INFO("[ctx] statusbar rendered as '{}'", cur_ctx);
+                last_ctx_str = cur_ctx;
+            }
+        }
         status_lines.push_back(hbox({
             text(acp_.connected() ? " ● Connected" : " ● Disconnected") |
                 (acp_.connected() ? color(Color::Green) : color(Color::Red)),
@@ -990,6 +1000,10 @@ void TuiClient::send_message(const std::string& text) {
         show_notice(yolo_mode_ ? "[YOLO mode ON — Ask 工具自动批准]" : "[YOLO mode OFF]");
         return;
     }
+    if (text == "/compact" || text.starts_with("/compact ")) {
+        cmd_compact(text);
+        return;
+    }
 
     // 当前任务处理中：新消息仅入 pending 队列，任务完成后自动发送
     if (state_->processing) {
@@ -1038,6 +1052,24 @@ void TuiClient::flush_pending() {
 
 void TuiClient::cmd_clear() {
     state_->clear_all();
+    if (post_job_) post_job_();
+}
+
+void TuiClient::cmd_compact(const std::string& line) {
+    if (state_->processing) {
+        state_->add_item(ItemKind::Status, "[任务执行中，结束后再 /compact 压缩]");
+        if (post_job_) post_job_();
+        return;
+    }
+    int keep = 20;
+    auto pos = line.find(' ');
+    if (pos != std::string::npos) {
+        try { keep = std::stoi(line.substr(pos + 1)); } catch (...) {}
+        keep = std::clamp(keep, 4, 100);
+    }
+    state_->add_item(ItemKind::Status,
+        "[上下文压缩中…（LLM 摘要，约需数秒）keep=" + std::to_string(keep) + "]");
+    acp_.send_compact(state_->current_session, keep);
     if (post_job_) post_job_();
 }
 
@@ -1202,6 +1234,18 @@ AcpClient::Callbacks TuiClient::build_callbacks() {
         .on_done = [this]() {
             AcpEvent ev;
             ev.kind = AcpEvent::Kind::Done;
+            state_->push_event(ev);
+        },
+        .on_compacted = [this](const acp::CompactResultEvent& cr) {
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::Compacted;
+            ev.compact = cr;
+            state_->push_event(ev);
+        },
+        .on_context_stats = [this](const acp::ContextStatsEvent& cs) {
+            AcpEvent ev;
+            ev.kind = AcpEvent::Kind::ContextStats;
+            ev.context = cs;
             state_->push_event(ev);
         }
     };

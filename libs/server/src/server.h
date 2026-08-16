@@ -139,6 +139,8 @@ private:
                                const ToolCall& call,
                                const std::function<void(const std::string&)>& broadcast,
                                const std::shared_ptr<std::atomic<bool>>& cancel_flag);
+    // 上下文压缩：头部历史 LLM 摘要 + 保留尾部窗口，写回 session_store
+    void run_compact(const std::string& session_id, int keep);
     void cleanup_connection(const std::string& session_id, const std::string& conn_id);
     std::string generate_conn_id();
 

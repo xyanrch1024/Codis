@@ -15,6 +15,18 @@
 
 namespace codis {
 
+namespace {
+
+// 报文 token 估算：len/4 近似（ASCII 为主 + 中文按 ~1 token/字裕量）。
+// 定义在文件后部同名匿名 namespace（run_compact 附近），此处仅前置声明，
+// 供 run_acp_task 在向 LLM 发 POST 前估算上下文使用。
+int64_t est_tokens(const std::vector<Message>& msgs);
+
+// provider 未配置 max_context 时的回退上下文窗口（tokens）
+constexpr int64_t kDefaultMaxContext = 128000;
+
+} // namespace
+
 // 定义在 Tool call 提取段（extract_tool_calls 前），供存历史时剥离内嵌 JSON 使用
 static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content);
 
@@ -399,6 +411,19 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
     // 首帧：告知客户端其 conn_id
     queue->push(acp::connected_frame(conn_id));
 
+    // 连接建立即推送一次 context 统计：客户端一进会话就有读数，
+    // 此后每次向 LLM 发请求前再刷新（见 run_acp_task）
+    {
+        auto hist = session_store_.load_messages(sid);
+        auto prov = provider_registry_.get(provider_registry_.default_name());
+        int64_t max_ctx = kDefaultMaxContext;
+        if (prov) {
+            auto cfg = config_.provider_for((*prov)->name());
+            if (cfg && cfg->max_context_tokens) max_ctx = *cfg->max_context_tokens;
+        }
+        queue->push(acp::context_stats_frame(est_tokens(hist), max_ctx));
+    }
+
     LOG_INFO("WS connection attached to session {} conn_id={}",
              sid.substr(0, 8), conn_id);
 
@@ -423,7 +448,8 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
         if (event->type != acp::EventType::request &&
             event->type != acp::EventType::switch_session &&
             event->type != acp::EventType::cancel &&
-            event->type != acp::EventType::confirm_ack) {
+            event->type != acp::EventType::confirm_ack &&
+            event->type != acp::EventType::compact) {
             LOG_WARN("WS unexpected frame type: {}", acp::to_string(event->type));
             ws.send(acp::error_frame("unsupported frame type"));
             continue;
@@ -496,6 +522,14 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
                                  target_sid.substr(0, 8), conn_id.substr(0, 8));
                     }
                 }
+                continue;
+            }
+            if (event->type == acp::EventType::compact) {
+                // 上下文压缩：异步执行（含一次 LLM 摘要调用），完成后广播 compacted 帧
+                std::string target_sid = event->data.value("session_id", "");
+                if (target_sid.empty()) target_sid = sid;
+                int keep = event->data.value("keep", 20);
+                std::thread([this, target_sid, keep]() { run_compact(target_sid, keep); }).detach();
                 continue;
             }
             auto chat_req = ChatRequest::from_json(event->data);
@@ -670,6 +704,14 @@ void CodisServer::run_acp_task(const std::string& session_id,
         if (!prov) { broadcast(acp::error_frame("No provider")); break; }
 
         auto t0 = std::chrono::steady_clock::now();
+        // 向 LLM 发 POST 前：推送 context 统计（当前估算 tokens / 配置最大窗口），
+        // 由服务端计算、客户端仅展示
+        {
+            auto prov_cfg = config_.provider_for(prov->name());
+            int64_t max_ctx = prov_cfg && prov_cfg->max_context_tokens
+                                  ? *prov_cfg->max_context_tokens : kDefaultMaxContext;
+            broadcast(acp::context_stats_frame(est_tokens(req.messages), max_ctx));
+        }
         auto llm_result = prov->stream_chat(
             req,
             [&](std::string_view delta) {
@@ -1198,6 +1240,135 @@ json CodisServer::query_provider_balance(const std::string& provider_name) {
     } catch (const json::parse_error& e) {
         throw std::runtime_error("Failed to parse balance response: " + std::string(e.what()));
     }
+}
+
+// =============================================================================
+// 上下文压缩 — 头部历史 → LLM 摘要 + 保留尾部窗口
+// =============================================================================
+
+namespace {
+
+constexpr int kCompactDefaultKeep = 20;   // 尾部保留原文条数
+constexpr int kCompactMinKeep = 4;        // 尾部至少保留的条数（题干 + 近期往返）
+constexpr int kCompactMaxKeep = 100;
+
+// len/4 近似估算 tokens（ASCII 为主 + 中文按 ~1 token/字裕量）
+int64_t est_tokens(const std::vector<Message>& msgs) {
+    int64_t n = 0;
+    for (auto& m : msgs) n += (int64_t)m.content.size() / 4;
+    return n;
+}
+
+constexpr const char* kCompactPrompt =
+    "你是上下文压缩器。用户把一段 AI 编程助手的历史对话发给你，"
+    "请把它压缩成一段结构化摘要，供后续对话继续使用。\n"
+    "必须保留：\n"
+    "- 用户的任务目标（原始诉求）\n"
+    "- 已做出的决定与结论\n"
+    "- 关键事实：文件路径、配置项、命令、环境约束\n"
+    "- 当前进度（已完成/进行中）\n"
+    "- 未完成事项与下一步计划\n"
+    "可以丢弃：\n"
+    "- 工具执行的原始输出、报错细节、试探性中间步骤\n"
+    "- 寒暄与无关闲谈\n"
+    "格式：简短段落概述 + 要点列表。语言与用户一致（中文）。"
+    "只输出摘要本身，不要任何前言或解释。";
+
+} // namespace
+
+void CodisServer::run_compact(const std::string& session_id, int keep) {
+    keep = std::clamp(keep, kCompactMinKeep, kCompactMaxKeep);
+
+    auto broadcast = [&](const std::string& frame) {
+        std::lock_guard lock(sessions_mutex_);
+        auto it = sessions_.find(session_id);
+        if (it == sessions_.end()) return;
+        for (auto& [_, q] : it->second.conns)
+            q->push(frame);
+    };
+    auto fail = [&](const std::string& why) {
+        LOG_WARN("compact failed, session {}: {}", session_id.substr(0, 8), why);
+        broadcast(acp::compacted_frame(false, "", why));
+    };
+
+    // 任务执行中（LLM 循环/其它压缩）拒绝并发，避免 SQLite 读写竞争
+    {
+        std::lock_guard lock(sessions_mutex_);
+        auto& st = sessions_[session_id];
+        if (st.processing.exchange(true)) {
+            fail("task in progress, retry after it finishes");
+            return;
+        }
+    }
+
+    // 压缩开始前快照，留作后续 /restore 恢复位（本期只写不读）
+    try {
+        auto history = session_store_.load_messages(session_id);
+        const size_t n = history.size();
+        if (n <= (size_t)keep + 1) {
+            fail("history too short (" + std::to_string(n) + " msgs, need > " +
+                 std::to_string(keep) + " to compress)");
+            return;
+        }
+        const size_t split = n - (size_t)keep;
+        std::vector<Message> prefix(history.begin(), history.begin() + (long)split);
+        std::vector<Message> tail(history.begin() + (long)split, history.end());
+
+        json snap = json::array();
+        for (auto& m : history) snap.push_back(m.to_json());
+        session_store_.save_context_snapshot(
+            session_id, "compact:" + std::to_string(time(nullptr)), snap,
+            "compacted " + std::to_string(n) + " msgs -> " +
+            std::to_string(keep + 1) + " msgs");
+
+        // LLM 摘要：专用 system 指令 + 头部历史，无工具，限 token。
+        // 过滤 reasoning 角色（思维链）：openai 兼容端点对未知角色直接 400
+        // （run_acp_task 重放路径同样过滤，此处与其保持一致）
+        ChatRequest req;
+        req.max_tokens = 1200;
+        req.messages.push_back({"system", kCompactPrompt});
+        for (auto& m : prefix)
+            if (m.role != "reasoning")
+                req.messages.push_back(m);
+        std::string summary = call_llm(req);
+
+        // 新历史 = 摘要(system) + 题干(首条 user) + 尾部原文
+        std::vector<Message> compacted;
+        compacted.push_back({"system", "上下文摘要（历史压缩）:\n" + summary});
+        for (auto& m : prefix)
+            if (m.role == "user") { compacted.push_back(m); break; }
+        for (auto& m : tail) compacted.push_back(m);
+
+        session_store_.replace_messages(session_id, compacted);
+
+        auto before_tok = est_tokens(history);
+        auto after_tok = est_tokens(compacted);
+        LOG_INFO("compacted session {}: {} msgs -> {} msgs ({} -> {} est tokens)",
+                 session_id.substr(0, 8), n, compacted.size(), before_tok, after_tok);
+        broadcast(acp::compacted_frame(true, summary, ""));
+    } catch (const std::exception& e) {
+        fail(e.what());
+    }
+
+    // 压缩期间排队的消息：逐个补跑（复用 ACP 循环，其内部迭代清空 pending）
+    std::optional<ChatRequest> next;
+    {
+        std::lock_guard lock(sessions_mutex_);
+        auto it = sessions_.find(session_id);
+        if (it != sessions_.end()) {
+            it->second.processing = false;
+            if (!it->second.pending.empty()) {
+                next = std::move(it->second.pending.front());
+                it->second.pending.pop_front();
+            }
+        }
+    }
+    if (next) {
+        std::thread([this, session_id, req = std::move(*next)]() mutable {
+            run_acp_loop_broadcast(session_id, "", std::move(req));
+        }).detach();
+    }
+    LOG_DEBUG("compact finished, session {}", session_id.substr(0, 8));
 }
 
 // =============================================================================

@@ -16,18 +16,21 @@ name = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 base_url = "https://api.openai.com/v1"
+max_context = 128000
 
 [[providers]]
 name = "deepseek"
 api_key_env = "DEEPSEEK_API_KEY"
 model = "deepseek-v4-flash"
 base_url = "https://api.deepseek.com"
+max_context = 128000
 
 [[providers]]
 name = "glm"
 api_key_env = "GLM_API_KEY"
     model = "glm-4.7-flash"
     base_url = "https://open.bigmodel.cn/api/paas/v4"
+    max_context = 128000
 
 [feishu]
 app_id = ""

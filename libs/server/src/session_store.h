@@ -49,6 +49,8 @@ public:
     // 消息
     void append_message(const std::string& session_id, const Message& msg);
     std::vector<Message> load_messages(const std::string& session_id);
+    // 整体重写历史（上下文压缩用）：DELETE + 批量 INSERT（单事务）
+    void replace_messages(const std::string& session_id, const std::vector<Message>& msgs);
 
     // 搜索
     std::vector<std::string> search_sessions(const std::string& query, int limit = 20);

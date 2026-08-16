@@ -207,6 +207,32 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                     LOG_DEBUG("WS done");
                     if (callbacks_.on_done) callbacks_.on_done();
                     break;
+                case acp::EventType::compacted: {
+                    if (callbacks_.on_compacted) {
+                        auto& d = event->data;
+                        acp::CompactResultEvent cr;
+                        cr.ok = d.value("ok", false);
+                        cr.summary = d.value("summary", "");
+                        cr.error = d.value("error", "");
+                        callbacks_.on_compacted(cr);
+                    }
+                    break;
+                }
+                case acp::EventType::context_stats: {
+                    if (callbacks_.on_context_stats) {
+                        auto& d = event->data;
+                        LOG_INFO("WS context_stats frame: used={} max={}",
+                                 d.value("used", (int64_t)0), d.value("max", (int64_t)0));
+                        callbacks_.on_context_stats({
+                            d.value("used", (int64_t)0),
+                            d.value("max", (int64_t)0)});
+                    }
+                    break;
+                }
+                case acp::EventType::compact:
+                    // 上行专用帧，客户端不会收到
+                    LOG_WARN("WS received uplink-only frame: compact");
+                    break;
                 }
             }
 
@@ -318,6 +344,22 @@ void AcpClient::cancel_session(const std::string& session_id) {
         }
     }
     LOG_WARN("cancel_session queued (WS not ready) session={}", session_id.substr(0, 8));
+    {
+        std::lock_guard lock(pending_mutex_);
+        pending_outbound_.push_back(std::move(frame));
+    }
+}
+
+void AcpClient::send_compact(const std::string& session_id, int keep) {
+    auto frame = acp::compact_frame(session_id, keep);
+    {
+        std::lock_guard lock(ws_mutex_);
+        if (ws_ && ws_->is_open()) {
+            ws_->send(frame);
+            return;
+        }
+    }
+    LOG_WARN("send_compact queued (WS not ready) session={}", session_id.substr(0, 8));
     {
         std::lock_guard lock(pending_mutex_);
         pending_outbound_.push_back(std::move(frame));

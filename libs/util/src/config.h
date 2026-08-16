@@ -14,6 +14,7 @@ struct ProviderConfig {
     std::string api_key_env;   // 环境变量名 (如 "DEEPSEEK_API_KEY")
     std::string model;
     std::string base_url;
+    std::optional<int> max_context_tokens;  // 模型上下文窗口上限（tokens），未配置用内置默认
 
     // 从环境变量解析 api_key
     void resolve_api_key() {

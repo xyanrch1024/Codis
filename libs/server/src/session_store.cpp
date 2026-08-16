@@ -245,6 +245,59 @@ std::vector<Message> SessionStore::load_messages(const std::string& session_id) 
     return result;
 }
 
+// 上下文压缩：DELETE + 批量 INSERT 单事务重写历史。
+// 遵循 append_message 的绑定细节（tool_arguments 用 SQLITE_TRANSIENT）。
+void SessionStore::replace_messages(const std::string& session_id,
+                                    const std::vector<Message>& msgs) {
+    std::lock_guard lock(mutex_);
+    auto err_out = [&](char* err) {
+        if (err) { LOG_ERROR("sqlite error: {}", err); sqlite3_free(err); }
+    };
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        LOG_ERROR("replace_messages: BEGIN failed");
+        return;
+    }
+
+    sqlite3_prepare_v2(db_, "DELETE FROM messages WHERE session_id = ?", -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, session_id.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    for (auto& msg : msgs) {
+        sqlite3_prepare_v2(db_,
+            "INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, tool_arguments) "
+            "VALUES (?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, session_id.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, msg.role.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 3, msg.content.c_str(), -1, SQLITE_STATIC);
+        if (msg.tool_call_id) sqlite3_bind_text(stmt, 4, msg.tool_call_id->c_str(), -1, SQLITE_STATIC);
+        else sqlite3_bind_null(stmt, 4);
+        if (msg.tool_name) sqlite3_bind_text(stmt, 5, msg.tool_name->c_str(), -1, SQLITE_STATIC);
+        else sqlite3_bind_null(stmt, 5);
+        if (msg.tool_arguments) {
+            std::string args = msg.tool_arguments->dump();
+            sqlite3_bind_text(stmt, 6, args.c_str(), -1, SQLITE_TRANSIENT);
+        } else {
+            sqlite3_bind_null(stmt, 6);
+        }
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        stmt = nullptr;
+    }
+
+    sqlite3_prepare_v2(db_, "UPDATE sessions SET updated_at = unixepoch() WHERE id = ?",
+                       -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, session_id.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    char* err = nullptr;
+    if (sqlite3_exec(db_, "COMMIT", nullptr, nullptr, &err) != SQLITE_OK)
+        err_out(err);
+}
+
 // =============================================================================
 // Context 快照
 // =============================================================================

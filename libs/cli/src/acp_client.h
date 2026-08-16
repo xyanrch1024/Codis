@@ -45,6 +45,8 @@ public:
                                                    int timeout_seconds)>;
     using ErrorCallback     = std::function<void(std::string_view message)>;
     using DoneCallback      = std::function<void()>;
+    using CompactedCallback = std::function<void(const acp::CompactResultEvent&)>;
+    using ContextStatsCallback = std::function<void(const acp::ContextStatsEvent&)>;
 
     struct Callbacks {
         AssistantCallback   on_assistant;
@@ -54,6 +56,8 @@ public:
         ToolConfirmCallback on_tool_confirm;
         ErrorCallback       on_error;
         DoneCallback        on_done;
+        CompactedCallback   on_compacted;
+        ContextStatsCallback on_context_stats;
     };
 
     AcpClient(int server_port = 8711);
@@ -78,6 +82,8 @@ public:
     bool delete_all_sessions();
     bool switch_session(const std::string& session_id);
     void cancel_session(const std::string& session_id);
+    // 请求上下文压缩（WS 发送 compact 帧；keep = 保留尾部原文条数）
+    void send_compact(const std::string& session_id, int keep = 20);
     std::string get_last_session();
 
     // 服务器信息（providers / models / 特性）

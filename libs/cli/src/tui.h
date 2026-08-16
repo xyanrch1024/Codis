@@ -72,13 +72,15 @@ inline bool tool_auto_fold(const ConvItem& item) {
 // =============================================================================
 
 struct AcpEvent {
-    enum class Kind { AssistantDelta, ReasoningDelta, ToolCall, ToolResult, ToolConfirm, Error, Done };
+    enum class Kind { AssistantDelta, ReasoningDelta, ToolCall, ToolResult, ToolConfirm, Error, Done, Compacted, ContextStats };
     Kind kind;
     std::string text;                         // delta / error message
     acp::ToolCallEvent tool_call;             // Kind == ToolCall
     acp::ToolResultEvent tool_result;         // Kind == ToolResult
     std::string confirm_id;                   // Kind == ToolConfirm
     int timeout_seconds = 120;                // Kind == ToolConfirm
+    acp::CompactResultEvent compact;          // Kind == Compacted
+    acp::ContextStatsEvent context;           // Kind == ContextStats
 };
 
 inline const char* acp_event_kind_str(AcpEvent::Kind k) {
@@ -90,6 +92,8 @@ inline const char* acp_event_kind_str(AcpEvent::Kind k) {
         case AcpEvent::Kind::ToolConfirm:    return "ToolConfirm";
         case AcpEvent::Kind::Error:          return "Error";
         case AcpEvent::Kind::Done:           return "Done";
+        case AcpEvent::Kind::Compacted:      return "Compacted";
+        case AcpEvent::Kind::ContextStats:   return "ContextStats";
     }
     return "?";
 }
@@ -114,15 +118,19 @@ struct TuiState {
 
     int pending_count() const { return (int)pending_queue.size(); }
 
-    // 上下文大小（history 全部消息字符数 + 流式增量），供状态栏显示。
+    // 上下文大小（服务端推送：每次 LLM 请求发出时更新，客户端不计算）。
+    int64_t context_used_ = 0;
+    int64_t context_max_ = 0;
+
     std::string context_size_str() const {
-        size_t n = 0;
-        for (auto& m : history) n += m.content.size();
-        for (auto& it : items)
-            if (it.streaming) n += it.text.size();
-        if (n >= 1000)
-            return std::to_string(n / 1000) + "." + std::to_string((n % 1000) / 100) + "K";
-        return std::to_string(n);
+        if (context_max_ <= 0) return "?";
+        auto fmt = [](int64_t v) {
+            if (v >= 10000)
+                return std::to_string(v / 1000) + "." + std::to_string((v % 1000) / 100) + "K";
+            return std::to_string(v);
+        };
+        int pct = (int)(100.0 * context_used_ / context_max_);
+        return fmt(context_used_) + "/" + fmt(context_max_) + " (" + std::to_string(pct) + "%)";
     }
 
     // 取 pending 预览文本（状态栏展示）：最多 prefix 条 + 总长度限制
@@ -291,6 +299,29 @@ private:
             processing = false;
             if (on_idle_) on_idle_();
             break;
+        case AcpEvent::Kind::Compacted: {
+            finalize_streaming();
+            if (ev.compact.ok) {
+                if (ev.compact.summary.empty()) {
+                    // 空摘要时给最小占位
+                    items.push_back({ItemKind::Status, "[上下文已压缩]"});
+                } else {
+                    // 摘要为 LLM 生成文本：走 Assistant 条目的 markdown 渲染（md_rows）
+                    items.push_back({ItemKind::Assistant, ev.compact.summary});
+                }
+            } else {
+                items.push_back({ItemKind::Error, "[压缩失败] " +
+                    (ev.compact.error.empty() ? std::string("unknown error") : ev.compact.error)});
+            }
+            break;
+        }
+        case AcpEvent::Kind::ContextStats:
+            // 服务端推送的上下文统计（每次向 LLM 发请求时更新），仅刷新状态栏
+            LOG_INFO("[ctx] apply used={} max={} (was {} {})",
+                     ev.context.used, ev.context.max, context_used_, context_max_);
+            context_used_ = ev.context.used;
+            context_max_ = ev.context.max;
+            break;
         case AcpEvent::Kind::Done: {
             finalize_streaming();
             pending_confirm.reset();
@@ -328,6 +359,7 @@ private:
     void send_request(const std::string& text);
     void flush_pending();
     void cmd_clear();
+    void cmd_compact(const std::string& line);
     void cmd_delete_all();
     void cmd_balance(const std::string& line);
     void cmd_model(const std::string& line);
