@@ -3,6 +3,9 @@
 
 #include <iostream>
 #include <map>
+#include <thread>
+#include <chrono>
+#include <algorithm>
 
 namespace codis {
 
@@ -57,7 +60,18 @@ void LLMHttpClient::stream_post(const std::string& url,
     LOG_DEBUG("POST {}://{}{} ({} bytes, stream={}), body:\n{}", use_ssl ? "https" : "http", host, path, req_body.size(), !non_stream, json_dump_safe(body, 2));
 
     if (non_stream) {
-        auto res = client.Post(path, headers, req_body, "application/json");
+        // 429（限流）自动退避重试：尊重 Retry-After，最多 3 次
+        httplib::Result res;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            res = client.Post(path, headers, req_body, "application/json");
+            if (!res || res->status != 429) break;
+            std::string ra = res->get_header_value("Retry-After");
+            int wait = 3;
+            try { if (!ra.empty()) wait = std::clamp(std::stoi(ra), 1, 30); } catch (...) {}
+            LOG_WARN("HTTP POST {} returned 429 (rate limit), attempt {}/3, waiting {}s",
+                     path, attempt + 1, wait);
+            std::this_thread::sleep_for(std::chrono::seconds(wait));
+        }
         if (!res) {
             LOG_ERROR("HTTP POST {} failed: {}", path, httplib::to_string(res.error()));
             if (on_done) on_done("", false, "HTTP error: " + httplib::to_string(res.error()));
@@ -65,7 +79,10 @@ void LLMHttpClient::stream_post(const std::string& url,
         }
         if (res->status != 200) {
             LOG_WARN("HTTP POST {} returned status {}", path, res->status);
-            if (on_done) on_done("", false, "HTTP " + std::to_string(res->status));
+            if (on_done) on_done("", false,
+                res->status == 429
+                    ? "LLM rate limited (HTTP 429). Check API quota / concurrent usage, or retry later."
+                    : "HTTP " + std::to_string(res->status));
             return;
         }
         LOG_TRACE("HTTP response {} bytes", res->body.size());
@@ -138,7 +155,10 @@ void LLMHttpClient::stream_post(const std::string& url,
         bool ok = stream_done || (abort_flag && abort_flag->load());
         if (res && res->status != 200 && !ok) {
             LOG_WARN("HTTP POST {} returned status {}", path, res->status);
-            if (on_done) on_done("", false, "HTTP " + std::to_string(res->status));
+            if (on_done) on_done("", false,
+                res->status == 429
+                    ? "LLM rate limited (HTTP 429). Check API quota / concurrent usage, or retry later."
+                    : "HTTP " + std::to_string(res->status));
             return;
         }
         if (ok) {
