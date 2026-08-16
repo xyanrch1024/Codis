@@ -57,6 +57,13 @@ AppConfig AppConfig::load(const std::filesystem::path& path) {
             cfg.websearch.resolve_api_key();
         }
 
+        if (auto sk = tbl["skills"].as_table()) {
+            if (auto d = (*sk)["dirs"].as_array())
+                for (auto& v : *d)
+                    if (auto s = v.value<std::string>())
+                        cfg.skills.dirs.emplace_back(*s);
+        }
+
     } catch (const toml::parse_error& e) {
         std::cerr << "Config parse error: " << e.what() << "\n";
     }

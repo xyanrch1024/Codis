@@ -59,6 +59,11 @@ struct PermissionConfig {
     int confirm_timeout_seconds = 120; // Ask 工具等待用户确认的超时，超时视为拒绝
 };
 
+// 技能配置：SKILL.md 扫描目录（相对路径相对 server 工作目录）
+struct SkillConfig {
+    std::vector<std::filesystem::path> dirs;
+};
+
 struct AppConfig {
     std::vector<ProviderConfig> providers;
     LLMConfig llm;
@@ -66,6 +71,7 @@ struct AppConfig {
     int timeout_seconds = 60;
     PermissionConfig permissions;
     WebSearchConfig websearch;
+    SkillConfig skills;
 
     static AppConfig load(const std::filesystem::path& path);
     static AppConfig default_config();

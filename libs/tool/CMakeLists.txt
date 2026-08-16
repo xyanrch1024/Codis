@@ -1,5 +1,6 @@
 add_library(codis_tool STATIC
     src/tools/tools.cpp
+    src/tools/skill_tool.cpp
 )
 
 target_include_directories(codis_tool PUBLIC src)

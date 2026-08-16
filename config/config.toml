@@ -53,3 +53,8 @@ backend = "tavily"
 api_key_env = "TAVILY_API_KEY"
 max_results = 5
 timeout_seconds = 15
+
+# 技能（skill）：<dir>/<skill_id>/SKILL.md，模型经 skill 工具按需加载指令
+#   dirs: 扫描目录（相对路径相对 server 工作目录）；默认额外扫描 ~/.codis/skills
+[skills]
+dirs = ["skills/"]
