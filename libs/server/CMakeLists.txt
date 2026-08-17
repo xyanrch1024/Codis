@@ -3,6 +3,11 @@ add_executable(codis-server
     src/server.cpp
     src/session_store.cpp
     src/context_source.cpp
+    src/session_hub.cpp
+    src/agent_loop.cpp
+    src/ws_gateway.cpp
+    src/http_api.cpp
+    src/balance_client.cpp
 )
 
 target_include_directories(codis-server PRIVATE
@@ -31,7 +36,13 @@ if(BUILD_TESTING)
         tests/context_utils_test.cpp
         tests/tool_call_parse_test.cpp
         tests/protocol_test.cpp
+        tests/acp_task_test.cpp
+        tests/balance_client_test.cpp
         src/session_store.cpp
+        src/context_source.cpp
+        src/session_hub.cpp
+        src/agent_loop.cpp
+        src/balance_client.cpp
     )
     target_include_directories(codis_server_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -42,8 +53,11 @@ if(BUILD_TESTING)
         GTest::gtest_main
         nlohmann_json::nlohmann_json
         SQLite::SQLite3
+        httplib::httplib
         codis_protocol
         codis_util
+        codis_tool
+        codis_llm
         Threads::Threads
     )
     include(GoogleTest)

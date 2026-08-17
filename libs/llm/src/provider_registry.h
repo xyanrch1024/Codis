@@ -15,6 +15,8 @@ namespace codis {
 class ProviderRegistry {
 public:
     void register_provider(const ProviderConfig& cfg);
+    // 注入自定义 provider 实例（测试用；首个注册者成为默认）
+    void register_custom(const std::string& name, std::shared_ptr<LLMProvider> provider);
     std::optional<std::shared_ptr<LLMProvider>> get(const std::string& name);
     std::vector<std::string> list() const;
     std::string default_name() const { return default_; }
@@ -26,6 +28,13 @@ private:
     std::unordered_map<std::string, std::shared_ptr<LLMProvider>> providers_;
     std::string default_;
 };
+
+inline void ProviderRegistry::register_custom(const std::string& name,
+                                              std::shared_ptr<LLMProvider> provider) {
+    std::unique_lock lock(mutex_);
+    providers_[name] = std::move(provider);
+    if (default_.empty()) default_ = name;
+}
 
 inline void ProviderRegistry::register_provider(const ProviderConfig& cfg) {
     std::unique_lock lock(mutex_);
