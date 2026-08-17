@@ -1,4 +1,5 @@
 #include "server.h"
+#include "context_utils.h"
 #include "tools/tools.h"
 #include "tools/skill_tool.h"
 #include "plugin_loader.h"
@@ -17,25 +18,10 @@ namespace codis {
 
 namespace {
 
-// 报文 token 估算：len/4 近似（ASCII 为主 + 中文按 ~1 token/字裕量）。
-// 定义在文件后部同名匿名 namespace（run_compact 附近），此处仅前置声明，
-// 供 run_acp_task 在向 LLM 发 POST 前估算上下文使用。
-int64_t est_tokens(const std::vector<Message>& msgs);
-
 // provider 未配置 max_context 时的回退上下文窗口（tokens）
 constexpr int64_t kDefaultMaxContext = 128000;
 
 } // namespace
-
-// 定义在 Tool call 提取段（extract_tool_calls 前），供存历史时剥离内嵌 JSON 使用
-static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content);
-
-// 纯空白判断（剥掉 tool_calls JSON 后模型输出可能只剩换行）
-static bool is_blank(const std::string& s) {
-    for (char c : s)
-        if (!std::isspace(static_cast<unsigned char>(c))) return false;
-    return true;
-}
 
 // =============================================================================
 // FrameQueue
@@ -345,8 +331,7 @@ void CodisServer::handle_chat(const httplib::Request& req, httplib::Response& re
             msgs.push_back({"system", baseline});
             auto history = session_store_.load_messages(chat_req.session_id);
             for (auto& m : history)
-                if (m.role == "user" || m.role == "tool" ||
-                    (m.role == "assistant" && (m.tool_call_id || !is_blank(m.content))))
+                if (context_utils::is_replayable(m))
                     msgs.push_back(m);
             for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it)
                 if (it->role == "user" && !it->content.empty()) {
@@ -453,7 +438,7 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
             auto cfg = config_.provider_for((*prov)->name());
             if (cfg && cfg->max_context_tokens) max_ctx = *cfg->max_context_tokens;
         }
-        queue->push(acp::context_stats_frame(est_tokens(hist), max_ctx));
+        queue->push(acp::context_stats_frame(context_utils::est_tokens(hist), max_ctx));
     }
 
     LOG_INFO("WS connection attached to session {} conn_id={}",
@@ -560,7 +545,7 @@ void CodisServer::handle_acp_ws(const httplib::Request& req, httplib::ws::WebSoc
                 // 上下文压缩：异步执行（含一次 LLM 摘要调用），完成后广播 compacted 帧
                 std::string target_sid = event->data.value("session_id", "");
                 if (target_sid.empty()) target_sid = sid;
-                int keep = event->data.value("keep", 20);
+                int keep = event->data.value("keep", context_utils::kCompactDefaultKeep);
                 std::thread([this, target_sid, keep]() { run_compact(target_sid, keep); }).detach();
                 continue;
             }
@@ -684,20 +669,15 @@ void CodisServer::run_acp_task(const std::string& session_id,
 
     auto baseline = system_context_.build_baseline(session_id, session_store_);
     // store 历史已含 queue_chat_request 刚 append 的当前 user 消息，整体重放：
-    // 顺序 = system baseline + 历史正序。重放只取 user 与无工具引用的 assistant
-    // 纯文本——带 tool_call_id 的中转消息（无正文）直接跳过：
-    // 同轮工具往返已在本轮 req.messages 中，跨轮重放悬浮 tool_call 会导致
-    // OpenAI 格式断链（严格 provider 报错/模型困惑），且白白多占 token。
+    // 顺序 = system baseline + 历史正序。重放条件见 context_utils::is_replayable：
+    // system（压缩摘要）+ user + tool + 有效 assistant（带 tool_call_id 的中转
+    // 消息或无空白正文）；reasoning 思维链不入上下文。跨轮重放悬浮 tool_call
+    // 会导致 OpenAI 格式断链（严格 provider 报错/模型困惑），故过滤同轮往返。
     auto history = session_store_.load_messages(session_id);
     std::vector<Message> msgs;
     msgs.push_back({"system", baseline});
     for (auto& m : history) {
-        // 重放：user 消息 + 纯文本 assistant + 完整工具往返
-        // （assistant 中转带 tool_call_id；tool 结果成对紧随其后，序列化
-        // 已输出标准 tool_calls 数组，模型能识别历史调用，避免重复执行）
-        if (m.role == "user" || m.role == "tool" ||
-            (m.role == "assistant" && (m.tool_call_id || !is_blank(m.content))))
-            msgs.push_back(m);
+        if (context_utils::is_replayable(m)) msgs.push_back(m);
     }
     req.messages = std::move(msgs);
 
@@ -743,7 +723,7 @@ void CodisServer::run_acp_task(const std::string& session_id,
             auto prov_cfg = config_.provider_for(prov->name());
             int64_t max_ctx = prov_cfg && prov_cfg->max_context_tokens
                                   ? *prov_cfg->max_context_tokens : kDefaultMaxContext;
-            broadcast(acp::context_stats_frame(est_tokens(req.messages), max_ctx));
+            broadcast(acp::context_stats_frame(context_utils::est_tokens(req.messages), max_ctx));
         }
         auto llm_result = prov->stream_chat(
             req,
@@ -797,16 +777,16 @@ void CodisServer::run_acp_task(const std::string& session_id,
         // 把原始 JSON 当正文展示给用户/模型
         std::string assistant_text = assistant_content;
         {
-            auto [jbegin, jend] = tool_calls_json_span(assistant_content);
+            auto [jbegin, jend] = context_utils::tool_calls_json_span(assistant_content);
             if (jbegin != std::string::npos && jbegin < jend)
                 assistant_text = assistant_content.substr(0, jbegin) + assistant_content.substr(jend);
         }
         // 剥完 JSON 后若只剩空白（模型输出只用 tool_calls JSON 时残留换行），
         // 不入库，避免空白 assistant 条目污染展示与重放上下文
-        if (!assistant_text.empty() && !is_blank(assistant_text))
+        if (!assistant_text.empty() && !context_utils::is_blank(assistant_text))
             session_store_.append_message(session_id, {"assistant", assistant_text});
 
-        auto call_list = extract_tool_calls(assistant_content);
+        auto call_list = context_utils::extract_tool_calls(assistant_content);
         if (call_list.empty()) {
             // 空响应保护：模型只回思维链或直接停（GLM thinking 耗尽 max_tokens 时 content 为空）
             // 重试一次，仍空则明确报错，避免"无输出就完成"
@@ -979,128 +959,6 @@ bool CodisServer::wait_for_confirmation(const std::string& session_id,
              canceled ? "canceled"
                       : (slot->answered ? (approved ? "approved" : "rejected") : "timed out"));
     return approved;
-}
-
-// =============================================================================
-// Tool call 提取 — 从 token 流中解析
-// =============================================================================
-
-// 定位 content 中 tool_calls 最外层 JSON 的字节区间 [begin, end)（含 ```json 围栏）。
-// 找不到返回 {npos, npos}；JSON 被截断时剥到末尾（保证文本部分可安全取出）。
-static std::pair<size_t, size_t> tool_calls_json_span(const std::string& content) {
-    auto pos = content.find("\"tool_calls\"");
-    if (pos == std::string::npos) return {std::string::npos, std::string::npos};
-
-    // 优先从 markdown 代码块中提取
-    auto md_start = content.find("```json");
-    if (md_start != std::string::npos && md_start < pos) {
-        auto md_end = content.find("```", md_start + 7);
-        if (md_end == std::string::npos) return {md_start, content.size()};
-        return {md_start, md_end + 3};
-    }
-
-    // LLM 可能在 tool_calls JSON 前输出文本，找到包含 "tool_calls" 的最外层 JSON 对象
-    // 用括号栈定位闭合位置（截断/漏写右括号时剥到末尾）
-    auto brace = content.rfind('{', pos);
-    if (brace == std::string::npos) return {std::string::npos, std::string::npos};
-
-    std::string stack;
-    bool in_string = false;
-    bool escaped = false;
-    for (auto i = brace; i < content.size(); i++) {
-        char c = content[i];
-        if (escaped) { escaped = false; continue; }
-        if (c == '\\') { escaped = true; continue; }
-        if (c == '"') { in_string = !in_string; continue; }
-        if (in_string) continue;
-        if (c == '{') { stack += '{'; }
-        else if (c == '[') { stack += '['; }
-        else if (c == '}') {
-            if (!stack.empty() && stack.back() == '{') stack.pop_back();
-            if (stack.empty()) return {brace, i + 1};
-        } else if (c == ']') {
-            // 数组内还有未闭合对象：先补 } 再闭合 ]
-            while (!stack.empty() && stack.back() == '{') stack.pop_back();
-            if (!stack.empty() && stack.back() == '[') stack.pop_back();
-            if (stack.empty()) return {brace, i + 1};
-        }
-    }
-    return {brace, content.size()};
-}
-
-std::vector<ToolCall> CodisServer::extract_tool_calls(const std::string& content) {
-    std::vector<ToolCall> calls;
-    auto pos = content.find("\"tool_calls\"");
-    if (pos == std::string::npos) return calls;
-
-    std::string json_str;
-
-    // 优先从 markdown 代码块中提取
-    auto md_start = content.find("```json");
-    if (md_start != std::string::npos) {
-        md_start += 7;
-        auto md_end = content.find("```", md_start);
-        if (md_end != std::string::npos)
-            json_str = content.substr(md_start, md_end - md_start);
-    } else {
-        // LLM 可能在 tool_calls JSON 前输出文本，找到包含 "tool_calls" 的最外层 JSON 对象
-        // 用括号栈自动补齐模型偶尔截断/漏写的右括号（如缺 } 或提前 ]）
-        auto brace = content.rfind('{', pos);
-        if (brace == std::string::npos) return calls;
-        std::string stack;
-        std::string fixed;
-        bool in_string = false;
-        bool escaped = false;
-        auto close_outer = [&] {
-            if (stack.empty()) return;
-            while (!fixed.empty() && fixed.back() == ',') fixed.pop_back();
-            while (!stack.empty()) {
-                fixed += stack.back() == '{' ? '}' : ']';
-                stack.pop_back();
-            }
-        };
-        for (auto i = brace; i < content.size(); i++) {
-            char c = content[i];
-            if (escaped) { escaped = false; fixed += c; continue; }
-            if (c == '\\') { escaped = true; fixed += c; continue; }
-            if (c == '"') { in_string = !in_string; fixed += c; continue; }
-            if (in_string) { fixed += c; continue; }
-            if (c == '{') { stack += '{'; fixed += c; }
-            else if (c == '[') { stack += '['; fixed += c; }
-            else if (c == '}') {
-                while (!fixed.empty() && fixed.back() == ',') fixed.pop_back();
-                if (!stack.empty() && stack.back() == '{') { stack.pop_back(); fixed += c; }
-                if (stack.empty()) break;
-            } else if (c == ']') {
-                // 数组内还有未闭合对象：先补 } 再闭合 ]
-                while (!fixed.empty() && fixed.back() == ',') fixed.pop_back();
-                while (!stack.empty() && stack.back() == '{') { fixed += '}'; stack.pop_back(); }
-                if (!stack.empty() && stack.back() == '[') { stack.pop_back(); fixed += c; }
-                if (stack.empty()) break;
-            } else if (c != ',') {
-                fixed += c;
-            } else if (!fixed.empty() && fixed.back() != ',') {
-                fixed += c;
-            }
-        }
-        close_outer();
-        json_str = fixed;
-    }
-
-    try {
-        auto j = json::parse(json_str);
-        if (j.contains("tool_calls")) {
-            for (auto& tc : j["tool_calls"]) {
-                ToolCall call;
-                call.id = tc.value("id", "");
-                auto& func = tc["function"];
-                call.name = func.value("name", "");
-                call.arguments = func.value("arguments", json::object());
-                calls.push_back(call);
-            }
-        }
-    } catch (...) {}
-    return calls;
 }
 
 // =============================================================================
@@ -1281,17 +1139,6 @@ json CodisServer::query_provider_balance(const std::string& provider_name) {
 
 namespace {
 
-constexpr int kCompactDefaultKeep = 20;   // 尾部保留原文条数
-constexpr int kCompactMinKeep = 4;        // 尾部至少保留的条数（题干 + 近期往返）
-constexpr int kCompactMaxKeep = 100;
-
-// len/4 近似估算 tokens（ASCII 为主 + 中文按 ~1 token/字裕量）
-int64_t est_tokens(const std::vector<Message>& msgs) {
-    int64_t n = 0;
-    for (auto& m : msgs) n += (int64_t)m.content.size() / 4;
-    return n;
-}
-
 // 压缩模板来自 ~/crush/internal/agent/templates/summary.md（保持结构一致）
 constexpr const char* kCompactPrompt =
     "You are summarizing a conversation to preserve context for continuing work later.\n"
@@ -1352,7 +1199,7 @@ constexpr const char* kCompactPrompt =
 } // namespace
 
 void CodisServer::run_compact(const std::string& session_id, int keep) {
-    keep = std::clamp(keep, kCompactMinKeep, kCompactMaxKeep);
+    keep = context_utils::clamp_keep(keep);
 
     auto broadcast = [&](const std::string& frame) {
         std::lock_guard lock(sessions_mutex_);
@@ -1380,14 +1227,14 @@ void CodisServer::run_compact(const std::string& session_id, int keep) {
     try {
         auto history = session_store_.load_messages(session_id);
         const size_t n = history.size();
-        if (n <= (size_t)keep + 1) {
+        auto split = context_utils::split_history(history, keep);
+        if (!split) {
             fail("history too short (" + std::to_string(n) + " msgs, need > " +
                  std::to_string(keep) + " to compress)");
             return;
         }
-        const size_t split = n - (size_t)keep;
-        std::vector<Message> prefix(history.begin(), history.begin() + (long)split);
-        std::vector<Message> tail(history.begin() + (long)split, history.end());
+        auto& prefix = split->prefix;
+        auto& tail = split->tail;
 
         json snap = json::array();
         for (auto& m : history) snap.push_back(m.to_json());
@@ -1408,16 +1255,12 @@ void CodisServer::run_compact(const std::string& session_id, int keep) {
         std::string summary = call_llm(req);
 
         // 新历史 = 摘要(system) + 题干(首条 user) + 尾部原文
-        std::vector<Message> compacted;
-        compacted.push_back({"system", "上下文摘要（历史压缩）:\n" + summary});
-        for (auto& m : prefix)
-            if (m.role == "user") { compacted.push_back(m); break; }
-        for (auto& m : tail) compacted.push_back(m);
+        std::vector<Message> compacted = context_utils::build_compacted_history(*split, summary);
 
         session_store_.replace_messages(session_id, compacted);
 
-        auto before_tok = est_tokens(history);
-        auto after_tok = est_tokens(compacted);
+        auto before_tok = context_utils::est_tokens(history);
+        auto after_tok = context_utils::est_tokens(compacted);
         LOG_INFO("compacted session {}: {} msgs -> {} msgs ({} -> {} est tokens)",
                  session_id.substr(0, 8), n, compacted.size(), before_tok, after_tok);
         broadcast(acp::compacted_frame(true, summary, ""));

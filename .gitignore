@@ -32,3 +32,7 @@ guess_number_game
 guess_number_game.cpp
 guess_number_game.cpp.bak
 scripts/demo.tape
+shortest_path
+shortest_path.cpp
+shortest_path.cpp.bak
+shortest_path.py

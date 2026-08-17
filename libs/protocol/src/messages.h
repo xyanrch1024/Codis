@@ -140,6 +140,7 @@ struct ChatRequest {
         json j;
         if (!provider.empty()) j["provider"] = provider;
         j["model"] = model;
+        if (!session_id.empty()) j["session_id"] = session_id;
         j["messages"] = json::array();
         for (auto& m : messages) j["messages"].push_back(m.to_json());
         if (max_tokens) j["max_tokens"] = *max_tokens;
@@ -152,6 +153,7 @@ struct ChatRequest {
         ChatRequest r;
         if (j.contains("provider")) r.provider = j["provider"].get<std::string>();
         r.model       = j.value("model", "gpt-4o");
+        if (j.contains("session_id")) r.session_id = j["session_id"].get<std::string>();
         r.max_tokens  = j.contains("max_tokens")  ? std::optional(j["max_tokens"].get<int>())  : std::nullopt;
         r.stream      = j.value("stream", false);
         if (j.contains("tools")) r.tools = j["tools"];
