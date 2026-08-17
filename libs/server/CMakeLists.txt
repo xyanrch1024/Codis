@@ -25,8 +25,8 @@ target_link_libraries(codis-server PRIVATE
 
 # 纯逻辑单测（session_store / 上下文压缩 / tool_calls 解析 / 协议，无网络无终端）
 if(BUILD_TESTING)
+    find_package(GTest CONFIG REQUIRED)
     add_executable(codis_server_test
-        tests/main.cpp
         tests/session_store_test.cpp
         tests/context_utils_test.cpp
         tests/tool_call_parse_test.cpp
@@ -39,11 +39,13 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/libs/util/src
     )
     target_link_libraries(codis_server_test PRIVATE
+        GTest::gtest_main
         nlohmann_json::nlohmann_json
         SQLite::SQLite3
         codis_protocol
         codis_util
         Threads::Threads
     )
-    add_test(NAME server_logic COMMAND codis_server_test)
+    include(GoogleTest)
+    gtest_discover_tests(codis_server_test)
 endif()

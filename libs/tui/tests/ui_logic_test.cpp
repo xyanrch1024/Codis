@@ -6,25 +6,15 @@
 #include "model.h"
 #include "acp_client.h"
 
+#include <gtest/gtest.h>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/event.hpp>
 
-#include <iostream>
 #include <string>
 #include <vector>
 
 using namespace codis;
 using ftxui::Event;
-
-static int g_failures = 0;
-#define CHECK(cond)                                                          \
-    do {                                                                     \
-        if (!(cond)) {                                                       \
-            ++g_failures;                                                    \
-            std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": " #cond \
-                      << "\n";                                               \
-        }                                                                    \
-    } while (0)
 
 // ---------------------------------------------------------------------------
 // FakeAcpClient：内存替身，记录调用、供注入响应
@@ -84,36 +74,36 @@ public:
 // ---------------------------------------------------------------------------
 // Overlay 按键状态机
 // ---------------------------------------------------------------------------
-static void test_info_overlay() {
+TEST(UiOverlay, InfoOverlayKeys) {
     InfoOverlay o;
-    CHECK(!o.handle_key(Event::Escape));  // 不可见时不消费
+    EXPECT_FALSE(o.handle_key(Event::Escape));  // 不可见时不消费
 
     o.visible = true;
     o.skills = {{"skill-a", "A", "desc a"}, {"skill-b", "B", "desc b"}};
     o.mcps = {{"mcp-a", "stdio", true, 3}};
 
-    CHECK(o.handle_key(Event::ArrowDown));
-    CHECK(o.sel[0] == 1);
-    CHECK(o.handle_key(Event::ArrowDown));  // 到底不越界
-    CHECK(o.sel[0] == 1);
-    CHECK(o.handle_key(Event::ArrowUp));
-    CHECK(o.sel[0] == 0);
-    CHECK(o.handle_key(Event::ArrowUp));    // 顶不再上
-    CHECK(o.sel[0] == 0);
+    EXPECT_TRUE(o.handle_key(Event::ArrowDown));
+    EXPECT_EQ(o.sel[0], 1);
+    EXPECT_TRUE(o.handle_key(Event::ArrowDown));  // 到底不越界
+    EXPECT_EQ(o.sel[0], 1);
+    EXPECT_TRUE(o.handle_key(Event::ArrowUp));
+    EXPECT_EQ(o.sel[0], 0);
+    EXPECT_TRUE(o.handle_key(Event::ArrowUp));    // 顶不再上
+    EXPECT_EQ(o.sel[0], 0);
 
-    CHECK(o.handle_key(Event::Tab));
-    CHECK(o.pane == 1);
-    CHECK(o.handle_key(Event::TabReverse));
-    CHECK(o.pane == 0);
-    CHECK(o.handle_key(Event::ArrowDown));  // mcp 栏 1 项不越界
-    CHECK(o.sel[1] == 0);
+    EXPECT_TRUE(o.handle_key(Event::Tab));
+    EXPECT_EQ(o.pane, 1);
+    EXPECT_TRUE(o.handle_key(Event::TabReverse));
+    EXPECT_EQ(o.pane, 0);
+    EXPECT_TRUE(o.handle_key(Event::ArrowDown));  // mcp 栏 1 项不越界
+    EXPECT_EQ(o.sel[1], 0);
 
-    CHECK(o.handle_key(Event::Character('x')));  // 打开时吞掉普通键
-    CHECK(o.handle_key(Event::Escape));
-    CHECK(!o.visible);
+    EXPECT_TRUE(o.handle_key(Event::Character('x')));  // 打开时吞掉普通键
+    EXPECT_TRUE(o.handle_key(Event::Escape));
+    EXPECT_FALSE(o.visible);
 }
 
-static void test_sessions_overlay() {
+TEST(UiOverlay, SessionsOverlayKeys) {
     SessionsOverlay o;
     SessionInfo a, b;
     a.id = "aaa"; a.title = "first"; a.message_count = 1;
@@ -125,91 +115,95 @@ static void test_sessions_overlay() {
     o.on_activate = [&](const SessionInfo& s) { activated = s; };
     o.on_delete = [&](const SessionInfo& s) { deleted = s; };
 
-    CHECK(o.handle_key(Event::ArrowUp));    // 顶处回绕？不——越界保护
-    CHECK(o.selected == 0);
-    CHECK(o.handle_key(Event::Tab));        // 回绕：0→1
-    CHECK(o.selected == 1);
-    CHECK(o.handle_key(Event::ArrowUp));
-    CHECK(o.selected == 0);
-    CHECK(o.handle_key(Event::ArrowDown));
-    CHECK(o.selected == 1);
-    CHECK(o.handle_key(Event::Return));
-    CHECK(activated.id == "bbb");
-    CHECK(o.handle_key(Event::d));
-    CHECK(deleted.id == "bbb");
-    CHECK(o.handle_key(Event::D));
-    CHECK(deleted.id == "bbb");
-    CHECK(o.handle_key(Event::Escape));
-    CHECK(!o.visible);
-    CHECK(!o.handle_key(Event::ArrowDown));  // 关闭后不消费
+    EXPECT_TRUE(o.handle_key(Event::ArrowUp));    // 顶处回绕？不——越界保护
+    EXPECT_EQ(o.selected, 0);
+    EXPECT_TRUE(o.handle_key(Event::Tab));        // 回绕：0→1
+    EXPECT_EQ(o.selected, 1);
+    EXPECT_TRUE(o.handle_key(Event::ArrowUp));
+    EXPECT_EQ(o.selected, 0);
+    EXPECT_TRUE(o.handle_key(Event::ArrowDown));
+    EXPECT_EQ(o.selected, 1);
+    EXPECT_TRUE(o.handle_key(Event::Return));
+    EXPECT_EQ(activated.id, "bbb");
+    EXPECT_TRUE(o.handle_key(Event::d));
+    EXPECT_EQ(deleted.id, "bbb");
+    EXPECT_TRUE(o.handle_key(Event::D));
+    EXPECT_EQ(deleted.id, "bbb");
+    EXPECT_TRUE(o.handle_key(Event::Escape));
+    EXPECT_FALSE(o.visible);
+    EXPECT_FALSE(o.handle_key(Event::ArrowDown));  // 关闭后不消费
 }
 
-static void test_help_overlay() {
+TEST(UiOverlay, HelpOverlayKeys) {
     HelpOverlay h;
-    CHECK(!h.handle_key(Event::Escape));
+    EXPECT_FALSE(h.handle_key(Event::Escape));
     h.visible = true;
-    CHECK(h.handle_key(Event::Character('q')));  // 吞掉
-    CHECK(h.handle_key(Event::Escape));
-    CHECK(!h.visible);
+    EXPECT_TRUE(h.handle_key(Event::Character('q')));  // 吞掉
+    EXPECT_TRUE(h.handle_key(Event::Escape));
+    EXPECT_FALSE(h.visible);
 }
 
-static void test_confirm_overlay() {
+TEST(UiOverlay, ConfirmOverlayKeys) {
     ConfirmOverlay c;
     std::vector<bool> responses;
     c.on_respond = [&](bool approve) { responses.push_back(approve); };
 
-    CHECK(c.handle_key(Event::Tab));       // 焦点 拒绝→批准
-    CHECK(c.focus == true);
-    CHECK(c.handle_key(Event::Return));    // Enter 激活焦点
-    CHECK(responses.size() == 1 && responses[0] == true);
-    CHECK(c.handle_key(Event::ArrowLeft)); // 焦点 批准→拒绝
-    CHECK(c.focus == false);
-    CHECK(c.handle_key(Event::Escape));    // 拒绝
-    CHECK(responses.size() == 2 && responses[1] == false);
-    CHECK(c.handle_key(Event::Character('y')));
-    CHECK(responses.size() == 3 && responses[2] == true);
-    CHECK(c.handle_key(Event::Character('n')));
-    CHECK(responses.size() == 4 && responses[3] == false);
-    CHECK(c.handle_key(Event::Character('x')));  // 其它键吞掉、无副作用
-    CHECK(responses.size() == 4);
+    EXPECT_TRUE(c.handle_key(Event::Tab));       // 焦点 拒绝→批准
+    EXPECT_TRUE(c.focus);
+    EXPECT_TRUE(c.handle_key(Event::Return));    // Enter 激活焦点
+    ASSERT_EQ(responses.size(), 1u);
+    EXPECT_TRUE(responses[0]);
+    EXPECT_TRUE(c.handle_key(Event::ArrowLeft)); // 焦点 批准→拒绝
+    EXPECT_FALSE(c.focus);
+    EXPECT_TRUE(c.handle_key(Event::Escape));    // 拒绝
+    ASSERT_EQ(responses.size(), 2u);
+    EXPECT_FALSE(responses[1]);
+    EXPECT_TRUE(c.handle_key(Event::Character('y')));
+    ASSERT_EQ(responses.size(), 3u);
+    EXPECT_TRUE(responses[2]);
+    EXPECT_TRUE(c.handle_key(Event::Character('n')));
+    ASSERT_EQ(responses.size(), 4u);
+    EXPECT_FALSE(responses[3]);
+    EXPECT_TRUE(c.handle_key(Event::Character('x')));  // 其它键吞掉、无副作用
+    EXPECT_EQ(responses.size(), 4u);
 }
 
-static void test_overlay_render_smoke() {
+TEST(UiOverlay, RenderSmoke) {
     TuiState st;
     auto layout = render_conversation(st, 60, -1);
-    CHECK(layout.content != nullptr);
-    CHECK(layout.row_owners.empty());
+    EXPECT_NE(layout.content, nullptr);
+    EXPECT_TRUE(layout.row_owners.empty());
 
     ViewCtx ctx;
     ctx.state = &st;
     ctx.cwd = "/tmp";
     auto sb = render_status_bar(ctx);
-    CHECK(sb != nullptr);
+    EXPECT_NE(sb, nullptr);
 
     HelpOverlay h;
     h.visible = true;
-    CHECK(h.render(ftxui::text("x"), {}) != nullptr);
+    EXPECT_NE(h.render(ftxui::text("x"), {}), nullptr);
     InfoOverlay i;
     i.visible = true;
-    CHECK(i.render(ftxui::text("x")) != nullptr);
+    EXPECT_NE(i.render(ftxui::text("x")), nullptr);
     SessionsOverlay so;
     so.visible = true;
     so.list = {};
-    CHECK(so.render(ftxui::text("x"), "sid") != nullptr);  // 空列表退回 body
+    EXPECT_NE(so.render(ftxui::text("x"), "sid"), nullptr);  // 空列表退回 body
     so.list = {{"sid", "t", 0, 0, 0, {}}};
-    CHECK(so.render(ftxui::text("x"), "sid") != nullptr);
+    EXPECT_NE(so.render(ftxui::text("x"), "sid"), nullptr);
     ConfirmOverlay co;
     acp::ToolCallEvent call;
     call.name = "bash";
     call.arguments = json{{"command", "ls"}};
-    CHECK(co.render(ftxui::text("x"), call, 30, 100) != nullptr);
-    CHECK(co.height > 0);
+    EXPECT_NE(co.render(ftxui::text("x"), call, 30, 100), nullptr);
+    EXPECT_GT(co.height, 0);
 }
 
 // ---------------------------------------------------------------------------
 // 模型事件应用（WS 事件 → 对话条目）
 // ---------------------------------------------------------------------------
-static void test_model_apply() {
+TEST(UiModel, ApplyEvents) {
     auto state = std::make_shared<TuiState>();
     AcpEvent ev;
 
@@ -219,11 +213,11 @@ static void test_model_apply() {
     state->push_event(ev);
     ev.text = " world";
     state->push_event(ev);
-    CHECK(state->drain_events());
-    CHECK(state->items.size() == 1);
-    CHECK(state->items[0].kind == ItemKind::Assistant);
-    CHECK(state->items[0].text == "hello world");
-    CHECK(state->items[0].streaming);
+    EXPECT_TRUE(state->drain_events());
+    ASSERT_EQ(state->items.size(), 1u);
+    EXPECT_EQ(state->items[0].kind, ItemKind::Assistant);
+    EXPECT_EQ(state->items[0].text, "hello world");
+    EXPECT_TRUE(state->items[0].streaming);
 
     // 工具调用 + 结果合并（按 id）
     acp::ToolCallEvent tc;
@@ -242,13 +236,13 @@ static void test_model_apply() {
     ev.tool_result = tr;
     state->push_event(ev);
 
-    CHECK(state->drain_events());
-    CHECK(state->items.size() == 2);  // assistant + toolcall（空白行是渲染期概念）
+    EXPECT_TRUE(state->drain_events());
+    ASSERT_EQ(state->items.size(), 2u);  // assistant + toolcall（空白行是渲染期概念）
     auto& tool_item = state->items.back();
-    CHECK(tool_item.kind == ItemKind::ToolCall);
-    CHECK(tool_item.has_result);
-    CHECK(tool_item.tool_success);
-    CHECK(tool_item.result_text == "file.txt");
+    EXPECT_EQ(tool_item.kind, ItemKind::ToolCall);
+    EXPECT_TRUE(tool_item.has_result);
+    EXPECT_TRUE(tool_item.tool_success);
+    EXPECT_EQ(tool_item.result_text, "file.txt");
 
     // Done：结束流式 + 停止 processing
     state->processing = true;
@@ -256,24 +250,24 @@ static void test_model_apply() {
     ev = AcpEvent{};
     ev.kind = AcpEvent::Kind::Done;
     state->push_event(ev);
-    CHECK(state->drain_events());
-    CHECK(!state->processing);
-    CHECK(!state->items.back().streaming);
+    EXPECT_TRUE(state->drain_events());
+    EXPECT_FALSE(state->processing);
+    EXPECT_FALSE(state->items.back().streaming);
 
     // Error：入错误条目 + 停 processing
     ev = AcpEvent{};
     ev.kind = AcpEvent::Kind::Error;
     ev.text = "boom";
     state->push_event(ev);
-    CHECK(state->drain_events());
-    CHECK(state->items.back().kind == ItemKind::Error);
-    CHECK(!state->processing);
+    EXPECT_TRUE(state->drain_events());
+    EXPECT_EQ(state->items.back().kind, ItemKind::Error);
+    EXPECT_FALSE(state->processing);
 }
 
 // ---------------------------------------------------------------------------
 // ChatController 命令分发
 // ---------------------------------------------------------------------------
-static void test_controller_basic() {
+TEST(UiController, BasicCommands) {
     FakeAcpClient acp;
     auto state = std::make_shared<TuiState>();
     state->current_session = "s1";
@@ -298,61 +292,61 @@ static void test_controller_basic() {
 
     // /exit
     ctrl.send_message("/exit");
-    CHECK(exit_calls == 1);
+    EXPECT_EQ(exit_calls, 1);
 
     // /sessions → show_sessions（list 来自 acp）
     acp.sessions = {{"sid1", "t", 0, 0, 0, {}}};
     ctrl.send_message("/sessions");
-    CHECK(sessions_shown);
+    EXPECT_TRUE(sessions_shown);
 
     // /help
     ctrl.send_message("/help");
-    CHECK(help_shown);
+    EXPECT_TRUE(help_shown);
 
     // /info（服务可达 → 传递 skills/mcps；不可达 → Error 条目 + 空列表）
     acp.return_info = true;
     acp.server_info_.skills = {{"s1", "n1", "d1"}};
     acp.server_info_.mcp_servers = {{"m1", "stdio", true, 2}};
     ctrl.send_message("/info");
-    CHECK(info_shown);
+    EXPECT_TRUE(info_shown);
     info_shown = false;
     acp.return_info = false;
     ctrl.send_message("/info");
-    CHECK(info_shown);
-    CHECK(state->items.back().kind == ItemKind::Error);
+    EXPECT_TRUE(info_shown);
+    EXPECT_EQ(state->items.back().kind, ItemKind::Error);
 
     // /yolo 切换 + notice
     ctrl.send_message("/yolo");
-    CHECK(ctrl.yolo());
-    CHECK(notices.back().find("ON") != std::string::npos);
+    EXPECT_TRUE(ctrl.yolo());
+    EXPECT_NE(notices.back().find("ON"), std::string::npos);
     ctrl.send_message("/yolo off");
-    CHECK(!ctrl.yolo());
+    EXPECT_FALSE(ctrl.yolo());
 
     // 普通消息：User 条目 + send_async（仅当前一条）
     ctrl.send_message("hello world");
-    CHECK(state->processing);
-    CHECK(state->items.back().kind == ItemKind::User);
-    CHECK(state->items.back().text == "hello world");
-    CHECK(acp.sent_requests.size() == 1);
-    CHECK(acp.sent_requests[0].session_id == "s1");
-    CHECK(acp.sent_requests[0].messages[0].content == "hello world");
-    CHECK(acp.sent_requests[0].max_tokens == 4096);
+    EXPECT_TRUE(state->processing);
+    EXPECT_EQ(state->items.back().kind, ItemKind::User);
+    EXPECT_EQ(state->items.back().text, "hello world");
+    ASSERT_EQ(acp.sent_requests.size(), 1u);
+    EXPECT_EQ(acp.sent_requests[0].session_id, "s1");
+    EXPECT_EQ(acp.sent_requests[0].messages[0].content, "hello world");
+    EXPECT_EQ(acp.sent_requests[0].max_tokens, 4096);
 
     // 任务中 → pending 队列，不发请求
     ctrl.send_message("queued msg");
-    CHECK(acp.sent_requests.size() == 1);
-    CHECK(state->pending_count() == 1);
-    CHECK(reset_scroll_calls > 0);
+    EXPECT_EQ(acp.sent_requests.size(), 1u);
+    EXPECT_EQ(state->pending_count(), 1);
+    EXPECT_GT(reset_scroll_calls, 0);
 
     // Done 触发 on_idle_ → flush 逐条发送
     state->processing = false;
     state->on_idle_ = [&] { ctrl.flush_pending(); };
     state->on_idle_();
-    CHECK(acp.sent_requests.size() == 2);
-    CHECK(acp.sent_requests[1].messages[0].content == "queued msg");
+    ASSERT_EQ(acp.sent_requests.size(), 2u);
+    EXPECT_EQ(acp.sent_requests[1].messages[0].content, "queued msg");
 }
 
-static void test_controller_model_and_balance() {
+TEST(UiController, ModelAndBalanceCommands) {
     FakeAcpClient acp;
     auto state = std::make_shared<TuiState>();
     ChatController ctrl(acp, state, "glm-4.5", "zhipu", false, 8711);
@@ -362,14 +356,14 @@ static void test_controller_model_and_balance() {
     acp.server_info_.providers = {"zhipu", "deepseek"};
     acp.server_info_.provider_models = {{"zhipu", "glm-4.5"}, {"deepseek", "ds-v3"}};
     ctrl.send_message("/model deepseek");
-    CHECK(ctrl.provider() == "deepseek");
-    CHECK(ctrl.model() == "ds-v3");
-    CHECK(state->model == "ds-v3");
+    EXPECT_EQ(ctrl.provider(), "deepseek");
+    EXPECT_EQ(ctrl.model(), "ds-v3");
+    EXPECT_EQ(state->model, "ds-v3");
 
     // 未知 provider 报错且不改状态
     ctrl.send_message("/model nope");
-    CHECK(ctrl.provider() == "deepseek");
-    CHECK(state->items.back().kind == ItemKind::Status);
+    EXPECT_EQ(ctrl.provider(), "deepseek");
+    EXPECT_EQ(state->items.back().kind, ItemKind::Status);
 
     // /balance：走 http_get，成功解析出余额条目
     acp.http_result.ok = true;
@@ -378,19 +372,19 @@ static void test_controller_model_and_balance() {
         R"({"balance": {"balance_infos": [{"total_balance": "12.34", "topped_up_balance": "10.00", "granted_balance": "2.34"}], "is_available": true}})";
     size_t before = state->items.size();
     ctrl.send_message("/balance deepseek");
-    CHECK(acp.http_paths.size() == 1);
-    CHECK(acp.http_paths[0] == "/api/v1/balance/deepseek");
+    ASSERT_EQ(acp.http_paths.size(), 1u);
+    EXPECT_EQ(acp.http_paths[0], "/api/v1/balance/deepseek");
     bool saw_total = false;
     for (size_t i = before; i < state->items.size(); i++)
         if (state->items[i].text.find("Total:") != std::string::npos) saw_total = true;
-    CHECK(saw_total);
+    EXPECT_TRUE(saw_total);
 
     // 网络失败 → 状态条目
     acp.http_result = HttpResult{};
     acp.http_result.ok = false;
     acp.http_result.error = "connection refused";
     ctrl.send_message("/balance");
-    CHECK(state->items.back().text.find("unreachable") != std::string::npos);
+    EXPECT_NE(state->items.back().text.find("unreachable"), std::string::npos);
 
     // 非 200 → 错误消息
     acp.http_result = HttpResult{};
@@ -398,10 +392,10 @@ static void test_controller_model_and_balance() {
     acp.http_result.status = 400;
     acp.http_result.body = R"({"error": "bad request"})";
     ctrl.send_message("/balance");
-    CHECK(state->items.back().text.find("bad request") != std::string::npos);
+    EXPECT_NE(state->items.back().text.find("bad request"), std::string::npos);
 }
 
-static void test_controller_sessions() {
+TEST(UiController, SessionSwitchAndDelete) {
     FakeAcpClient acp;
     auto state = std::make_shared<TuiState>();
     state->current_session = "old";
@@ -414,35 +408,16 @@ static void test_controller_sessions() {
 
     // switch_session：切换 current、拉历史、hide_sessions
     ctrl.switch_session(b);
-    CHECK(state->current_session == "new");
-    CHECK(acp.last_switch == "new");
+    EXPECT_EQ(state->current_session, "new");
+    EXPECT_EQ(acp.last_switch, "new");
 
     // delete_session：非当前 → 列表刷新，保留 overlay
     state->current_session = "new";
     ctrl.delete_session(a);
-    CHECK(acp.sessions.size() == 2);
+    EXPECT_EQ(acp.sessions.size(), 2u);
 
     // delete_session 当前 → 建新会话 + 清空
     ctrl.delete_session(b);
-    CHECK(acp.create_calls >= 1);
-    CHECK(state->current_session == "sess-new");
-}
-
-int main() {
-    test_info_overlay();
-    test_sessions_overlay();
-    test_help_overlay();
-    test_confirm_overlay();
-    test_overlay_render_smoke();
-    test_model_apply();
-    test_controller_basic();
-    test_controller_model_and_balance();
-    test_controller_sessions();
-
-    if (g_failures == 0) {
-        std::cout << "ALL TESTS PASSED\n";
-        return 0;
-    }
-    std::cerr << g_failures << " TEST(S) FAILED\n";
-    return 1;
+    EXPECT_GE(acp.create_calls, 1);
+    EXPECT_EQ(state->current_session, "sess-new");
 }
