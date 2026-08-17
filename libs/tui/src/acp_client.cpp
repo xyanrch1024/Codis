@@ -23,6 +23,19 @@ bool AcpClient::health_check() {
     return res && res->status == 200;
 }
 
+HttpResult AcpClient::http_get(const std::string& path) {
+    HttpResult out;
+    auto res = http_->Get(path.c_str());
+    if (!res) {
+        out.error = httplib::to_string(res.error());
+        return out;
+    }
+    out.ok = true;
+    out.status = res->status;
+    out.body = res->body;
+    return out;
+}
+
 bool AcpClient::send_async(const ChatRequest& request) {
     auto frame = acp::request_frame(request);
 

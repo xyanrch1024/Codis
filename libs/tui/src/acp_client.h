@@ -18,6 +18,13 @@
 
 namespace codis {
 
+struct HttpResult {
+    bool ok = false;          // HTTP 请求成功返回（任意状态码）
+    int status = 0;           // 状态码（ok=true 时有效）
+    std::string body;         // 响应体
+    std::string error;        // ok=false 时的传输错误描述
+};
+
 struct SessionInfo {
     std::string id;
     std::string title;
@@ -79,33 +86,37 @@ public:
     };
 
     AcpClient(int server_port = 8711);
+    virtual ~AcpClient() = default;
 
     // fire-and-forget: 通过 WS 全双工发送消息，不等待回复
-    bool send_async(const ChatRequest& request);
+    virtual bool send_async(const ChatRequest& request);
 
     // 工具确认回执：approved=true 批准，false 拒绝（WS 未就绪时入待发队列）
-    void send_confirmation(const std::string& confirm_id, bool approved);
+    virtual void send_confirmation(const std::string& confirm_id, bool approved);
 
     // 长连接模式：打开 WebSocket 流，后台持续回调
-    bool connect(const std::string& session_id, Callbacks callbacks);
-    void disconnect();
+    virtual bool connect(const std::string& session_id, Callbacks callbacks);
+    virtual void disconnect();
     // 健康检查
-    bool health_check();
+    virtual bool health_check();
 
     // 会话管理
-    std::optional<std::string> create_session();
-    std::vector<SessionInfo> list_sessions();
-    std::optional<SessionInfo> get_session(const std::string& id);
-    bool delete_session(const std::string& id);
-    bool delete_all_sessions();
-    bool switch_session(const std::string& session_id);
-    void cancel_session(const std::string& session_id);
+    virtual std::optional<std::string> create_session();
+    virtual std::vector<SessionInfo> list_sessions();
+    virtual std::optional<SessionInfo> get_session(const std::string& id);
+    virtual bool delete_session(const std::string& id);
+    virtual bool delete_all_sessions();
+    virtual bool switch_session(const std::string& session_id);
+    virtual void cancel_session(const std::string& session_id);
     // 请求上下文压缩（WS 发送 compact 帧；keep = 保留尾部原文条数）
-    void send_compact(const std::string& session_id, int keep = 20);
-    std::string get_last_session();
+    virtual void send_compact(const std::string& session_id, int keep = 20);
+    virtual std::string get_last_session();
 
     // 服务器信息（providers / models / 特性）
-    std::optional<ServerInfo> get_server_info();
+    virtual std::optional<ServerInfo> get_server_info();
+
+    // 通用 GET（cmd_balance 等业务查询走这里，便于测试替身替换）
+    virtual HttpResult http_get(const std::string& path);
 
     // WebSocket 长连接是否已建立
     bool connected() const { return ws_online_.load(); }

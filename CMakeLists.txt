@@ -6,6 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# 测试支持（ctest；各子目录按需 add_test）
+include(CTest)
+
 # ==============================================================================
 # 包管理 — 统一 vcpkg manifest 模式
 # 所有第三方库由 vcpkg 管理，零 FetchContent

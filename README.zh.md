@@ -126,6 +126,6 @@ docker logs -f codis
 ```
 libs/
 ├── server/   # 服务端守护进程（HTTP + WebSocket + LLM 调度 + 工具执行）
-└── cli/      # FTXUI TUI 客户端
-└── llm/      # Provider 封装 / 会话存储 / 工具注册（server 与 cli 共用）
+├── tui/      # FTXUI TUI 客户端（model / views / controller / tui 四层）
+└── llm/      # Provider 封装 / 会话存储 / 工具注册（server 与 tui 共用）
 ```

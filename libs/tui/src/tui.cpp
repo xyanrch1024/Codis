@@ -1,9 +1,7 @@
 #include "tui.h"
 #include "tui_tool_render.h"
-#include "md_render.h"
-#include "log.h"
-#include "tool_format.h"
 #include "clipboard.h"
+#include "log.h"
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
@@ -12,7 +10,6 @@
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <cstdlib>
-#include <sstream>
 #include <algorithm>
 #include <filesystem>
 #include <atomic>
@@ -23,15 +20,8 @@ namespace codis {
 
 using namespace ftxui;
 
-// Sessions 面板的最大可见行数（固定面板高度，避免会话太多时撑满屏幕）
-static constexpr int kMaxSessionRows = 12;
-
 // 输入框的最大可见行数（超出后内部滚动，避免多行消息挤掉对话区）
 static constexpr int kMaxInputRows = 6;
-
-// 工具确认对话框（Ask 权限）：卡片宽度上限 / 参数区行数上限
-static constexpr int kConfirmW = 72;
-static constexpr int kConfirmArgLines = 9;
 
 // Alt/Ctrl/Shift+Enter 换行（不同终端编码：xterm ESC+CR/LF、kitty/WezTerm 等 CSI-u）
 static bool is_newline_key(const Event& ev) {
@@ -63,23 +53,23 @@ static const std::vector<std::pair<std::string, std::string>> kCommands = {
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
                      std::string session_arg, bool auto_approve)
     : server_port_(server_port)
-    , model_(std::move(model))
-    , provider_(std::move(provider))
     , session_arg_(std::move(session_arg))
     , auto_approve_(auto_approve)
     , acp_(server_port)
     , state_(std::make_shared<TuiState>())
+    , controller_(acp_, state_, std::move(model), std::move(provider), auto_approve, server_port)
 {
     // 未显式指定 -m/-p 时，从 server 拉默认 provider 与模型（与配置一致）
-    if (model_.empty()) {
+    if (controller_.model().empty()) {
         auto info = acp_.get_server_info();
         if (info && !info->default_provider.empty()) {
-            provider_ = info->default_provider;
+            std::string default_model;
             auto it = info->provider_models.find(info->default_provider);
-            if (it != info->provider_models.end()) model_ = it->second;
+            if (it != info->provider_models.end()) default_model = it->second;
+            controller_.set_model_provider(std::move(default_model), info->default_provider);
         }
     }
-    state_->model = model_;
+    state_->model = controller_.model();
     state_->server_port = server_port_;
 }
 
@@ -115,22 +105,63 @@ int TuiClient::run() {
         notify_pending = false;
         screen.Post(Event::Custom);
     };
-    connect_sse();
+    controller_.connect_sse();
 
     // 任务完成后自动发送排队中的 pending 消息（Done/Error 触发）
-    state_->on_idle_ = [this] { flush_pending(); };
+    state_->on_idle_ = [this] { controller_.flush_pending(); };
 
     // 如果恢复已有 session，通过 REST 拉历史（SSE 长连接不推历史）
     if (!session_arg_.empty()) {
         auto info = acp_.get_session(state_->current_session);
-        if (info) load_history(info->messages);
+        if (info) controller_.load_history(info->messages);
         // 首次 TUI 渲染时自动滚动到底部
         auto_scroll_ = true;
         scroll_px_ = 0;
     }
 
-    // 输入组件
+    // ---- 业务层回调接线（视图效果的唯一入口）----
+    UiCallbacks cb;
+    cb.exit = [&] { if (exit_loop_) exit_loop_(); };
+    cb.notify = [&] { post_job_(); };
+    cb.notice = [this](const std::string& m) { show_notice(m); };
+    cb.reset_scroll = [&] {
+        auto_scroll_ = true;
+        scroll_px_ = 0;
+        post_job_();
+    };
+    cb.show_help = [&] { help_.visible = true; };
+    cb.show_sessions = [&](std::vector<SessionInfo> list, bool reset_selection) {
+        sessions_.list = std::move(list);
+        if (reset_selection) sessions_.selected = 0;
+        sessions_.selected = std::min(sessions_.selected,
+                                      std::max(0, (int)sessions_.list.size() - 1));
+        sessions_.visible = true;
+    };
+    cb.show_info = [&](std::vector<SkillBrief> sk, std::vector<McpServerBrief> mc) {
+        info_.skills = std::move(sk);
+        info_.mcps = std::move(mc);
+        info_.sel[0] = info_.sel[1] = 0;
+        info_.pane = 0;
+        info_.visible = true;
+    };
+    cb.hide_sessions = [&] { sessions_.visible = false; };
+    controller_.set_callbacks(std::move(cb));
+
+    sessions_.on_activate = [this](const SessionInfo& s) { controller_.switch_session(s); };
+    sessions_.on_delete = [this](const SessionInfo& s) { controller_.delete_session(s); };
+    confirm_.on_respond = [this](bool approve) { respond_confirm(approve); };
+
+    // 工作目录（进程 cwd，渲染期间不变；长路径截断避免撑破布局）
+    try {
+        cwd_ = std::filesystem::current_path().string();
+    } catch (...) {}
+    if (cwd_.size() > 50) cwd_ = "…" + cwd_.substr(cwd_.size() - 50);
+
+    // ---- 输入组件 ----
     std::string input_text;
+    // 粘贴检测状态（输入事件判定；bracketed paste 标记或时序兜底）
+    bool in_paste_ = false;
+    std::chrono::steady_clock::time_point last_event_at_;
     // 过滤与已输入前缀匹配的命令（补全弹窗共享）
     auto filtered_commands = [&]() {
         std::vector<std::pair<std::string, std::string>> out;
@@ -151,6 +182,10 @@ int TuiClient::run() {
         return state.element | bgcolor(Color(Color::Palette256::Grey7));
     };
     auto input = Input(std::move(in_opt));
+
+    // 命令补全弹窗状态（仅 run() 内使用）
+    bool cmd_palette_visible_ = false;
+    int cmd_selected_ = 0;
     input |= CatchEvent([&](Event event) {
         // 粘贴检测（时序兜底，bracketed paste 标记外的场景）：
         // 与前一输入事件间隔 <50ms 视为快速连续流（粘贴）
@@ -179,7 +214,7 @@ int TuiClient::run() {
                 if (cmd_selected_ >= (int)filtered.size()) cmd_selected_ = (int)filtered.size() - 1;
                 auto& cmd = filtered[cmd_selected_].first;
                 // 执行该命令
-                send_message(cmd);
+                controller_.send_message(cmd);
                 input_text.clear();
                 cursor_pos = 0;
                 cmd_palette_visible_ = false;
@@ -215,7 +250,7 @@ int TuiClient::run() {
                 return true;
             }
             if (!input_text.empty()) {
-                send_message(input_text);
+                controller_.send_message(input_text);
                 input_text.clear();
                 cursor_pos = 0;
                 return true;
@@ -234,15 +269,7 @@ int TuiClient::run() {
             auto filtered = filtered_commands();
             if (!filtered.empty()) {
                 if (cmd_selected_ >= (int)filtered.size()) cmd_selected_ = 0;
-                Elements rows;
-                for (int i = 0; i < (int)filtered.size(); i++) {
-                    auto& [cmd, desc] = filtered[i];
-                    auto el = text("  " + cmd) | flex;
-                    if (i == cmd_selected_) el = el | inverted;
-                    rows.push_back(hbox({el, text("  " + desc) | dim}));
-                }
-                els.push_back(window(text(" Commands "), vbox(std::move(rows)) | frame) |
-                             clear_under | border);
+                els.push_back(render_cmd_palette(filtered, cmd_selected_));
             }
         }
         // 输入区高度随内容增长，但不超过 kMaxInputRows（超出后内部滚动）
@@ -266,11 +293,16 @@ int TuiClient::run() {
         return vbox(std::move(els));
     });
 
-    // 对话区
-    // UI 线程每帧：吞事件 → 逐条目构建逐行元素（行数 = 实际行数）。
-    // row_sigs_/row_owner_ 与元素一一对应，供点击命中测试反查内容行。
-    std::vector<std::string> row_sigs_;
-    std::vector<int> row_owner_;
+    // ---- 对话区 ----
+    // UI 线程每帧：吞事件 → 构建逐行元素（视图层产出布局，本层负责滚动/命中）
+    bool drag_active_ = false;   // 左键按下中
+    bool drag_moved_ = false;    // 是否发生了实际拖动（区分点击/拖拽）
+    int press_x_ = -1;           // 按下位置（位移阈值依据）
+    int press_y_ = -1;
+    int hover_row_ = -1;         // 悬停内容行（-1 = 无）
+    int esc_count_ = 0;          // 窗口内累计的 ESC 次数（兼容合并的 "\x1b\x1b"）
+    std::chrono::steady_clock::time_point last_escape_;
+
     auto conversation_view = Renderer([&] {
         // 单线程消费 WS 事件：先吞队列，再构建视图
         bool had = state_->drain_events();
@@ -280,105 +312,11 @@ int TuiClient::run() {
             screen.Post(Event::Custom);
 
         int vw = std::max(10, Terminal::Size().dimx);
-        int tw = vw - 2;  // 预留 vscroll_indicator 一列 + 1 列余量
-        Elements els;
-        auto card_bg = bgcolor(Color(Color::Palette256::Grey7));
-
-        auto push_row = [&](Element el, std::string sig, int owner) {
-            els.push_back(std::move(el));
-            row_sigs_.push_back(std::move(sig));
-            row_owner_.push_back(owner);
-        };
-        auto card_row = [&](Color bar_color, Element body, std::string body_sig, int owner) {
-            push_row(hbox({text("┃ ") | color(bar_color) | bold, std::move(body) | flex}) | card_bg,
-                     "┃ " + std::move(body_sig), owner);
-        };
-
-        row_sigs_.clear();
-        row_owner_.clear();
-        {
-            bool first = true;
-            for (int oi = 0; oi < (int)state_->items.size(); oi++) {
-                auto& item = state_->items[oi];
-                if (!first) push_row(text(""), "", oi);
-                first = false;
-
-                switch (item.kind) {
-                case ItemKind::User:
-                    for (auto& r : wrap_rows(item.text, tw - 2))
-                        card_row(Color::Cyan, std::move(r.el) | color(Color::Cyan),
-                                 std::move(r.sig), oi);
-                    break;
-                case ItemKind::Assistant: {
-                    auto mrows = md_rows(item.text, tw - 2);
-                    for (auto& r : mrows)
-                        card_row(Color::Green,
-                                 std::move(r.el) |
-                                     (item.streaming ? color(Color::GreenLight)
-                                                     : color(Color::Green)),
-                                 std::move(r.sig), oi);
-                    break;
-                }
-                case ItemKind::Reasoning: {
-                    // 独立思维链块：标签行 + 灰斜体内容，不用与消息同款的 "┃" 竖线卡片
-                    std::string rt = item.text;
-                    // 剥掉模型自带的 "thinking" 首行标记（GLM 思考模式 reasoning_content 以之开头）
-                    bool mark = (rt.rfind("thinking", 0) == 0 || rt.rfind("Thinking", 0) == 0) &&
-                                (rt.size() == 8 || std::isspace((unsigned char)rt[8]));
-                    if (mark) {
-                        size_t j = 8;
-                        while (j < rt.size() && std::isspace((unsigned char)rt[j])) j++;
-                        rt = rt.substr(std::min(j, rt.size()));
-                    }
-                    push_row(hbox({text(" 💭 thinking ") | italic | color(Color::GrayDark),
-                                   flex(text(""))}), "💭 thinking", oi);
-                    for (auto& r : wrap_rows(rt, tw - 3, Color::GrayDark))
-                        push_row(hbox({text("   "), std::move(r.el) | italic}) | card_bg,
-                                 std::move(r.sig), oi);
-                    break;
-                }
-                case ItemKind::ToolCall:
-                    for (auto& r : render_tool_call(item, tw)) push_row(std::move(r.el),
-                                                                        std::move(r.sig), oi);
-                    break;
-                case ItemKind::ToolResult:
-                    for (auto& r : wrap_rows(item.text, tw, Color::GrayLight))
-                        push_row(std::move(r.el), std::move(r.sig), oi);
-                    break;
-                case ItemKind::Error:
-                    for (auto& r : wrap_rows(item.text, tw - 2))
-                        card_row(Color::Red, std::move(r.el) | color(Color::Red),
-                                 std::move(r.sig), oi);
-                    break;
-                case ItemKind::Status:
-                    for (auto& r : wrap_rows(item.text, tw))
-                        push_row(std::move(r.el) | dim, std::move(r.sig), oi);
-                    break;
-                }
-            }
-        }
-
-        // 悬停的折叠目标行高亮（下划线），点击前即可确认可点
-        if (hover_row_ >= 0 && hover_row_ < (int)els.size()) {
-            int owner = row_owner_[hover_row_];
-            if (owner >= 0 && owner < (int)state_->items.size()) {
-                auto& it = state_->items[owner];
-                if (it.kind == ItemKind::ToolCall && tool_foldable(it)) {
-                    const std::string& sig = row_sigs_[hover_row_];
-                    bool target = it.folded ? (sig == "  more...")
-                                            : (sig.size() >= 3 && sig.rfind("▾ ", 0) == 0);
-                    if (target) els[hover_row_] = els[hover_row_] | underlined;
-                }
-            }
-        }
-
-        Element content = vbox(std::move(els));
-
-        // 限制内容宽度 ≤ 视口宽
-        content = content | size(WIDTH, LESS_THAN, vw);
+        conv_layout_ = render_conversation(*state_, vw - 2, hover_row_);
+        Element content = conv_layout_.content;
 
         // 行级滚动 → focusPositionRelative 比例
-        int total_rows = (int)row_owner_.size();
+        int total_rows = (int)conv_layout_.row_owners.size();
         max_scroll_ = total_rows;
         if (auto_scroll_) {
             scroll_px_ = total_rows;
@@ -398,7 +336,7 @@ int TuiClient::run() {
     // 不再依赖二次渲染/像素匹配，点击命中不会因为匹配失败而静默失效。
     // 返回 -1 = 弹出层打开 / 不在对话区 / 超出内容范围。
     auto content_row_at = [&](int mx, int my) {
-        if (help_visible_ || sessions_visible_ || cmd_palette_visible_) return -1;
+        if (help_.visible || sessions_.visible || cmd_palette_visible_) return -1;
         int dimy = Terminal::Size().dimy;
         int input_lines = 1;
         for (char c : input_text)
@@ -410,7 +348,7 @@ int TuiClient::run() {
         const int conv_bottom = dimy - 5 - input_h;  // [conv_top, conv_bottom) 为对话视口
         if (my < conv_top || my >= conv_bottom) return -1;
         int VH = conv_bottom - conv_top;
-        int total = (int)row_owner_.size();
+        int total = (int)conv_layout_.row_owners.size();
         if (VH <= 0 || total == 0) return -1;
         float yfrac = auto_scroll_ ? 1.f : std::min(1.0f, (float)scroll_px_ / std::max(1, total));
         int dy = (int)((float)total * yfrac) - (VH - 1) / 2;
@@ -423,12 +361,12 @@ int TuiClient::run() {
     auto toggle_fold_on_click = [&](int mx, int my) {
         int content_row = content_row_at(mx, my);
         if (content_row < 0) return;
-        int owner = row_owner_[content_row];
+        int owner = conv_layout_.row_owners[content_row];
         if (owner < 0 || owner >= (int)state_->items.size()) return;
         auto& it = state_->items[owner];
         if (it.kind != ItemKind::ToolCall || !tool_foldable(it)) return;
         // 截断态：仅 "  more..." 行可点击展开；展开态：仅 ▾ 命令行可点击收回
-        const std::string& sig = row_sigs_[content_row];
+        const std::string& sig = conv_layout_.row_sigs[content_row];
         if (it.folded) {
             if (sig != "  more...") return;
         } else {
@@ -440,23 +378,7 @@ int TuiClient::run() {
         LOG_DEBUG("fold toggle owner={} folded={} row={}", owner, it.folded, content_row);
     };
 
-    // 工具确认（Ask 权限）：发送回执并关闭模态对话框
-    auto respond_confirm = [&](bool approve) {
-        auto& pc = *state_->pending_confirm;
-        acp_.send_confirmation(pc.confirm_id, approve);
-        show_notice(approve ? "[Tool approved]" : "[Tool rejected]");
-        state_->pending_confirm.reset();
-        post_job_();
-    };
-
     auto main_container = Container::Vertical({conversation_view, input_bar});
-
-    // 工作目录（进程 cwd，渲染期间不变；长路径截断避免撑破布局）
-    std::string cwd;
-    try {
-        cwd = std::filesystem::current_path().string();
-    } catch (...) {}
-    if (cwd.size() > 50) cwd = "…" + cwd.substr(cwd.size() - 50);
 
     auto main_renderer = Renderer(main_container, [&] {
         // 瞬时提示过期清理（定时线程轮询 notice_pending_ 触发渲染）
@@ -468,47 +390,22 @@ int TuiClient::run() {
             }
         }
 
-        // 底部状态栏（三行，状态在第二行）
-        Elements status_lines;
-        {
-            // 状态栏 context 文本变化时打日志，确认渲染周期是否发生
-            static std::string last_ctx_str;
-            std::string cur_ctx = state_->context_size_str();
-            if (cur_ctx != last_ctx_str) {
-                LOG_INFO("[ctx] statusbar rendered as '{}'", cur_ctx);
-                last_ctx_str = cur_ctx;
-            }
-        }
-        status_lines.push_back(hbox({
-            text(acp_.connected() ? " ● Connected" : " ● Disconnected") |
-                (acp_.connected() ? color(Color::Green) : color(Color::Red)),
-            text("  │  " + model_) | dim,
-            text("  │  context " + state_->context_size_str()) | dim,
-            yolo_mode_ ? text("  │  ⚡YOLO ") | color(Color::Yellow) | bold : text(""),
-            flex(text("")),
-            text("  " + state_->current_session.substr(0, 8)) | dim | inverted,
-        }) | bgcolor(Color(Color::Palette256::Grey7)));
-        static constexpr const char* kSpinner[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
-        static constexpr int kSpinnerCount = 10;
-        if (state_->processing) spinner_frame_ = (spinner_frame_ + 1) % kSpinnerCount;
-        status_lines.push_back(hbox({
-            text(state_->processing
-                     ? (std::string(" ") + kSpinner[spinner_frame_] + " processing...")
-                     : std::string(" ● idle")) |
-                (state_->processing ? color(Color::Yellow) : color(Color::Green)),
-            flex(text("")),
-            notice_.empty()
-                ? text("")
-                : text("  " + notice_ + " ") | color(Color::Yellow),
-        }) | bgcolor(Color(Color::Palette256::Grey7)));
-        status_lines.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
-        status_lines.push_back(hbox({
-            text(" " + cwd) | dim,
-            flex(text("")),
-        }) | bgcolor(Color(Color::Palette256::Grey7)));
-        status_lines.push_back(text("") | bgcolor(Color(Color::Palette256::Grey7)));
+        if (state_->processing) spinner_frame_ = (spinner_frame_ + 1) % 10;
 
-        auto status_bar = vbox(std::move(status_lines));
+        ViewCtx vctx;
+        vctx.term_w = Terminal::Size().dimx;
+        vctx.term_h = Terminal::Size().dimy;
+        vctx.state = state_.get();
+        vctx.model = controller_.model();
+        vctx.cwd = cwd_;
+        vctx.notice = notice_;
+        vctx.session_id = state_->current_session;
+        vctx.connected = acp_.connected();
+        vctx.yolo = controller_.yolo();
+        vctx.processing = state_->processing;
+        vctx.spinner_frame = spinner_frame_;
+
+        auto status_bar = render_status_bar(vctx);
 
         // Header: 居中 Codis + 分隔线 + 内容 + 状态栏
         Elements header = {
@@ -517,196 +414,21 @@ int TuiClient::run() {
             main_container->Render() | flex,
             status_bar,
         };
-
         auto body = vbox(std::move(header));
 
         // Confirm overlay — Ask 权限工具执行确认（优先级最高：压过 help/sessions）
         if (state_->pending_confirm) {
             auto& pc = *state_->pending_confirm;
-            std::string tool = pc.call.name;
-            const auto& args = pc.call.arguments;
-
-            int tw = Terminal::Size().dimx;
-            int cw = std::min(kConfirmW, std::max(40, tw - 8));  // 对话框宽
-            int text_w = cw - 4;  // 参数行截断宽
-
-            Elements arg_lines;
-            auto push_line = [&](std::string s, Color c, bool b = false) {
-                if ((int)s.size() > text_w) s = s.substr(0, text_w - 1) + "…";
-                auto el = text(std::move(s)) | color(c);
-                if (b) el = el | bold;
-                arg_lines.push_back(std::move(el));
-            };
-            auto push_block = [&](const std::string& label, const std::string& s,
-                                  int max_lines, Color c) {
-                if (s.empty()) { push_line(label + " (empty)", c); return; }
-                std::istringstream iss(s);
-                std::string l;
-                int i = 0;
-                bool truncated = false;
-                for (; std::getline(iss, l); ++i) {
-                    if (i >= max_lines) { truncated = true; break; }
-                    push_line((i == 0 ? label : "") + (i == 0
-                        ? "" : std::string(std::min(text_w, (int)label.size()), ' ')) + l, c);
-                }
-                if (truncated) push_line(("… +" + std::to_string(i) + " more lines"), Color::GrayDark);
-            };
-
-            // 按工具类型渲染参数区
-            if (tool == "bash") {
-                std::string cmd = args.value("command", "");
-                if (cmd.empty()) push_line("$ (empty command)", Color::GrayDark);
-                else push_line("$ " + cmd, Color::Cyan, true);
-            } else if (tool == "write") {
-                push_line("path: " + args.value("filePath", ""), Color::Yellow);
-                push_block("content: ", args.value("content", ""), kConfirmArgLines - 1, Color::Green);
-            } else if (tool == "edit") {
-                push_line("path: " + args.value("filePath", ""), Color::Yellow);
-                push_block("old: ", args.value("oldString", ""), 4, Color::Red);
-                push_block("new: ", args.value("newString", ""), 4, Color::Green);
-            } else {
-                std::string dump = args.dump();
-                if ((int)dump.size() > text_w * (kConfirmArgLines + 1)) dump.resize(text_w * (kConfirmArgLines + 1));
-                push_block("args: ", dump, kConfirmArgLines, Color::White);
-            }
-
-            int n_args = (int)arg_lines.size();
-            confirm_overlay_h_ = n_args + 8;  // 内容 n_args+6 + 边框 2
-
-            // 倒计时
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - pc.received_at).count();
             int remain = (int)(pc.timeout_seconds - elapsed);
             if (remain < 0) remain = 0;
-
-            auto approve_el = text(confirm_focus_ ? " [ ✓ 批准 (y) ] " : " [ 批准 ] ");
-            approve_el = confirm_focus_ ? (approve_el | inverted) | bold : (approve_el | dim);
-            auto reject_el = text(!confirm_focus_ ? " [ ✗ 拒绝 (n) ] " : " [ 拒绝 ] ");
-            reject_el = !confirm_focus_ ? (reject_el | inverted) | bold : (reject_el | dim);
-
-            bool danger = tool == "bash";
-            auto overlay = window(
-                text(danger ? " ⚠ 执行确认 — bash " : " ⚠ 工具执行确认 ") | bold |
-                    color(danger ? Color::Red : Color::Yellow),
-                vbox({
-                    hbox({ text(" 工具 "), text(tool) | bold |
-                               color(danger ? Color::Red : Color::Yellow),
-                           flex(text("")) }),
-                    separator(),
-                    vbox(std::move(arg_lines)) | frame,
-                    separator(),
-                    text(" ⏳ " + std::to_string(remain) +
-                         (remain <= 10 ? "s 即将超时，未确认将自动拒绝 " : "s 内未确认将自动拒绝 ")) |
-                        (remain <= 10 ? color(Color::Red) : dim),
-                    hbox({ flex(text("")), approve_el, text("   "), reject_el,
-                           flex(text("")) }),
-                    text(" Tab/←→ 切换 · y/Enter 批准 · n/Esc 拒绝 ") | dim | center,
-                }) | size(WIDTH, LESS_THAN, cw) | size(HEIGHT, LESS_THAN, n_args + 6))
-                | clear_under | center | border;
-            return dbox({body, overlay});
+            return confirm_.render(body, pc.call, remain, vctx.term_w);
         }
-
-        // Help overlay
-        if (help_visible_) {
-            Elements cmd_rows;
-            for (const auto& [cmd, desc] : kCommands)
-                cmd_rows.push_back(text("  " + cmd + "  " + desc));
-            auto overlay = window(text(" Help "), vbox({
-                text(" Commands:") | bold,
-                vbox(std::move(cmd_rows)) | frame,
-                separator(),
-                text(" Keys:") | bold,
-                text("  ESC ESC         cancel running task"),
-                text("  Up/Down / wheel scroll conversation"),
-                text("  Drag left mouse copy selected text"),
-                separator(),
-                text(" ESC to close ") | dim | center,
-            })) | clear_under | center | border;
-            return dbox({body, overlay});
-        }
-
-        // Skills & MCP overlay（/info）
-        if (info_visible_) {
-            auto trunc = [](const std::string& s, size_t n) {
-                if (s.size() <= n) return s;
-                return s.substr(0, n) + "…";
-            };
-            auto skill_rows = [&]() {
-                Elements rows;
-                if (info_skills_.empty()) {
-                    rows.push_back(text("  (none)") | dim);
-                } else {
-                    for (int i = 0; i < (int)info_skills_.size(); i++) {
-                        auto& s = info_skills_[i];
-                        bool cur = (info_pane_ == 0 && i == info_sel_[0]);
-                        auto name_el = text((cur ? "▸ " : "  ") + s.id);
-                        if (cur) name_el = name_el | inverted;
-                        rows.push_back(name_el);
-                        rows.push_back(text("    " +
-                            trunc(s.description.empty() ? s.name : s.description, 34)) | dim);
-                    }
-                }
-                return vbox(std::move(rows)) | frame | vscroll_indicator;
-            };
-            auto mcp_rows = [&]() {
-                Elements rows;
-                if (info_mcps_.empty()) {
-                    rows.push_back(text("  (none)") | dim);
-                } else {
-                    for (int i = 0; i < (int)info_mcps_.size(); i++) {
-                        auto& m = info_mcps_[i];
-                        bool cur = (info_pane_ == 1 && i == info_sel_[1]);
-                        auto name_el = text(std::string(cur ? "▸ " : "  ") +
-                            (m.online ? "● " : "○ ") + m.name) |
-                            (m.online ? color(Color::Green) : color(Color::Red));
-                        if (cur) name_el = name_el | inverted;
-                        rows.push_back(name_el);
-                        rows.push_back(text("    " + m.transport + " · " +
-                            std::to_string(m.tool_count) + " tools") | dim);
-                    }
-                }
-                return vbox(std::move(rows)) | frame | vscroll_indicator;
-            };
-
-            auto overlay = window(text(" Skills & MCP "), vbox({
-                text(" " + std::to_string(info_skills_.size()) + " skills · " +
-                     std::to_string(info_mcps_.size()) + " MCP servers") | bold,
-                separator(),
-                hbox({
-                    vbox({text(" Skills") | bold, skill_rows()}) | flex,
-                    text("  │  ") | dim,
-                    vbox({text(" MCP Servers") | bold, mcp_rows()}) | flex,
-                }),
-                separator(),
-                text(" ↑↓ 移动 · Tab 切栏 · ESC 关闭 ") | dim | center,
-            })) | clear_under | center | border |
-                size(WIDTH, LESS_THAN, 92) | size(HEIGHT, LESS_THAN, 28);
-            return dbox({body, overlay});
-        }
-
-        // Sessions overlay
-        if (sessions_visible_ && !session_list_.empty()) {
-            Elements rows;
-            for (int i = 0; i < (int)session_list_.size(); i++) {
-                auto& s = session_list_[i];
-                std::string prefix = (s.id == state_->current_session) ? "> " : "  ";
-                auto el = text(prefix + s.id + "  " + std::to_string(s.message_count) + " msgs  " + s.title);
-                if (s.id == state_->current_session) el = el | bold;
-                if (i == session_selected_) el = el | inverted | focus;
-                rows.push_back(el);
-            }
-
-            auto overlay = window(text(" Sessions "), vbox({
-                vbox(std::move(rows)) | frame | size(HEIGHT, EQUAL, kMaxSessionRows) |
-                    vscroll_indicator,
-                separator(),
-                 text(" " + std::to_string(session_selected_ + 1) + "/" +
-                     std::to_string(session_list_.size()) + "  ↑↓/Tab  Enter(del)  ESC ") | dim | center,
-            })) | clear_under | center | border;
-
-            return dbox({body, overlay});
-        }
-
+        if (help_.visible) return help_.render(body, kCommands);
+        if (info_.visible) return info_.render(body);
+        if (sessions_.visible && !sessions_.list.empty())
+            return sessions_.render(body, state_->current_session);
         return body;
     });
 
@@ -726,42 +448,8 @@ int TuiClient::run() {
 
         // 工具确认模态（Ask 权限）：锁定界面，仅接受确认相关输入
         if (state_->pending_confirm) {
-            if (event == Event::Tab || event == Event::TabReverse ||
-                event == Event::ArrowLeft || event == Event::ArrowRight) {
-                confirm_focus_ = !confirm_focus_;
-                post_job_();
-                return true;
-            }
-            if (event == Event::Character('y') || event == Event::Character('Y')) {
-                respond_confirm(true);
-                return true;
-            }
-            if (event == Event::Character('n') || event == Event::Character('N') ||
-                event == Event::Escape) {
-                respond_confirm(false);
-                return true;
-            }
-            if (event == Event::Return) {
-                respond_confirm(confirm_focus_);  // Enter 激活焦点按钮（默认焦点=拒绝，安全默认）
-                return true;
-            }
-            if (event.is_mouse()) {
-                // 左键释放且命中按钮行：批准(左半) / 拒绝(右半)；其余鼠标输入模态吞掉
-                if (event.mouse().button == Mouse::Left &&
-                    event.mouse().motion == Mouse::Released &&
-                    confirm_overlay_h_ > 0) {
-                    int cw = std::min(kConfirmW, std::max(40, Terminal::Size().dimx - 8));
-                    int cx = (Terminal::Size().dimx - (cw + 2)) / 2;
-                    int top = (Terminal::Size().dimy - confirm_overlay_h_) / 2;
-                    int btn_y = top + confirm_overlay_h_ - 3;  // 内容倒数第 2 行（按钮行）
-                    if (event.mouse().y == btn_y &&
-                        event.mouse().x >= cx && event.mouse().x < cx + cw + 2) {
-                        respond_confirm(event.mouse().x < cx + (cw + 2) / 2);
-                    }
-                }
-                return true;
-            }
-            return true;  // 其它按键一律吞掉，不落入输入框
+            confirm_.handle_key(event);
+            return true;
         }
 
         // 左键按下/拖动/松开：高亮交给 FTXUI 内置选择处理，这里只跟踪拖拽状态；
@@ -822,10 +510,7 @@ int TuiClient::run() {
                     if (esc_count_ >= 2) {
                         esc_count_ = 0;
                         last_escape_ = std::chrono::steady_clock::time_point{};
-                        acp_.cancel_session(state_->current_session);
-                        state_->processing = false;
-                        state_->clear_pending();  // 取消时丢弃未发送的排队消息
-                        show_notice("[Task cancelled]");
+                        controller_.cancel_task();
                         return true;
                     }
                 } else {
@@ -843,88 +528,9 @@ int TuiClient::run() {
                 return false;
         }
 
-        if (help_visible_) {
-            if (event == Event::Escape) {
-                help_visible_ = false;
-                return true;
-            }
-            return true;  // 面板打开时吞掉其它按键（与 Sessions 一致）
-        }
-
-        if (info_visible_) {
-            if (event == Event::Tab || event == Event::TabReverse) {
-                info_pane_ = 1 - info_pane_;
-                return true;
-            }
-            int n = (info_pane_ == 0) ? (int)info_skills_.size() : (int)info_mcps_.size();
-            if (event == Event::ArrowUp && info_sel_[info_pane_] > 0) {
-                info_sel_[info_pane_]--;
-                return true;
-            }
-            if (event == Event::ArrowDown && info_sel_[info_pane_] < n - 1) {
-                info_sel_[info_pane_]++;
-                return true;
-            }
-            if (event == Event::Escape) {
-                info_visible_ = false;
-                return true;
-            }
-            return true;  // 面板打开时吞掉其它按键（与 Sessions 一致）
-        }
-
-        if (sessions_visible_) {
-            if (event == Event::Tab) {                session_selected_ = (session_selected_ - 1 + (int)session_list_.size()) %
-                                    (int)session_list_.size();
-                return true;
-            }
-            if (event == Event::TabReverse) {
-                session_selected_ = (session_selected_ + 1) % (int)session_list_.size();
-                return true;
-            }
-            if (event == Event::ArrowUp && session_selected_ > 0) {
-                session_selected_--;
-                return true;
-            }
-            if (event == Event::ArrowDown && session_selected_ < (int)session_list_.size() - 1) {
-                session_selected_++;
-                return true;
-            }
-            if ((event == Event::d || event == Event::D) && !session_list_.empty()) {
-                auto& s = session_list_[session_selected_];
-                bool was_current = (s.id == state_->current_session);
-                acp_.delete_session(s.id);
-                session_list_ = acp_.list_sessions();
-                if (session_list_.empty()) {
-                    sessions_visible_ = false;
-                    auto sid = acp_.create_session();
-                    if (sid) {
-                        state_->clear_all();
-                        state_->current_session = *sid;
-                    }
-                } else {
-                    session_selected_ = std::min(session_selected_, (int)session_list_.size() - 1);
-                    if (was_current) {
-                        auto sid = acp_.create_session();
-                        if (sid) {
-                            state_->clear_all();
-                            state_->current_session = *sid;
-                            acp_.switch_session(*sid);  // WS 移到新 session
-                            state_->add_item(ItemKind::Status, "[Session " + s.id + " deleted, new session created]");
-                        }
-                    }
-                }
-                return true;
-            }
-            if (event == Event::Return && !session_list_.empty()) {
-                switch_session(session_list_[session_selected_]);
-                return true;
-            }
-            if (event == Event::Escape) {
-                sessions_visible_ = false;
-                return true;
-            }
-            return true;
-        }
+        if (help_.handle_key(event)) return true;
+        if (info_.handle_key(event)) return true;
+        if (sessions_.handle_key(event)) return true;
 
         // 对话区上下滚动（行级）
         if (event == Event::ArrowUp) {
@@ -974,9 +580,7 @@ int TuiClient::run() {
         }
 
         if (event == Event::CtrlS) {
-            session_list_ = acp_.list_sessions();
-            session_selected_ = 0;
-            sessions_visible_ = true;
+            controller_.open_sessions();
             return true;
         }
 
@@ -1026,400 +630,12 @@ void TuiClient::show_notice(const std::string& msg) {
     if (post_job_) post_job_();
 }
 
-void TuiClient::send_message(const std::string& text) {
-    if (text == "/exit") {
-        // 退出 FTXUI 事件循环，让 run() 走完 acp_.disconnect() + 终端恢复，
-        // 而非 std::exit() 直接杀掉进程（后者会留下 raw 终端/挂起线程）
-        if (exit_loop_) exit_loop_();
-        return;
-    }
-    if (text == "/clear") {
-        cmd_clear();
-        return;
-    }
-    if (text == "/sessions") {
-        session_list_ = acp_.list_sessions();
-        session_selected_ = 0;
-        sessions_visible_ = true;
-        return;
-    }
-    if (text == "/info") {
-        auto info = acp_.get_server_info();
-        info_skills_.clear();
-        info_mcps_.clear();
-        if (info) {
-            info_skills_ = std::move(info->skills);
-            info_mcps_ = std::move(info->mcp_servers);
-        } else {
-            state_->add_item(ItemKind::Error, "[Error] Server unreachable: " +
-                std::string("failed to fetch /api/v1/info"));
-        }
-        info_sel_[0] = info_sel_[1] = 0;
-        info_pane_ = 0;
-        info_visible_ = true;
-        return;
-    }
-    if (text == "/clearsessions") {
-        cmd_delete_all();
-        return;
-    }
-    if (text == "/help") {
-        help_visible_ = true;
-        return;
-    }
-    if (text.starts_with("/newsession")) {
-        auto sid = acp_.create_session();
-        if (sid) {
-            state_->clear_all();
-            state_->current_session = *sid;
-            acp_.switch_session(*sid);  // WS 移到新 session，否则服务端广播无连接可发
-            state_->add_item(ItemKind::Status, "[New session created: " + *sid + "]");
-        }
-        return;
-    }
-    if (text.starts_with("/balance")) {
-        cmd_balance(text);
-        return;
-    }
-    if (text.starts_with("/model")) {
-        cmd_model(text);
-        return;
-    }
-    if (text.starts_with("/yolo")) {
-        // YOLO 模式热切换：所有 Ask 工具自动批准，不再弹确认
-        std::string arg;
-        if (text.size() > 5) arg = text.substr(5);
-        for (char& c : arg) c = (char)std::tolower(c);
-        if (arg == " on")       yolo_mode_ = true;
-        else if (arg == " off") yolo_mode_ = false;
-        else                    yolo_mode_ = !yolo_mode_;
-        show_notice(yolo_mode_ ? "[YOLO mode ON — Ask 工具自动批准]" : "[YOLO mode OFF]");
-        return;
-    }
-    if (text == "/compact" || text.starts_with("/compact ")) {
-        cmd_compact(text);
-        return;
-    }
-
-    // 当前任务处理中：新消息仅入 pending 队列，任务完成后自动发送
-    if (state_->processing) {
-        state_->pending_queue.push_back(text);
-        auto_scroll_ = true;
-        scroll_px_ = 0;
-        post_job_();
-        return;
-    }
-    send_request(text);
-}
-
-void TuiClient::send_request(const std::string& text) {
-    state_->add_item(ItemKind::User, text);
-    state_->processing = true;
-    state_->request_start_ = std::chrono::steady_clock::now();
-    state_->current_model_ = model_;
-    auto_scroll_ = true;
-    scroll_px_ = 0;
+void TuiClient::respond_confirm(bool approve) {
+    auto& pc = *state_->pending_confirm;
+    acp_.send_confirmation(pc.confirm_id, approve);
+    show_notice(approve ? "[Tool approved]" : "[Tool rejected]");
+    state_->pending_confirm.reset();
     post_job_();
-
-    state_->history.push_back({"user", text});
-
-    // 上下文由服务端从 SQLite 重建（session 历史 + baseline + tools），
-    // 客户端只发当前这一条 user 消息，整段 history 不再重复传输。
-    std::vector<Message> msgs;
-    msgs.push_back({"user", text});
-
-    ChatRequest req;
-    req.model = model_;
-    req.provider = provider_;
-    req.messages = msgs;
-    req.max_tokens = 4096;
-    req.session_id = state_->current_session;
-
-    acp_.send_async(req);
-}
-
-void TuiClient::flush_pending() {
-    if (state_->processing) return;
-    if (state_->pending_queue.empty()) return;
-    std::string text = std::move(state_->pending_queue.front());
-    state_->pending_queue.pop_front();
-    send_request(text);
-}
-
-void TuiClient::cmd_clear() {
-    state_->clear_all();
-    if (post_job_) post_job_();
-}
-
-void TuiClient::cmd_compact(const std::string& line) {
-    if (state_->processing) {
-        state_->add_item(ItemKind::Status, "[任务执行中，结束后再 /compact 压缩]");
-        if (post_job_) post_job_();
-        return;
-    }
-    int keep = 20;
-    auto pos = line.find(' ');
-    if (pos != std::string::npos) {
-        try { keep = std::stoi(line.substr(pos + 1)); } catch (...) {}
-        keep = std::clamp(keep, 4, 100);
-    }
-    state_->add_item(ItemKind::Status,
-        "[上下文压缩中…（LLM 摘要，约需数秒）keep=" + std::to_string(keep) + "]");
-    acp_.send_compact(state_->current_session, keep);
-    if (post_job_) post_job_();
-}
-
-void TuiClient::cmd_delete_all() {
-    acp_.delete_all_sessions();
-    cmd_clear();
-    state_->add_item(ItemKind::Status, "[All sessions deleted]");
-    if (post_job_) post_job_();
-}
-
-void TuiClient::cmd_balance(const std::string& line) {
-    std::string prov = "deepseek";
-    auto parts = [&]() {
-        std::vector<std::string> v;
-        std::istringstream iss(line);
-        std::string w;
-        while (iss >> w) v.push_back(w);
-        return v;
-    }();
-    if (parts.size() > 1) prov = parts[1];
-
-    httplib::Client client("127.0.0.1", server_port_);
-    client.set_connection_timeout(10, 0);
-    client.set_read_timeout(10, 0);
-
-    auto http_res = client.Get(("/api/v1/balance/" + prov).c_str());
-    if (!http_res) {
-        state_->add_item(ItemKind::Status, "[Error] Server unreachable: " + httplib::to_string(http_res.error()));
-        return;
-    }
-    if (http_res->status != 200) {
-        try {
-            auto j = codis::json::parse(http_res->body);
-            state_->add_item(ItemKind::Status, "[Error] " + j.value("error", http_res->body));
-        } catch (...) {
-            state_->add_item(ItemKind::Status, "[Error] HTTP " + std::to_string(http_res->status) + ": " + http_res->body.substr(0, 200));
-        }
-        return;
-    }
-
-    try {
-        auto j = codis::json::parse(http_res->body);
-        auto& bal = j["balance"];
-        state_->add_item(ItemKind::Status, "--- " + prov + " Balance ---");
-
-        if (bal.contains("balance_infos") && !bal["balance_infos"].empty()) {
-            for (auto& bi : bal["balance_infos"]) {
-                state_->add_item(ItemKind::Status, "  Total:   " + bi.value("total_balance", "N/A"));
-                state_->add_item(ItemKind::Status, "  Topped:  " + bi.value("topped_up_balance", "N/A"));
-                state_->add_item(ItemKind::Status, "  Granted: " + bi.value("granted_balance", "N/A"));
-            }
-        } else {
-            state_->add_item(ItemKind::Status, "  Response: " + bal.dump(2));
-        }
-
-        if (bal.contains("is_available")) {
-            state_->add_item(ItemKind::Status, "  Active:  " + std::string(bal["is_available"].get<bool>() ? "Yes" : "No"));
-        }
-    } catch (const std::exception& e) {
-        state_->add_item(ItemKind::Status, "[Error] Parse failed: " + std::string(e.what()));
-    }
-}
-
-void TuiClient::cmd_model(const std::string& line) {
-    auto parts = [&]() {
-        std::vector<std::string> v;
-        std::istringstream iss(line);
-        std::string w;
-        while (iss >> w) v.push_back(w);
-        return v;
-    }();
-
-    auto info = acp_.get_server_info();
-    if (!info) {
-        state_->add_item(ItemKind::Status, "[Error] Cannot query server info (unreachable?)");
-        if (post_job_) post_job_();
-        return;
-    }
-
-    // /model <name> — 切换到指定 provider（使用其配置的 model）
-    if (parts.size() >= 2) {
-        const std::string& name = parts[1];
-        auto it = std::find(info->providers.begin(), info->providers.end(), name);
-        if (it == info->providers.end()) {
-            state_->add_item(ItemKind::Status, "[Error] Unknown provider: " + name);
-            if (post_job_) post_job_();
-            return;
-        }
-        provider_ = name;
-        auto mit = info->provider_models.find(name);
-        if (mit != info->provider_models.end()) {
-            model_ = mit->second;
-            state_->model = model_;
-        }
-        state_->add_item(ItemKind::Status, "[Model switched to " + name +
-                          (mit != info->provider_models.end() ? " (" + mit->second + ")" : "") + "]");
-        if (post_job_) post_job_();
-        return;
-    }
-
-    // /model — 列出当前 + 可用 provider
-    state_->add_item(ItemKind::Status, "--- Model ---");
-    state_->add_item(ItemKind::Status, "  Current: " + provider_ + " (" + model_ + ")");
-    for (auto& p : info->providers) {
-        auto mit = info->provider_models.find(p);
-        std::string model = mit != info->provider_models.end() ? mit->second : "?";
-        state_->add_item(ItemKind::Status, "  " + p + " → " + model +
-                          (p == provider_ ? "  (current)" : "") +
-                          (p == info->default_provider ? "  (default)" : ""));
-    }
-    state_->add_item(ItemKind::Status, "  Usage: /model <provider>");
-    if (post_job_) post_job_();
-}
-
-AcpClient::Callbacks TuiClient::build_callbacks() {
-    return {
-        .on_assistant = [this](std::string_view delta) {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::AssistantDelta;
-            ev.text = std::string(delta);
-            state_->push_event(ev);
-        },
-        .on_reasoning = [this](std::string_view delta) {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::ReasoningDelta;
-            ev.text = std::string(delta);
-            state_->push_event(ev);
-        },
-        .on_tool_call = [this](const acp::ToolCallEvent& tc) {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::ToolCall;
-            ev.tool_call = tc;
-            state_->push_event(ev);
-        },
-        .on_tool_result = [this](const acp::ToolResultEvent& tr) {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::ToolResult;
-            ev.tool_result = tr;
-            state_->push_event(ev);
-        },
-        .on_tool_confirm = [this](const std::string& confirm_id, const acp::ToolCallEvent& tc,
-                              int timeout_seconds) {
-            if (auto_approve_ || yolo_mode_) {
-                // -y 或 /yolo 模式：静默批准，不打扰交互
-                acp_.send_confirmation(confirm_id, true);
-                LOG_INFO("auto-approved tool '{}' ({})", tc.name, confirm_id);
-                return;
-            }
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::ToolConfirm;
-            ev.confirm_id = confirm_id;
-            ev.tool_call = tc;
-            ev.timeout_seconds = timeout_seconds;
-            state_->push_event(ev);
-        },
-        .on_error = [this](std::string_view msg) {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::Error;
-            ev.text = std::string(msg);
-            state_->push_event(ev);
-        },
-        .on_done = [this]() {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::Done;
-            state_->push_event(ev);
-        },
-        .on_compacted = [this](const acp::CompactResultEvent& cr) {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::Compacted;
-            ev.compact = cr;
-            state_->push_event(ev);
-        },
-        .on_context_stats = [this](const acp::ContextStatsEvent& cs) {
-            AcpEvent ev;
-            ev.kind = AcpEvent::Kind::ContextStats;
-            ev.context = cs;
-            state_->push_event(ev);
-        },
-        .on_connection = [this](bool /*online*/) {
-            // 断线/重连：通知 UI 重绘，状态栏读取 acp_.connected() 反映最新状态
-            state_->notify_();
-        }
-    };
-}
-
-void TuiClient::connect_sse() {
-    acp_.connect(state_->current_session, build_callbacks());
-}
-
-// 历史回放：把持久化的消息恢复成 TUI 条目。
-// 与实时流一致——user/assistant 纯文本进 history（供构建请求），
-// reasoning/tool 仅展示（不入 history，避免把思维链或工具角色发回模型）。
-void TuiClient::load_history(const std::vector<Message>& msgs) {
-    for (auto& m : msgs) {
-        if (m.role == "user") {
-            state_->add_item(ItemKind::User, m.content);
-            state_->history.push_back(m);
-        } else if (m.role == "reasoning") {
-            state_->add_item(ItemKind::Reasoning, m.content);
-        } else if (m.role == "tool") {
-            // 合并进匹配的 ToolCall；未匹配则保底为独立条目
-            bool matched = false;
-            for (auto it = state_->items.rbegin(); it != state_->items.rend(); ++it) {
-                if (it->kind == ItemKind::ToolCall && m.tool_call_id && it->tool_id == *m.tool_call_id) {
-                    it->has_result = true;
-                    it->tool_success = true;
-                    it->result_text = m.content;
-                    it->folded = tool_auto_fold(*it);
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched)
-                state_->add_item(ItemKind::ToolResult, m.content);
-        } else if (m.role == "assistant") {
-            if (m.tool_call_id) {
-                json args = m.tool_arguments ? *m.tool_arguments : json::object();
-                auto d = tool_display(m.tool_name.value_or(""), args);
-                ConvItem item;
-                item.kind = ItemKind::ToolCall;
-                item.tool_id = *m.tool_call_id;
-                item.tool_name = m.tool_name.value_or("");
-                item.tool_icon = d.icon;
-                item.text = d.label;
-                item.tool_pending = d.pending;
-                item.tool_title = d.block_title;
-                item.tool_block = d.block;
-                if (item.tool_name == "write" || item.tool_name == "edit")
-                    item.content_text = format_tool_call(item.tool_name, args);
-                state_->items.push_back(std::move(item));
-                if (state_->notify_) state_->notify_();
-            } else {
-                state_->add_item(ItemKind::Assistant, m.content);
-                state_->history.push_back(m);
-            }
-        }
-    }
-}
-
-void TuiClient::switch_session(const SessionInfo& s) {
-    state_->current_session = s.id;
-    sessions_visible_ = false;
-
-    // 切换到新 session 的 SSE（历史通过 REST 加载）
-    acp_.switch_session(s.id);
-
-    // 通过 REST API 拉历史
-    auto info = acp_.get_session(s.id);
-    state_->clear_all();
-    if (info) load_history(info->messages);
-    auto_scroll_ = true;
-    scroll_px_ = 0;
-    state_->add_item(ItemKind::Status, "[Session: " + s.id + "]");
-    if (post_job_) post_job_();
 }
 
 } // namespace codis

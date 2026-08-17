@@ -210,8 +210,14 @@ codis-cpp/
 ├── ARCHITECTURE.md / codis-cpp-design.md / plan.md
 │
 ├── libs/
-│   ├── cli/src/main.cpp           # connect() + send_async()
-│   │       tui.h/cpp              # FTXUI TUI + session overlay
+│   ├── tui/src/
+│   │   ├── main.cpp / tui.h/cpp        # 组成根：事件循环 + 键盘映射 + 组装
+│   │   ├── model.h                     # TuiState / ConvItem / AcpEvent（UI 线程事实源）
+│   │   ├── views.h/cpp                 # 纯渲染（对话区/状态栏/补全弹窗）+ 4 个 Overlay
+│   │   ├── controller.h/cpp            # ChatController：命令分发 / 会话管理 / SSE 接线
+│   │   ├── acp_client.h/cpp            # connect() / send_async()（virtual，可注入替身）
+│   │   ├── tui_tool_render.h / md_render.h / tool_format.h / clipboard.h
+│   │   └── tests/ui_logic_test.cpp     # ctest 单测（overlay 按键 / 模型事件 / 命令分发）
 │   ├── server/src/
 │   │   ├── server.h/cpp             # 路由注册 + handle_acp_ws (request 帧), handle_acp_switch, queue_chat_request
 │   │   └── main.cpp                 # 启动入口
@@ -236,10 +242,6 @@ codis-cpp/
 │   │   ├── config.h/cpp
 │   │   ├── log.h
 │   │   └── event_bus.h
-│   └── cli/src/
-│       ├── main.cpp / tui.h/cpp        # FTXUI TUI
-│       ├── acp_client.h/cpp            # connect() / send_async()
-│       └── tool_format.h
 │
 ├── config/config.toml
 └── bot/feishu_bot.py
@@ -252,6 +254,34 @@ codis-cpp/
 | `connect(sid, cbs)` | `WS /api/v1/acp/ws/{sid}` → 后台线程接收推送，断线自动重连（指数退避，最多 10 次） |
 | `send_async(req)` | 构造 `request` 帧经 WS 发送（全双工）；WS 未就绪时入本地待发队列，`connected` 帧到达后补发 |
 | `switch_session(sid)` | 构造 `switch` 帧经 WS 发送；WS 未就绪时入待发队列，重连后按序补发 |
+
+## TUI 客户端分层 (v0.11.0)
+
+TUI 自 v0.11.0 起按「模型 / 视图 / 业务 / 组成根」四层拆分，纯逻辑可脱离终端单测：
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ TuiClient (tui.h/cpp) — 组成根                            │
+│  事件循环 · 键盘映射 · Overlay 组装 · 效果回调注入          │
+└───────────────┬──────────────────────────┬───────────────┘
+                │ 读 state / 注入回调       │ calls
+        ┌───────▼────────┐         ┌────────▼──────────┐
+        │ model.h         │         │ ChatController     │
+        │ TuiState 事实源  │◄────────│ (controller.h/cpp) │
+        │ ConvItem/AcpEvent│ 效果    │ 命令分发/会话/SSE  │
+        └───────▲────────┘         └────────▲──────────┘
+                │ read                      │ http/WS
+        ┌───────┴────────┐         ┌────────┴──────────┐
+        │ views.h/cpp 纯渲染│        │ AcpClient (virtual)│
+        │ 4 Overlay 自包含   │        └───────────────────┘
+        └────────────────┘
+```
+
+- **model.h** — `TuiState`：对话条目与 ACP 事件队列的唯一事实源；WS 回调线程只 `push_event`，UI 线程 `drain_events` 后应用。
+- **views.h/cpp** — 纯渲染函数（`render_conversation` / `render_status_bar` / `render_cmd_palette`）与 4 个自包含 Overlay（Help / Info / Sessions / Confirm）。每个 Overlay 自带「状态 + render + handle_key」，效果键（Enter/d/y…）通过注入回调触发，由组成根接到业务层。
+- **controller.h/cpp** — `ChatController`：命令分发（`/clear` `/info` `/balance`…）、pending 队列、会话切换/删除、SSE 接线。不触碰渲染与输入，经 `UiCallbacks`（exit/notify/notice/show_sessions…）出效果。
+- **tui.h/cpp** — 只剩组装：输入组件、滚动/拖拽/粘贴等交互逻辑、回调绑定。
+- **测试** — `ctest -R ui_logic`：overlay 按键状态机、模型事件合并、命令分发（`FakeAcpClient` 内存替身，`AcpClient` 方法均 virtual）。
 
 ## LLM 并发控制
 
@@ -315,9 +345,9 @@ void plugin_shutdown(void) { }
 
 | 文件 | 说明 |
 |------|------|
-| `libs/llm/src/plugin.h` | C ABI 接口定义 |
-| `libs/llm/src/plugin_loader.h/cpp` | dlopen 加载器 |
-| `libs/llm/src/plugin_tool.h` | C 回调 → Tool 接口适配器 |
+| `libs/plugin/include/plugin.h` | C ABI 接口定义 |
+| `libs/plugin/include/plugin_loader.h/cpp` | dlopen 加载器 |
+| `libs/plugin/include/plugin_tool.h` | C 回调 → Tool 接口适配器 |
 | `plugins/echo_plugin.c` | 示例插件 |
 
 ## Phase 演进
@@ -328,3 +358,4 @@ void plugin_shutdown(void) { }
 | 8 | v0.8.0 | Plugin 系统 (C ABI) |
 | 9 | v0.9.0 | EventBus: pub/sub 解耦 (已废弃) |
 | 10 | v0.10.0 | 长 TCP: SSE stream + keepalive + conn_id |
+| 11 | v0.11.0 | TUI 分层重构: model/views/controller + Overlay 自包含 + ctest |

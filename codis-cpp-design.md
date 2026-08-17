@@ -56,7 +56,7 @@ codis-cpp/
 ├── CMakeLists.txt / vcpkg.json
 ├── ARCHITECTURE.md / codis-cpp-design.md / plan.md
 ├── libs/
-│   ├── cli/src/main.cpp           # connect() + send_async()
+│   ├── tui/src/                   # TUI 客户端（tui/controller/views/model + acp_client）
 │   ├── server/src/                # 2 ACP 端点 + broadcast
 │   ├── llm/src/                   # Provider / Tool / Session / Log
 │   └── util/src/config.h/cpp

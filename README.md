@@ -130,6 +130,6 @@ docker logs -f codis
 ```
 libs/
 ├── server/   # Server daemon (HTTP + WebSocket + LLM scheduling + tool execution)
-├── cli/      # FTXUI TUI client
+├── tui/      # FTXUI TUI client (model/views/controller/tui composition)
 └── llm/      # Provider wrappers / session storage / tool registry (shared)
 ```
