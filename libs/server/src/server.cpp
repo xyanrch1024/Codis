@@ -145,7 +145,9 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
     tool_registry_.register_tool(std::make_unique<tools::WebSearchTool>(tools::WebSearchOptions{
         config_.websearch.backend, config_.websearch.api_key,
         config_.websearch.max_results, config_.websearch.timeout_seconds}));
-    tool_registry_.register_tool(std::make_unique<tools::SkillTool>(config_.skills.dirs));
+    auto skill_tool = std::make_unique<tools::SkillTool>(config_.skills.dirs);
+    skill_tool_ = skill_tool.get();
+    tool_registry_.register_tool(std::move(skill_tool));
 
     // [permissions] 策略覆盖工具默认权限（deny > allow > ask，均覆盖默认）
     for (auto& name : config_.permissions.allow)
@@ -308,6 +310,13 @@ void CodisServer::handle_info(const httplib::Request&, httplib::Response& res) {
     j["provider_models"] = pm;
     j["tools"] = tool_registry_.list();
     j["features"] = {"acp", "chat", "websocket", "tools", "sessions"};
+    json sk = json::array();
+    if (skill_tool_) {
+        for (auto& s : skill_tool_->available())
+            sk.push_back({{"id", s.id}, {"name", s.name}, {"description", s.description}});
+    }
+    j["skills"] = sk;
+    j["mcp_servers"] = mcp_manager_ ? mcp_manager_->status() : json::array();
     res.set_content(json_dump_safe(j, 2), "application/json");
 }
 
@@ -759,7 +768,7 @@ void CodisServer::run_acp_task(const std::string& session_id,
             std::chrono::steady_clock::now() - t0).count();
 
         // 客户端取消：LLM 流被中断，结束本轮，不执行工具
-        if (llm_result.canceled || cancel_flag->load()) {
+        if (llm_result.error_code == LlmErrorCode::Canceled || cancel_flag->load()) {
             LOG_INFO("session {} task canceled after {}ms", session_id.substr(0, 8), llm_ms);
             broadcast(acp::done_frame());
             break;

@@ -28,7 +28,7 @@ max_context = 128000
 [[providers]]
 name = "glm"
 api_key_env = "GLM_API_KEY"
-    model = "glm-4.7-flash"
+    model = "glm-4.5-flash"
     base_url = "https://open.bigmodel.cn/api/paas/v4"
     max_context = 128000
 

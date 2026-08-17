@@ -401,6 +401,16 @@ std::optional<ServerInfo> AcpClient::get_server_info() {
             for (auto& [k, v] : j["provider_models"].items())
                 info.provider_models[k] = v.get<std::string>();
         }
+        if (j.contains("skills")) {
+            for (auto& s : j["skills"])
+                info.skills.push_back({s.value("id", ""), s.value("name", ""),
+                                       s.value("description", "")});
+        }
+        if (j.contains("mcp_servers")) {
+            for (auto& m : j["mcp_servers"])
+                info.mcp_servers.push_back({m.value("name", ""), m.value("transport", ""),
+                                            m.value("online", false), m.value("tool_count", 0)});
+        }
         return info;
     } catch (...) {}
     return std::nullopt;

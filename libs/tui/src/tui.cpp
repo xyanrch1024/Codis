@@ -57,6 +57,7 @@ static const std::vector<std::pair<std::string, std::string>> kCommands = {
     {"/clearsessions", "Delete all sessions"},
     {"/yolo", "YOLO mode: auto-approve all tools"},
     {"/compact", "Compress context (LLM summary)"},
+    {"/info", "Show skills & MCP servers"},
 };
 
 TuiClient::TuiClient(int server_port, std::string model, std::string provider,
@@ -624,6 +625,65 @@ int TuiClient::run() {
             return dbox({body, overlay});
         }
 
+        // Skills & MCP overlay（/info）
+        if (info_visible_) {
+            auto trunc = [](const std::string& s, size_t n) {
+                if (s.size() <= n) return s;
+                return s.substr(0, n) + "…";
+            };
+            auto skill_rows = [&]() {
+                Elements rows;
+                if (info_skills_.empty()) {
+                    rows.push_back(text("  (none)") | dim);
+                } else {
+                    for (int i = 0; i < (int)info_skills_.size(); i++) {
+                        auto& s = info_skills_[i];
+                        bool cur = (info_pane_ == 0 && i == info_sel_[0]);
+                        auto name_el = text((cur ? "▸ " : "  ") + s.id);
+                        if (cur) name_el = name_el | inverted;
+                        rows.push_back(name_el);
+                        rows.push_back(text("    " +
+                            trunc(s.description.empty() ? s.name : s.description, 34)) | dim);
+                    }
+                }
+                return vbox(std::move(rows)) | frame | vscroll_indicator;
+            };
+            auto mcp_rows = [&]() {
+                Elements rows;
+                if (info_mcps_.empty()) {
+                    rows.push_back(text("  (none)") | dim);
+                } else {
+                    for (int i = 0; i < (int)info_mcps_.size(); i++) {
+                        auto& m = info_mcps_[i];
+                        bool cur = (info_pane_ == 1 && i == info_sel_[1]);
+                        auto name_el = text(std::string(cur ? "▸ " : "  ") +
+                            (m.online ? "● " : "○ ") + m.name) |
+                            (m.online ? color(Color::Green) : color(Color::Red));
+                        if (cur) name_el = name_el | inverted;
+                        rows.push_back(name_el);
+                        rows.push_back(text("    " + m.transport + " · " +
+                            std::to_string(m.tool_count) + " tools") | dim);
+                    }
+                }
+                return vbox(std::move(rows)) | frame | vscroll_indicator;
+            };
+
+            auto overlay = window(text(" Skills & MCP "), vbox({
+                text(" " + std::to_string(info_skills_.size()) + " skills · " +
+                     std::to_string(info_mcps_.size()) + " MCP servers") | bold,
+                separator(),
+                hbox({
+                    vbox({text(" Skills") | bold, skill_rows()}) | flex,
+                    text("  │  ") | dim,
+                    vbox({text(" MCP Servers") | bold, mcp_rows()}) | flex,
+                }),
+                separator(),
+                text(" ↑↓ 移动 · Tab 切栏 · ESC 关闭 ") | dim | center,
+            })) | clear_under | center | border |
+                size(WIDTH, LESS_THAN, 92) | size(HEIGHT, LESS_THAN, 28);
+            return dbox({body, overlay});
+        }
+
         // Sessions overlay
         if (sessions_visible_ && !session_list_.empty()) {
             Elements rows;
@@ -791,9 +851,29 @@ int TuiClient::run() {
             return true;  // 面板打开时吞掉其它按键（与 Sessions 一致）
         }
 
+        if (info_visible_) {
+            if (event == Event::Tab || event == Event::TabReverse) {
+                info_pane_ = 1 - info_pane_;
+                return true;
+            }
+            int n = (info_pane_ == 0) ? (int)info_skills_.size() : (int)info_mcps_.size();
+            if (event == Event::ArrowUp && info_sel_[info_pane_] > 0) {
+                info_sel_[info_pane_]--;
+                return true;
+            }
+            if (event == Event::ArrowDown && info_sel_[info_pane_] < n - 1) {
+                info_sel_[info_pane_]++;
+                return true;
+            }
+            if (event == Event::Escape) {
+                info_visible_ = false;
+                return true;
+            }
+            return true;  // 面板打开时吞掉其它按键（与 Sessions 一致）
+        }
+
         if (sessions_visible_) {
-            if (event == Event::Tab) {
-                session_selected_ = (session_selected_ - 1 + (int)session_list_.size()) %
+            if (event == Event::Tab) {                session_selected_ = (session_selected_ - 1 + (int)session_list_.size()) %
                                     (int)session_list_.size();
                 return true;
             }
@@ -961,6 +1041,22 @@ void TuiClient::send_message(const std::string& text) {
         session_list_ = acp_.list_sessions();
         session_selected_ = 0;
         sessions_visible_ = true;
+        return;
+    }
+    if (text == "/info") {
+        auto info = acp_.get_server_info();
+        info_skills_.clear();
+        info_mcps_.clear();
+        if (info) {
+            info_skills_ = std::move(info->skills);
+            info_mcps_ = std::move(info->mcp_servers);
+        } else {
+            state_->add_item(ItemKind::Error, "[Error] Server unreachable: " +
+                std::string("failed to fetch /api/v1/info"));
+        }
+        info_sel_[0] = info_sel_[1] = 0;
+        info_pane_ = 0;
+        info_visible_ = true;
         return;
     }
     if (text == "/clearsessions") {

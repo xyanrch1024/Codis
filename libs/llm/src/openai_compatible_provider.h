@@ -37,9 +37,10 @@ public:
             api_key_,
             body,
             {},
-            [&](std::string content, bool success, std::string error) {
+            [&](std::string content, bool success, LlmErrorCode code, std::string error) {
                 result.content = content;
                 result.success = success;
+                result.error_code = code;
                 result.error = std::move(error);
             },
             60,
@@ -67,14 +68,10 @@ public:
             api_key_,
             body,
             std::move(on_token),
-            [&](std::string, bool success, std::string error) {
+            [&](std::string, bool success, LlmErrorCode code, std::string error) {
                 result.success = success;
-                if (error == "__canceled__") {
-                    result.canceled = true;
-                    result.error.clear();
-                } else {
-                    result.error = std::move(error);
-                }
+                result.error_code = code;
+                result.error = std::move(error);
             },
             120,
             false,

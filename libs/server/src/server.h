@@ -11,6 +11,7 @@
 #include "context_source.h"
 #include "plugin_loader.h"
 #include "plugin_tool.h"
+#include "tools/skill_tool.h"
 
 #include <httplib.h>
 
@@ -156,6 +157,9 @@ private:
     SessionManager session_mgr_;
     ProviderRegistry provider_registry_;
     ToolRegistry tool_registry_;
+
+    // SkillTool 引用（注册时保留，供 /api/v1/info 列出已安装技能）
+    tools::SkillTool* skill_tool_ = nullptr;
     AppConfig config_;
     SessionStore session_store_{"/tmp/codis_sessions.db"};
     SystemContext system_context_;

@@ -27,10 +27,25 @@ struct SessionInfo {
     std::vector<Message> messages;
 };
 
+struct SkillBrief {
+    std::string id;
+    std::string name;
+    std::string description;
+};
+
+struct McpServerBrief {
+    std::string name;
+    std::string transport;   // stdio | http
+    bool online = false;
+    int tool_count = 0;
+};
+
 struct ServerInfo {
     std::vector<std::string> providers;
     std::string default_provider;
     std::map<std::string, std::string> provider_models;  // name -> model
+    std::vector<SkillBrief> skills;          // 已安装技能
+    std::vector<McpServerBrief> mcp_servers; // MCP 服务器状态
 };
 
 class AcpClient {

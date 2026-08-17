@@ -162,12 +162,22 @@ struct ChatRequest {
     }
 };
 
+// LLM 调用结果错误码（on_done 回调与 ChatResponse 共用）
+enum class LlmErrorCode {
+    None = 0,     // 成功
+    Canceled,     // 客户端主动取消
+    RateLimited,  // HTTP 429（限流/配额）
+    HttpStatus,   // 其它非 200 状态码
+    Network,      // 网络/传输错误
+    Parse,        // 响应 JSON 解析失败
+};
+
 struct ChatResponse {
     std::string content;
     std::string reasoning_content;  // 思维链（GLM 等模型），解析层透传
     bool success = false;
-    bool canceled = false;          // 被客户端取消（LLM 流被中断）
-    std::string error;
+    LlmErrorCode error_code = LlmErrorCode::None;  // 错误码（错误细分见 enum）
+    std::string error;                             // 可读错误消息（展示用）
 };
 
 } // namespace codis

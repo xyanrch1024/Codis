@@ -16,7 +16,7 @@ description: 本仓库的 C++ 编码规范（命名/注释/依赖/风格/提交�
 
 ## 库与结构
 - 各功能在 `libs/<name>/src` 下成库（cli / tool / server / llm / util / protocol），库内头文件放 `libs/<name>/include` 或同目录，CMake 用 `target_include_directories`
-- header-only 小型工具放 `libs/cli/src/*.h`（inline 函数，如 md_render.h）
+- header-only 小型工具放 `libs/tui/src/*.h`（inline 函数，如 md_render.h）
 - 依赖库：nlohmann_json、httplib、ftxui、toml++、spdlog；新增第三方依赖需用 vcpkg manifest
 
 ## 工具（tool）开发

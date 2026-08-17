@@ -4,6 +4,7 @@
 #include "log.h"
 
 #include <algorithm>
+#include <mutex>
 
 namespace codis::mcp {
 
@@ -48,6 +49,30 @@ void McpManager::connect_one(size_t idx) {
                  reg_name == raw_name ? "as-is" : "prefixed");
     }
     clients_[idx] = std::move(client);
+    {
+        std::lock_guard lock(tools_mutex_);
+        if (tool_counts_.size() <= idx) tool_counts_.resize(idx + 1, 0);
+        tool_counts_[idx] = tools.size();
+    }
+}
+
+json McpManager::status() const {
+    json arr = json::array();
+    for (size_t i = 0; i < servers_.size(); i++) {
+        bool online = i < clients_.size() && clients_[i] && clients_[i]->running();
+        int64_t n = 0;
+        {
+            std::lock_guard lock(tools_mutex_);
+            if (i < tool_counts_.size()) n = (int64_t)tool_counts_[i];
+        }
+        arr.push_back({
+            {"name", servers_[i].name},
+            {"transport", servers_[i].transport},
+            {"online", online},
+            {"tool_count", n}
+        });
+    }
+    return arr;
 }
 
 void McpManager::reconnect_later(size_t idx) {

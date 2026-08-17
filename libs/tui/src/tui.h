@@ -382,6 +382,13 @@ private:
     int session_selected_ = 0;
     std::vector<SessionInfo> session_list_;
     bool help_visible_ = false;
+
+    // Skills & MCP overlay（/info）
+    bool info_visible_ = false;
+    int info_pane_ = 0;                 // 0=skills, 1=mcp
+    int info_sel_[2] = {0, 0};          // 每栏选中索引
+    std::vector<SkillBrief> info_skills_;
+    std::vector<McpServerBrief> info_mcps_;
     void switch_session(const SessionInfo& s);
     void connect_sse();
     AcpClient::Callbacks build_callbacks();

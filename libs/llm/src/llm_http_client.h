@@ -19,7 +19,8 @@ class LLMHttpClient {
 public:
     using TokenCallback    = std::function<void(std::string_view delta)>;
     using ReasoningCallback = std::function<void(std::string_view delta)>;
-    using DoneCallback     = std::function<void(std::string content, bool success, std::string error)>;
+    using DoneCallback     = std::function<void(std::string content, bool success,
+                                                 LlmErrorCode code, std::string error)>;
 
     LLMHttpClient();
 

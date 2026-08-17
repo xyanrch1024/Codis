@@ -25,6 +25,9 @@ public:
     void start_all();
     void stop_all();
 
+    // 各 server 运行状态（供 /api/v1/info 展示）：name/transport/online/工具数
+    json status() const;
+
 private:
     void connect_one(size_t idx);
     void reconnect_later(size_t idx);
@@ -35,6 +38,10 @@ private:
     ToolRegistry* registry_;
     std::vector<std::unique_ptr<McpClient>> clients_;
     std::atomic<bool> stopped_{false};
+
+    // 每 server 最近一次 tools/list 的工具数（connect_one/重连时更新）
+    mutable std::mutex tools_mutex_;
+    std::vector<size_t> tool_counts_;
 };
 
 } // namespace codis::mcp

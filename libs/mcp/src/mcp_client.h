@@ -72,6 +72,7 @@ public:
     std::function<void()> on_disconnect;
 
     const std::string& name() const { return opts_.name; }
+    const std::string& transport() const { return opts_.transport; }
 
 private:
     json request_impl(const std::string& method, const json& params, int timeout_ms);

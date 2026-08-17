@@ -74,12 +74,14 @@ void LLMHttpClient::stream_post(const std::string& url,
         }
         if (!res) {
             LOG_ERROR("HTTP POST {} failed: {}", path, httplib::to_string(res.error()));
-            if (on_done) on_done("", false, "HTTP error: " + httplib::to_string(res.error()));
+            if (on_done) on_done("", false, LlmErrorCode::Network,
+                                 "HTTP error: " + httplib::to_string(res.error()));
             return;
         }
         if (res->status != 200) {
             LOG_WARN("HTTP POST {} returned status {}", path, res->status);
             if (on_done) on_done("", false,
+                res->status == 429 ? LlmErrorCode::RateLimited : LlmErrorCode::HttpStatus,
                 res->status == 429
                     ? "LLM rate limited (HTTP 429). Check API quota / concurrent usage, or retry later."
                     : "HTTP " + std::to_string(res->status));
@@ -108,9 +110,10 @@ void LLMHttpClient::stream_post(const std::string& url,
             }
 
             if (reasoning_out) *reasoning_out = std::move(reasoning);
-            if (on_done) on_done(content, true, "");
+            if (on_done) on_done(content, true, LlmErrorCode::None, "");
         } catch (const json::parse_error& e) {
-            if (on_done) on_done("", false, "JSON parse error: " + std::string(e.what()));
+            if (on_done) on_done("", false, LlmErrorCode::Parse,
+                                 "JSON parse error: " + std::string(e.what()));
         }
         return;
     }
@@ -156,6 +159,7 @@ void LLMHttpClient::stream_post(const std::string& url,
         if (res && res->status != 200 && !ok) {
             LOG_WARN("HTTP POST {} returned status {}", path, res->status);
             if (on_done) on_done("", false,
+                res->status == 429 ? LlmErrorCode::RateLimited : LlmErrorCode::HttpStatus,
                 res->status == 429
                     ? "LLM rate limited (HTTP 429). Check API quota / concurrent usage, or retry later."
                     : "HTTP " + std::to_string(res->status));
@@ -167,7 +171,8 @@ void LLMHttpClient::stream_post(const std::string& url,
             goto done;
         }
         LOG_ERROR("HTTP POST {} failed: {}", path, httplib::to_string(res.error()));
-        if (on_done) on_done("", false, "HTTP error: " + httplib::to_string(res.error()));
+        if (on_done) on_done("", false, LlmErrorCode::Network,
+                             "HTTP error: " + httplib::to_string(res.error()));
         return;
     }
 
@@ -190,12 +195,11 @@ done:
     }
 
     if (reasoning_out) *reasoning_out = std::move(reasoning);
-    // 取消时用保留字 "canceled" 标记，provider 侧据此设 result.canceled。
-    // 注意加花括号：else 必须绑定外层 if（abort），否则正常完成时 on_done 不会被调用。
+    // 取消 / 正常完成：code 用 enum 区分，不再用保留字串
     if (abort_flag && abort_flag->load()) {
-        if (on_done) on_done("", true, "__canceled__");
+        if (on_done) on_done("", true, LlmErrorCode::Canceled, "");
     } else if (on_done) {
-        on_done("", true, "");
+        on_done("", true, LlmErrorCode::None, "");
     }
 }
 
