@@ -1,6 +1,6 @@
 # Codis is an AI code assistant written in C++.
 
-A C++20 AI coding assistant with multi-provider support, multi-client shared sessions, a Feishu bot, and a terminal TUI. One server, many clients.
+A high-performance AI Coding Agent framework written in modern C++20. Designed with a Client/Server architecture, it supports multiple AI providers and shared multi-client sessions, delivering low-latency, scalable AI assistance for code generation and refactoring.
 
 > 🇨🇳 [中文 README](./README.zh.md)
 
