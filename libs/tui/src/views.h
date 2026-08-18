@@ -85,6 +85,18 @@ struct SessionsOverlay {
     Element render(Element body, const std::string& current_session) const;
 };
 
+struct ModelOverlay {
+    bool visible = false;
+    int selected = 0;
+    std::vector<std::pair<std::string, std::string>> list;  // (provider, model)
+
+    // 效果回调（组合根注入）：Enter 应用所选 provider
+    std::function<void(const std::string&)> on_activate;
+
+    bool handle_key(Event e);
+    Element render(Element body, const std::string& current_provider) const;
+};
+
 struct ConfirmOverlay {
     bool focus = false;                  // 按钮焦点：false=拒绝（安全默认），true=批准
     int height = 0;                      // 最近一次渲染的对话框总高（鼠标命中几何）

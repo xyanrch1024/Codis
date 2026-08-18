@@ -10,14 +10,10 @@ A high-performance AI Coding Agent framework written in modern C++20. Designed w
 
 - **Multi-Provider** — OpenAI / DeepSeek / GLM / Groq, config-driven, switchable at runtime
 - **Full-duplex WebSocket** — one connection for both requests and streamed responses; tokens arrive in real time
-- **Shared sessions across clients** — CLI / TUI / Feishu bot use the same session without cross-talk
-- **No lost messages** — requests arriving mid-processing are queued and re-run; requests sent while disconnected are flushed on reconnect
 - **Real-time streaming** — assistant output (including reasoning) streams token-by-token
 - **Tool calls** — bash / read / write / edit / glob / grep, plus C-ABI plugins for custom tools
 - **Session persistence** — SQLite-backed history with restore / switch / delete / search
 - **Terminal TUI** — FTXUI: color-coded messages, mouse-wheel scrolling, double-ESC cancels the running task
-- **Feishu bot** — WebSocket long connection, no public IP required
-- **Docker** — single-container deployment
 
 ## Build
 
@@ -69,7 +65,7 @@ No need to start the server manually — the CLI auto-starts it if it isn't runn
 | `/clear` | Clear the current context |
 | `/clearsessions` | Delete all sessions |
 | `/balance [provider]` | Query provider balance |
-| `/model [provider]` | Switch model / list providers |
+| `/model [provider]` | Open model dropdown picker (Tab/↑↓ to select, Enter to apply); `/model <provider>` switches directly |
 | `/exit` | Quit |
 
 ### Logging

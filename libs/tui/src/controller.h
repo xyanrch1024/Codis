@@ -20,6 +20,8 @@ struct UiCallbacks {
     std::function<void(std::vector<SessionInfo>, bool reset_selection)> show_sessions;
     std::function<void(std::vector<SkillBrief>, std::vector<McpServerBrief>)> show_info;
     std::function<void()> hide_sessions;                          // 关闭 Sessions 面板
+    std::function<void(std::vector<std::pair<std::string, std::string>>, bool)> show_model_picker;
+    std::function<void()> hide_model_picker;                      // 关闭 Models 面板
 };
 
 // 业务逻辑层：命令分发、请求构建、会话管理、SSE 接线。
@@ -42,6 +44,10 @@ public:
     void switch_session(const SessionInfo& s);
     void delete_session(const SessionInfo& s);
     void open_sessions();          // Ctrl+S / /sessions
+
+    // 模型操作
+    void switch_provider(const std::string& name);   // 校验存在后切换（/model <name> 与选择器共用）
+    void open_model_picker();                        // /model — 打开模型下拉选择
 
     // 取消当前任务（ESC 双击）
     void cancel_task();

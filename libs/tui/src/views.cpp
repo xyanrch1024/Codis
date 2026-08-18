@@ -107,12 +107,8 @@ ConversationLayout render_conversation(const TuiState& st, int tw, int hover_row
         int owner = out.row_owners[hover_row];
         if (owner >= 0 && owner < (int)st.items.size()) {
             auto& it = st.items[owner];
-            if (it.kind == ItemKind::ToolCall && tool_foldable(it)) {
-                const std::string& sig = out.row_sigs[hover_row];
-                bool target = it.folded ? (sig == "  more...")
-                                        : (sig.size() >= 3 && sig.rfind("▾ ", 0) == 0);
-                if (target) els[hover_row] = els[hover_row] | underlined;
-            }
+            if (tool_row_is_fold_target(it, out.row_sigs[hover_row]))
+                els[hover_row] = els[hover_row] | underlined;
         }
     }
 
@@ -340,6 +336,62 @@ Element SessionsOverlay::render(Element body, const std::string& current_session
         separator(),
         text(" " + std::to_string(selected + 1) + "/" +
              std::to_string(list.size()) + "  ↑↓/Tab  Enter(del)  ESC ") | dim | center,
+    })) | clear_under | center | border;
+
+    return dbox({std::move(body), overlay});
+}
+
+// =============================================================================
+// ModelOverlay（/model — 模型下拉选择，Tab/↑↓ 循环，Enter 应用）
+// =============================================================================
+
+bool ModelOverlay::handle_key(Event e) {
+    if (!visible) return false;
+    if (list.empty()) {
+        if (e == Event::Escape) {
+            visible = false;
+            return true;
+        }
+        return true;  // 面板打开时吞掉其它按键
+    }
+    if (e == Event::Tab || e == Event::ArrowDown) {
+        selected = (selected + 1) % (int)list.size();
+        return true;
+    }
+    if (e == Event::TabReverse || e == Event::ArrowUp) {
+        selected = (selected - 1 + (int)list.size()) % (int)list.size();
+        return true;
+    }
+    if (e == Event::Return) {
+        if (on_activate) on_activate(list[selected].first);
+        return true;
+    }
+    if (e == Event::Escape) {
+        visible = false;
+        return true;
+    }
+    return true;  // 面板打开时吞掉其它按键
+}
+
+Element ModelOverlay::render(Element body, const std::string& current_provider) const {
+    if (!visible || list.empty()) return body;
+    Elements rows;
+    for (int i = 0; i < (int)list.size(); i++) {
+        auto& [provider, model] = list[i];
+        bool current = (provider == current_provider);
+        auto el = text((current ? "> " : "  ") + provider +
+                       (model.empty() ? "" : "  (" + model + ")"));
+        if (current) el = el | bold;
+        if (i == selected) el = el | inverted | focus;
+        rows.push_back(el);
+    }
+
+    auto overlay = window(text(" Models "), vbox({
+        vbox(std::move(rows)) | frame | size(HEIGHT, EQUAL, kMaxSessionRows) |
+            vscroll_indicator,
+        separator(),
+        text(" " + std::to_string(selected + 1) + "/" +
+             std::to_string(list.size()) + "  Tab/↑↓  Enter 应用  ESC ") | dim | center,
     })) | clear_under | center | border;
 
     return dbox({std::move(body), overlay});

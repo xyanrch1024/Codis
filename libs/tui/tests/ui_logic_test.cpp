@@ -5,6 +5,7 @@
 #include "views.h"
 #include "model.h"
 #include "acp_client.h"
+#include "tui_tool_render.h"
 
 #include <gtest/gtest.h>
 #include <ftxui/dom/elements.hpp>
@@ -132,6 +133,48 @@ TEST(UiOverlay, SessionsOverlayKeys) {
     EXPECT_TRUE(o.handle_key(Event::Escape));
     EXPECT_FALSE(o.visible);
     EXPECT_FALSE(o.handle_key(Event::ArrowDown));  // 关闭后不消费
+}
+
+TEST(UiOverlay, ModelPickerKeys) {
+    ModelOverlay o;
+    EXPECT_FALSE(o.handle_key(Event::Escape));  // 不可见时不消费
+
+    o.visible = true;
+    o.list = {{"glm", "glm-4.5-flash"}, {"deepseek", "deepseek-v3"}};
+
+    std::string activated;
+    o.on_activate = [&](const std::string& p) { activated = p; };
+
+    // Tab 循环：0→1→0
+    EXPECT_TRUE(o.handle_key(Event::Tab));
+    EXPECT_EQ(o.selected, 1);
+    EXPECT_TRUE(o.handle_key(Event::Tab));
+    EXPECT_EQ(o.selected, 0);
+    // TabReverse / ↑↓
+    EXPECT_TRUE(o.handle_key(Event::ArrowDown));
+    EXPECT_EQ(o.selected, 1);
+    EXPECT_TRUE(o.handle_key(Event::ArrowUp));
+    EXPECT_EQ(o.selected, 0);
+    EXPECT_TRUE(o.handle_key(Event::TabReverse));  // 0 回绕到末尾
+    EXPECT_EQ(o.selected, 1);
+
+    // Enter 应用所选 provider
+    EXPECT_TRUE(o.handle_key(Event::Return));
+    EXPECT_EQ(activated, "deepseek");
+    EXPECT_TRUE(o.visible);  // 应用后面板保持打开（可继续试其它模型）
+
+    // ESC 关闭
+    EXPECT_TRUE(o.handle_key(Event::Character('x')));  // 打开时吞掉普通键
+    EXPECT_TRUE(o.handle_key(Event::Escape));
+    EXPECT_FALSE(o.visible);
+
+    // 空列表：无选中索引，ESC 可关，其余吞掉
+    o.visible = true;
+    o.list.clear();
+    EXPECT_TRUE(o.handle_key(Event::Tab));
+    EXPECT_TRUE(o.handle_key(Event::Return));
+    EXPECT_TRUE(o.handle_key(Event::Escape));
+    EXPECT_FALSE(o.visible);
 }
 
 TEST(UiOverlay, HelpOverlayKeys) {
@@ -365,6 +408,31 @@ TEST(UiController, ModelAndBalanceCommands) {
     EXPECT_EQ(ctrl.provider(), "deepseek");
     EXPECT_EQ(state->items.back().kind, ItemKind::Status);
 
+    // /model（无参）→ 打开模型下拉选择面板（列表 = providers + 模型名）
+    std::vector<std::pair<std::string, std::string>> picker_list;
+    bool picker_shown = false;
+    UiCallbacks cb;
+    cb.show_model_picker = [&](std::vector<std::pair<std::string, std::string>> list, bool) {
+        picker_shown = true;
+        picker_list = std::move(list);
+    };
+    ctrl.set_callbacks(std::move(cb));
+    ctrl.send_message("/model");
+    EXPECT_TRUE(picker_shown);
+    ASSERT_EQ(picker_list.size(), 2u);
+    EXPECT_EQ(picker_list[0].first, "zhipu");
+    EXPECT_EQ(picker_list[0].second, "glm-4.5");
+    EXPECT_EQ(picker_list[1].first, "deepseek");
+    EXPECT_EQ(picker_list[1].second, "ds-v3");
+
+    // 服务不可达 → 错误状态条目，不开面板
+    picker_shown = false;
+    acp.return_info = false;
+    ctrl.send_message("/model");
+    EXPECT_FALSE(picker_shown);
+    EXPECT_EQ(state->items.back().kind, ItemKind::Status);
+    EXPECT_NE(state->items.back().text.find("unreachable"), std::string::npos);
+
     // /balance：走 http_get，成功解析出余额条目
     acp.http_result.ok = true;
     acp.http_result.status = 200;
@@ -420,4 +488,118 @@ TEST(UiController, SessionSwitchAndDelete) {
     ctrl.delete_session(b);
     EXPECT_GE(acp.create_calls, 1);
     EXPECT_EQ(state->current_session, "sess-new");
+}
+
+// ---------------------------------------------------------------------------
+// 工具折叠：点击命中判定 + 屏幕坐标换算（对照 FTXUI v7.0.0 frame 滚动语义）
+// ---------------------------------------------------------------------------
+namespace {
+
+// FTXUI frame.cpp/focus.cpp 的实际滚动量（v7.0.0 源码语义）：
+//   focusPositionRelative(0, yfrac) → focused.box.y_min = int(total·yfrac)
+//   dy = focus_y − external/2，clamp [0, internal − external − 1]
+//   其中 external = vh−1，internal = max(total, external)
+int ftxui_dy(int total, int vh, float yfrac) {
+    int dy = (int)((float)total * yfrac) - (vh - 1) / 2;
+    dy = std::max(0, std::min(std::max(total, vh - 1) - vh, dy));
+    return dy;
+}
+
+ConvItem FoldableBash() {
+    ConvItem item;
+    item.kind = ItemKind::ToolCall;
+    item.tool_name = "bash";
+    item.has_result = true;
+    item.tool_success = true;
+    item.result_text = "hello\nworld";
+    return item;
+}
+
+}  // namespace
+
+TEST(ToolRender, ScrollFormulaMatchesFtxui) {
+    // 点击/悬停换算必须与 FTXUI frame 的实际滚动位置一致，
+    // 否则命中行整体错位（点 ▾/more... 无反应）。逐组合对照。
+    std::vector<int> totals = {10, 30, 100};
+    for (int vh : {14, 15, 24, 25}) {
+        // 内容行数贴近视口高度的边界（此前 total==vh+1 时 dy 多减 1 行）
+        for (int extra : {-2, -1, 0, 1, 2}) totals.push_back(vh + extra);
+        for (int total : totals)
+            for (int sp : {0, total / 3, total / 2, (9 * total) / 10, total})
+                for (bool auto_scroll : {false, true}) {
+                    float yfrac = auto_scroll
+                                      ? 1.f
+                                      : std::min(1.0f, (float)sp / std::max(1, total));
+                    int expected = ftxui_dy(total, vh, yfrac);
+                    // 视口首行（my == conv_top）的内容行号即 dy
+                    int row = content_row_at_math(0, 0, vh, total, sp, auto_scroll);
+                    EXPECT_EQ(row, expected)
+                        << "total=" << total << " vh=" << vh << " sp=" << sp
+                        << " auto=" << auto_scroll << " yfrac=" << yfrac;
+                }
+    }
+}
+
+TEST(ToolRender, ScreenToContentRowBounds) {
+    // 视口外 → -1
+    EXPECT_EQ(content_row_at_math(-1, 2, 16, 100, 0, true), -1);
+    EXPECT_EQ(content_row_at_math(16, 2, 16, 100, 0, true), -1);
+    // 顶部（未滚动）
+    EXPECT_EQ(content_row_at_math(2, 2, 16, 100, 0, false), 0);
+    // 底部（自动滚动）：dy = max(0, max(total,VH−1)−VH)，最后可见行 = dy+VH−1
+    EXPECT_EQ(content_row_at_math(2, 2, 16, 100, 0, true), 100 - 14);
+    EXPECT_EQ(content_row_at_math(15, 2, 16, 100, 0, true), 99);  // 视口最后一行
+    // 内容不足一屏 → 恒第 0 行
+    EXPECT_EQ(content_row_at_math(2, 2, 16, 10, 100, false), 0);
+    // 空内容 → -1
+    EXPECT_EQ(content_row_at_math(2, 2, 16, 0, 0, false), -1);
+}
+
+TEST(ToolRender, FoldToggleHitRows) {
+    ConvItem item = FoldableBash();
+
+    // 展开态：仅 ▾ 命令行行可点击收回；块行/空行/普通行不可
+    item.folded = false;
+    EXPECT_TRUE(tool_row_is_fold_target(item, "▾ $ ls -la"));
+    EXPECT_FALSE(tool_row_is_fold_target(item, "$ ls -la"));
+    EXPECT_FALSE(tool_row_is_fold_target(item, "│ hello"));
+    EXPECT_FALSE(tool_row_is_fold_target(item, ""));
+    toggle_tool_fold(item);
+    EXPECT_TRUE(item.folded);
+
+    // 折叠态：仅 "  more..." 行可点击展开
+    EXPECT_TRUE(tool_row_is_fold_target(item, "  more..."));
+    EXPECT_FALSE(tool_row_is_fold_target(item, " more..."));
+    EXPECT_FALSE(tool_row_is_fold_target(item, "│ hello"));
+    toggle_tool_fold(item);
+    EXPECT_FALSE(item.folded);
+}
+
+TEST(ToolRender, FoldToggleNotOnNonFoldable) {
+    // read/glob/grep 恒内联，不可折叠
+    for (const char* name : {"read", "glob", "grep"}) {
+        ConvItem item;
+        item.kind = ItemKind::ToolCall;
+        item.tool_name = name;
+        item.has_result = true;
+        item.tool_success = true;
+        item.result_text = "x";
+        EXPECT_FALSE(tool_row_is_fold_target(item, "▾ ")) << name;
+        EXPECT_FALSE(tool_row_is_fold_target(item, "  more...")) << name;
+    }
+    // 失败结果恒展开
+    ConvItem fail = FoldableBash();
+    fail.tool_success = false;
+    fail.error_text = "boom";
+    EXPECT_FALSE(tool_row_is_fold_target(fail, "▾ "));
+    EXPECT_FALSE(tool_row_is_fold_target(fail, "  more..."));
+    // pending（无结果）不可折叠
+    ConvItem pend = FoldableBash();
+    pend.has_result = false;
+    EXPECT_FALSE(tool_row_is_fold_target(pend, "~ Writing command..."));
+    // 非 ToolCall 条目不可折叠
+    ConvItem asst;
+    asst.kind = ItemKind::Assistant;
+    asst.text = "▾ whatever";
+    EXPECT_FALSE(tool_row_is_fold_target(asst, "▾ whatever"));
 }

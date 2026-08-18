@@ -444,4 +444,37 @@ inline std::vector<UiRow> render_tool_call(const ConvItem& item, int width) {
     return {{tool_inline(item.tool_icon, item.text, kToolMuted, width), "# " + item.text}};
 }
 
+// =============================================================================
+// 折叠命中纯逻辑 — 与渲染行结构解耦，供 tui.cpp 与单测共用。
+// =============================================================================
+
+// 屏幕行号 → 对话内容行号。conv_top/conv_bottom 为对话视口屏幕区间；
+// dy 的语义对齐 FTXUI frame 滚动（v7.0.0 src/ftxui/dom/frame.cpp + focus.cpp）：
+//   focusPositionRelative(0, yfrac) → focused.box.y_min = int(total·yfrac)
+//   dy = focus_y − external/2，clamp [0, internal − external − 1]
+//   其中 external = vh−1，internal = max(total, external)
+inline int content_row_at_math(int my, int conv_top, int conv_bottom, int total,
+                               int scroll_px, bool auto_scroll) {
+    if (my < conv_top || my >= conv_bottom) return -1;
+    int vh = conv_bottom - conv_top;
+    if (vh <= 0 || total == 0) return -1;
+    float yfrac = auto_scroll ? 1.f : std::min(1.0f, (float)scroll_px / std::max(1, total));
+    int focus_y = (int)((float)total * yfrac);
+    int dy = focus_y - (vh - 1) / 2;
+    int ub = std::max(total, vh - 1) - vh;
+    dy = std::max(0, std::min(ub, dy));
+    int row = dy + (my - conv_top);
+    return (row >= 0 && row < total) ? row : -1;
+}
+
+// 某行是否命中折叠切换目标（展开态 ▾ 命令行行 / 折叠态 "  more..." 行）
+inline bool tool_row_is_fold_target(const ConvItem& item, const std::string& sig) {
+    if (item.kind != ItemKind::ToolCall || !tool_foldable(item)) return false;
+    if (item.folded) return sig == "  more...";
+    return sig.size() >= 3 && sig.rfind("▾ ", 0) == 0;
+}
+
+// 翻转折叠态（渲染随下帧自动重算；悬停/点击共用）
+inline void toggle_tool_fold(ConvItem& item) { item.folded = !item.folded; }
+
 } // namespace codis

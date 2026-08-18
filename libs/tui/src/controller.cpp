@@ -28,6 +28,7 @@ void ChatController::set_model_provider(std::string model, std::string provider)
 }
 
 void ChatController::send_message(const std::string& text) {
+    LOG_INFO("send_message: '{}'", text);
     if (text == "/exit") {
         if (cb_.exit) cb_.exit();
         return;
@@ -271,6 +272,48 @@ void ChatController::cmd_balance(const std::string& line) {
     }
 }
 
+void ChatController::switch_provider(const std::string& name) {
+    auto info = acp_.get_server_info();
+    if (!info) {
+        state_->add_item(ItemKind::Status, "[Error] Cannot query server info (unreachable?)");
+        if (cb_.notify) cb_.notify();
+        return;
+    }
+    auto it = std::find(info->providers.begin(), info->providers.end(), name);
+    if (it == info->providers.end()) {
+        state_->add_item(ItemKind::Status, "[Error] Unknown provider: " + name);
+        if (cb_.notify) cb_.notify();
+        return;
+    }
+    provider_ = name;
+    auto mit = info->provider_models.find(name);
+    if (mit != info->provider_models.end()) {
+        model_ = mit->second;
+        state_->model = model_;
+    }
+    state_->add_item(ItemKind::Status, "[Model switched to " + name +
+                      (mit != info->provider_models.end() ? " (" + mit->second + ")" : "") + "]");
+    if (cb_.notice) cb_.notice("model: " + name);
+    if (cb_.notify) cb_.notify();
+}
+
+void ChatController::open_model_picker() {
+    LOG_INFO("model-picker: querying /api/v1/info");
+    auto info = acp_.get_server_info();
+    LOG_INFO("model-picker: info query done ok={}", info.has_value());
+    if (!info) {
+        state_->add_item(ItemKind::Status, "[Error] Cannot query server info (unreachable?)");
+        if (cb_.notify) cb_.notify();
+        return;
+    }
+    std::vector<std::pair<std::string, std::string>> list;
+    for (auto& p : info->providers) {
+        auto mit = info->provider_models.find(p);
+        list.push_back({p, mit != info->provider_models.end() ? mit->second : ""});
+    }
+    if (cb_.show_model_picker) cb_.show_model_picker(std::move(list), true);
+}
+
 void ChatController::cmd_model(const std::string& line) {
     auto parts = [&]() {
         std::vector<std::string> v;
@@ -280,46 +323,14 @@ void ChatController::cmd_model(const std::string& line) {
         return v;
     }();
 
-    auto info = acp_.get_server_info();
-    if (!info) {
-        state_->add_item(ItemKind::Status, "[Error] Cannot query server info (unreachable?)");
-        if (cb_.notify) cb_.notify();
-        return;
-    }
-
     // /model <name> — 切换到指定 provider（使用其配置的 model）
     if (parts.size() >= 2) {
-        const std::string& name = parts[1];
-        auto it = std::find(info->providers.begin(), info->providers.end(), name);
-        if (it == info->providers.end()) {
-            state_->add_item(ItemKind::Status, "[Error] Unknown provider: " + name);
-            if (cb_.notify) cb_.notify();
-            return;
-        }
-        provider_ = name;
-        auto mit = info->provider_models.find(name);
-        if (mit != info->provider_models.end()) {
-            model_ = mit->second;
-            state_->model = model_;
-        }
-        state_->add_item(ItemKind::Status, "[Model switched to " + name +
-                          (mit != info->provider_models.end() ? " (" + mit->second + ")" : "") + "]");
-        if (cb_.notify) cb_.notify();
+        switch_provider(parts[1]);
         return;
     }
 
-    // /model — 列出当前 + 可用 provider
-    state_->add_item(ItemKind::Status, "--- Model ---");
-    state_->add_item(ItemKind::Status, "  Current: " + provider_ + " (" + model_ + ")");
-    for (auto& p : info->providers) {
-        auto mit = info->provider_models.find(p);
-        std::string model = mit != info->provider_models.end() ? mit->second : "?";
-        state_->add_item(ItemKind::Status, "  " + p + " → " + model +
-                          (p == provider_ ? "  (current)" : "") +
-                          (p == info->default_provider ? "  (default)" : ""));
-    }
-    state_->add_item(ItemKind::Status, "  Usage: /model <provider>");
-    if (cb_.notify) cb_.notify();
+    // /model — 打开模型下拉选择面板（Tab/↑↓ 循环，Enter 应用）
+    open_model_picker();
 }
 
 AcpClient::Callbacks ChatController::build_callbacks() {

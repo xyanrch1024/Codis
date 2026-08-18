@@ -36,6 +36,7 @@ private:
     HelpOverlay help_;
     InfoOverlay info_;
     SessionsOverlay sessions_;
+    ModelOverlay model_picker_;
     ConfirmOverlay confirm_;
 
     std::function<void()> post_job_;  // run() 内设置：合并刷新后的渲染请求

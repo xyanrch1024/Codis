@@ -145,10 +145,23 @@ int TuiClient::run() {
         info_.visible = true;
     };
     cb.hide_sessions = [&] { sessions_.visible = false; };
+    cb.show_model_picker = [&](std::vector<std::pair<std::string, std::string>> list,
+                               bool reset_selection) {
+        model_picker_.list = std::move(list);
+        if (reset_selection) model_picker_.selected = 0;
+        model_picker_.selected = std::min(model_picker_.selected,
+                                          std::max(0, (int)model_picker_.list.size() - 1));
+        model_picker_.visible = true;
+    };
+    cb.hide_model_picker = [&] { model_picker_.visible = false; };
     controller_.set_callbacks(std::move(cb));
 
     sessions_.on_activate = [this](const SessionInfo& s) { controller_.switch_session(s); };
     sessions_.on_delete = [this](const SessionInfo& s) { controller_.delete_session(s); };
+    model_picker_.on_activate = [this](const std::string& provider) {
+        model_picker_.visible = false;
+        controller_.switch_provider(provider);
+    };
     confirm_.on_respond = [this](bool approve) { respond_confirm(approve); };
 
     // 工作目录（进程 cwd，渲染期间不变；长路径截断避免撑破布局）
@@ -336,25 +349,19 @@ int TuiClient::run() {
     // 不再依赖二次渲染/像素匹配，点击命中不会因为匹配失败而静默失效。
     // 返回 -1 = 弹出层打开 / 不在对话区 / 超出内容范围。
     auto content_row_at = [&](int mx, int my) {
-        if (help_.visible || sessions_.visible || cmd_palette_visible_) return -1;
+        if (help_.visible || sessions_.visible || model_picker_.visible || cmd_palette_visible_) return -1;
         int dimy = Terminal::Size().dimy;
         int input_lines = 1;
         for (char c : input_text)
             if (c == '\n') input_lines++;
         input_lines = std::clamp(input_lines, 1, kMaxInputRows);
-        int input_h = input_lines + 2 + (state_->pending_count() > 0 ? 1 : 0);
+        const int input_h = input_lines + 2 + (state_->pending_count() > 0 ? 1 : 0);
         // Header 2 行（Codis + 分隔线）+ 对话视口 + 输入区 + 状态栏 5 行
         const int conv_top = 2;
         const int conv_bottom = dimy - 5 - input_h;  // [conv_top, conv_bottom) 为对话视口
-        if (my < conv_top || my >= conv_bottom) return -1;
-        int VH = conv_bottom - conv_top;
-        int total = (int)conv_layout_.row_owners.size();
-        if (VH <= 0 || total == 0) return -1;
-        float yfrac = auto_scroll_ ? 1.f : std::min(1.0f, (float)scroll_px_ / std::max(1, total));
-        int dy = (int)((float)total * yfrac) - (VH - 1) / 2;
-        dy = std::clamp(dy, 0, std::max(total, VH) - VH);
-        int row = dy + (my - conv_top);
-        return (row >= 0 && row < total) ? row : -1;
+        return content_row_at_math(my, conv_top, conv_bottom,
+                                   (int)conv_layout_.row_owners.size(), scroll_px_,
+                                   auto_scroll_);
     };
 
     // 左键单击（无拖动）→ 命中折叠目标行则切换展开/截断
@@ -364,15 +371,8 @@ int TuiClient::run() {
         int owner = conv_layout_.row_owners[content_row];
         if (owner < 0 || owner >= (int)state_->items.size()) return;
         auto& it = state_->items[owner];
-        if (it.kind != ItemKind::ToolCall || !tool_foldable(it)) return;
-        // 截断态：仅 "  more..." 行可点击展开；展开态：仅 ▾ 命令行可点击收回
-        const std::string& sig = conv_layout_.row_sigs[content_row];
-        if (it.folded) {
-            if (sig != "  more...") return;
-        } else {
-            if (sig.size() < 3 || sig.rfind("▾ ", 0) != 0) return;
-        }
-        it.folded = !it.folded;
+        if (!tool_row_is_fold_target(it, conv_layout_.row_sigs[content_row])) return;
+        toggle_tool_fold(it);
         hover_row_ = -1;
         show_notice(it.folded ? "[Output collapsed]" : "[Output expanded]");
         LOG_DEBUG("fold toggle owner={} folded={} row={}", owner, it.folded, content_row);
@@ -429,6 +429,8 @@ int TuiClient::run() {
         if (info_.visible) return info_.render(body);
         if (sessions_.visible && !sessions_.list.empty())
             return sessions_.render(body, state_->current_session);
+        if (model_picker_.visible && !model_picker_.list.empty())
+            return model_picker_.render(body, controller_.provider());
         return body;
     });
 
@@ -456,37 +458,49 @@ int TuiClient::run() {
         // 松开时若有实际拖动则直接用 GetSelection() 复制。
         // 注意：不能用 SelectionChange 回调——释放事件坐标通常等于最后一次移动，
         // selection_data_ 不变，回调不会触发，复制永远不会执行。
-        if (event.is_mouse() && event.mouse().button == Mouse::Left) {
-            if (event.mouse().motion == Mouse::Pressed) {
-                drag_active_ = true;
-                drag_moved_ = false;
-                press_x_ = event.mouse().x;
-                press_y_ = event.mouse().y;
-            } else if (event.mouse().motion == Mouse::Moved) {
-                // 位移累计 ≥3 格才算拖选（消除手抖误判为复制）
-                if (drag_active_) {
-                    int dist = std::abs(event.mouse().x - press_x_) +
-                               std::abs(event.mouse().y - press_y_);
-                    if (dist >= 3) drag_moved_ = true;
-                }
+        if (event.is_mouse()) {
+            // 无按钮的纯移动（Mouse::None）也更新悬停行，否则悬停下划线永不出现
+            if (event.mouse().button == Mouse::None &&
+                event.mouse().motion == Mouse::Moved) {
                 hover_row_ = content_row_at(event.mouse().x, event.mouse().y);
-            } else if (event.mouse().motion == Mouse::Released) {
-                if (drag_active_) {
-                    drag_active_ = false;
-                    if (drag_moved_) {
-                        drag_moved_ = false;
-                        const auto sel = screen.GetSelection();
-                        if (!sel.empty()) {
-                            copy_to_clipboard(sel);
-                            show_notice("[Copied " + std::to_string(sel.size()) + " chars]");
+                return false;
+            }
+            // 左键按下/拖动/松开：高亮交给 FTXUI 内置选择处理，这里只跟踪拖拽状态；
+            // 松开时若有实际拖动则直接用 GetSelection() 复制。
+            // 注意：不能用 SelectionChange 回调——释放事件坐标通常等于最后一次移动，
+            // selection_data_ 不变，回调不会触发，复制永远不会执行。
+            if (event.mouse().button == Mouse::Left) {
+                if (event.mouse().motion == Mouse::Pressed) {
+                    drag_active_ = true;
+                    drag_moved_ = false;
+                    press_x_ = event.mouse().x;
+                    press_y_ = event.mouse().y;
+                } else if (event.mouse().motion == Mouse::Moved) {
+                    // 位移累计 ≥3 格才算拖选（消除手抖误判为复制）
+                    if (drag_active_) {
+                        int dist = std::abs(event.mouse().x - press_x_) +
+                                   std::abs(event.mouse().y - press_y_);
+                        if (dist >= 3) drag_moved_ = true;
+                    }
+                    hover_row_ = content_row_at(event.mouse().x, event.mouse().y);
+                } else if (event.mouse().motion == Mouse::Released) {
+                    if (drag_active_) {
+                        drag_active_ = false;
+                        if (drag_moved_) {
+                            drag_moved_ = false;
+                            const auto sel = screen.GetSelection();
+                            if (!sel.empty()) {
+                                copy_to_clipboard(sel);
+                                show_notice("[Copied " + std::to_string(sel.size()) + " chars]");
+                            }
+                        } else {
+                            // 无拖动的单击：命中折叠命令行则切换
+                            toggle_fold_on_click(event.mouse().x, event.mouse().y);
                         }
-                    } else {
-                        // 无拖动的单击：命中折叠命令行则切换
-                        toggle_fold_on_click(event.mouse().x, event.mouse().y);
                     }
                 }
+                return false;
             }
-            return false;
         }
 
         // ESC 键取消任务（双击）。必须在补全弹窗/输入组件之前处理：
@@ -531,6 +545,7 @@ int TuiClient::run() {
         if (help_.handle_key(event)) return true;
         if (info_.handle_key(event)) return true;
         if (sessions_.handle_key(event)) return true;
+        if (model_picker_.handle_key(event)) return true;
 
         // 对话区上下滚动（行级）
         if (event == Event::ArrowUp) {

@@ -1,6 +1,6 @@
-# Codis — C++ AI 编程助手
+# Codis — 用 C++ 编写的 AI 代码助手
 
-基于 C++20 的 AI 编程助手：多 Provider、多客户端共享 Session、终端 TUI，一套服务端 + 多种客户端。
+用现代 C++20 编写的高性能 AI 编码代理框架。采用客户端/服务器架构，支持多种 AI Provider 与多客户端共享会话，为代码生成与重构提供低延迟、可扩展的 AI 辅助。
 
 > 🇺🇸 [English README](./README.md)
 
@@ -10,13 +10,10 @@
 
 - **多 Provider** — OpenAI / DeepSeek / GLM / Groq，配置文件驱动，可随时切换
 - **全双工 WebSocket** — 一条连接既发请求又收流式推送，内容按 token 实时输出
-- **多客户端共享会话** — CLI / TUI 共用同一 session，互不干扰
-- **消息不丢失** — 处理中到达的消息排队补跑；断线期间发送的请求重连后自动补发
 - **实时流式输出** — 模型回复按字/按 token 实时显示（含思维链，默认不折叠）
 - **工具调用** — bash / read / write / edit / glob / grep，支持 C ABI 插件动态扩展
 - **会话持久化** — SQLite 存储，支持恢复历史、切换、删除、搜索
 - **终端 TUI** — FTXUI 界面：颜色区分消息、滚轮滚动、双击 ESC 取消当前任务
-- **Docker 一键部署** — 单容器运行
 
 ## 编译
 
@@ -68,7 +65,7 @@ export GLM_API_KEY="你的-api-key"
 | `/clear` | 清空当前上下文 |
 | `/clearsessions` | 删除所有会话 |
 | `/balance [provider]` | 查询 provider 余额 |
-| `/model [provider]` | 切换模型 / 列出可用 provider |
+| `/model [provider]` | 弹出模型下拉选择面板（Tab/↑↓ 选择，Enter 应用）；`/model <provider>` 直接切换 |
 | `/exit` | 退出 |
 
 ### 日志
