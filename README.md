@@ -93,34 +93,6 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 
 API keys are set via environment variables — never in the config file.
 
-## Docker
-
-```bash
-docker build -t codis .
-docker run -d --name codis \
-  -e GLM_API_KEY="xxx" \
-  -e FEISHU_APP_ID="cli_xxx" \
-  -e FEISHU_APP_SECRET="xxx" \
-  -p 8711:8711 \
-  codis
-docker logs -f codis
-```
-
-## Tech Stack
-
-| Module | Library |
-|------|------|
-| HTTP / WebSocket | cpp-httplib |
-| JSON | nlohmann/json |
-| CLI parsing | CLI11 |
-| Config | toml++ |
-| SSL | OpenSSL |
-| Async I/O | standalone asio |
-| Database | SQLite3 |
-| TUI | FTXUI |
-| Feishu SDK | lark-oapi (Python) |
-| Build | CMake / vcpkg |
-
 ## Project Layout
 
 ```

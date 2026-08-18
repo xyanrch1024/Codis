@@ -93,31 +93,6 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 
 API Key 通过环境变量设置，不要在配置文件中写明文。
 
-## Docker
-
-```bash
-docker build -t codis .
-docker run -d --name codis \
-  -e GLM_API_KEY="xxx" \
-  -p 8711:8711 \
-  codis
-docker logs -f codis
-```
-
-## 技术栈
-
-| 模块 | 库 |
-|------|-----|
-| HTTP / WebSocket | cpp-httplib |
-| JSON | nlohmann/json |
-| CLI 参数 | CLI11 |
-| 配置 | toml++ |
-| SSL | OpenSSL |
-| 异步 IO | standalone asio |
-| 数据库 | SQLite3 |
-| TUI | FTXUI |
-| 构建 | CMake / vcpkg |
-
 ## 项目结构
 
 ```
