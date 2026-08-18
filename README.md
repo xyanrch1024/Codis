@@ -1,4 +1,4 @@
-# Codis -an AI coding assistant written in C++, designed for minimal memory usage.
+# Codis is an AI code assistant written in C++.
 
 A C++20 AI coding assistant with multi-provider support, multi-client shared sessions, a Feishu bot, and a terminal TUI. One server, many clients.
 
