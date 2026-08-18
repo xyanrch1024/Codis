@@ -12,7 +12,7 @@ namespace codis {
 
 namespace {
 
-// 压缩模板来自 ~/crush/internal/agent/templates/summary.md（保持结构一致）
+
 constexpr const char* kCompactPrompt =
     "You are summarizing a conversation to preserve context for continuing work later.\n"
     "\n"

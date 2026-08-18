@@ -20,6 +20,7 @@ AppConfig AppConfig::load(const std::filesystem::path& path) {
                 pc.api_key_env = p["api_key_env"].value<std::string>().value_or("");
                 pc.model       = p["model"].value<std::string>().value_or("");
                 pc.base_url    = p["base_url"].value<std::string>().value_or("");
+                pc.proxy       = p["proxy"].value<std::string>().value_or("");
                 pc.max_context_tokens = p["max_context"].value<int>();
                 pc.resolve_api_key();
                 if (!pc.name.empty() && !pc.api_key.empty()) {

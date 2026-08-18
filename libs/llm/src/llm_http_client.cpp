@@ -20,7 +20,8 @@ void LLMHttpClient::stream_post(const std::string& url,
                                 bool non_stream,
                                 std::string* reasoning_out,
                                 ReasoningCallback on_reasoning,
-                                std::atomic<bool>* abort_flag)
+                                std::atomic<bool>* abort_flag,
+                                const std::string& proxy)
 {
     httplib::Headers headers = {
         {"Authorization", "Bearer " + api_key},
@@ -50,6 +51,16 @@ void LLMHttpClient::stream_post(const std::string& url,
 
     httplib::Client client((use_ssl ? "https://" : "http://") + host);
     client.set_follow_location(true);
+
+    if (!proxy.empty()) {
+        auto colon = proxy.find(':');
+        if (colon != std::string::npos) {
+            client.set_proxy(proxy.substr(0, colon), std::stoi(proxy.substr(colon + 1)));
+            LOG_DEBUG("using http proxy {}", proxy);
+        } else {
+            LOG_WARN("invalid proxy '{}' (expect host:port), ignored", proxy);
+        }
+    }
 
     client.set_connection_timeout(timeout_seconds, 0);
     client.set_read_timeout(timeout_seconds, 0);

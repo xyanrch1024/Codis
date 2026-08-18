@@ -34,7 +34,7 @@ void SystemContext::remove_source(const std::string& key) {
 std::string SystemContext::build_baseline(const std::string& session_id, SessionStore& store) {
     std::shared_lock lock(mutex_);
     std::ostringstream oss;
-    oss << "You are an AI coding agent. Directly execute user requests using the available tools below. Do not explain what you will do — just do it.\n\n";
+    oss << "You are an expert coding assistant operating inside codis, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n";
 
     for (auto& [key, src] : sources_) {
         auto val = src.loader();

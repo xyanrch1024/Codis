@@ -17,8 +17,9 @@ public:
         , api_key_(cfg.api_key)
         , model_(cfg.model)
         , base_url_(cfg.base_url)
+        , proxy_(cfg.proxy)
     {
-        LOG_INFO("provider '{}' registered: model={}, url={}", name_, model_, base_url_);
+        LOG_INFO("provider '{}' registered: model={}, url={}, proxy={}", name_, model_, base_url_, proxy_.empty() ? "none" : proxy_);
     }
 
     std::string name() const override { return name_; }
@@ -45,7 +46,10 @@ public:
             },
             60,
             true,
-            &result.reasoning_content
+            &result.reasoning_content,
+            nullptr,
+            nullptr,
+            proxy_
         );
 
         LOG_DEBUG("{}::chat result success={} content_len={}", name_, result.success, result.content.size());
@@ -77,7 +81,8 @@ public:
             false,
             &result.reasoning_content,
             std::move(on_reasoning),
-            abort_flag
+            abort_flag,
+            proxy_
         );
 
         return result;
@@ -115,6 +120,7 @@ private:
     std::string api_key_;
     std::string model_;
     std::string base_url_;
+    std::string proxy_;
 };
 
 } // namespace codis

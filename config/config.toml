@@ -22,7 +22,8 @@ max_context = 128000
 name = "deepseek"
 api_key_env = "DEEPSEEK_API_KEY"
 model = "deepseek-v4-flash"
-base_url = "https://api.deepseek.com"
+base_url = "https://api.b.ai/v1"
+proxy = "172.24.80.1:1080"
 max_context = 128000
 
 [[providers]]
@@ -79,12 +80,12 @@ dirs = ["skills/"]
 # transport = "http"
 # url = "https://mcp.example.com/mcp"
 # api_key_env = "MCP_API_KEY"
-[[mcp.servers]]
-name = "fs"
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/wsl-ubuntu-1/projects"]
-timeout_seconds = 15
+# [[mcp.servers]]
+# name = "fs"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/wsl-ubuntu-1/projects"]
+# timeout_seconds = 15
 
 [[mcp.servers]]
 name = "fastmcp"

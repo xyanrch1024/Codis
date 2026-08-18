@@ -28,12 +28,13 @@ public:
                      const std::string& api_key,
                      const json& body,
                      TokenCallback on_token,
-                     DoneCallback on_done,
-                     int timeout_seconds = 60,
-                     bool non_stream = false,
-                     std::string* reasoning_out = nullptr,
-                     ReasoningCallback on_reasoning = nullptr,
-                     std::atomic<bool>* abort_flag = nullptr);
+DoneCallback on_done,
+                                int timeout_seconds,
+                                bool non_stream,
+                                std::string* reasoning_out = nullptr,
+                                ReasoningCallback on_reasoning = nullptr,
+                                std::atomic<bool>* abort_flag = nullptr,
+                                const std::string& proxy = "");
 
 private:
     // 解析一条 SSE 行；遇到 [DONE] 返回 false。delta 实时回调。
