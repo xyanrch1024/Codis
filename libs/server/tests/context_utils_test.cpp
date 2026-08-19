@@ -100,12 +100,143 @@ TEST(ContextUtils, AppendWithReasoningCompactPath) {
 
     std::vector<Message> out;
     std::string pending;
-    for (auto& m : prefix) append_with_reasoning(out, m, pending);
+    bool last_was_tool_call = false;
+    for (auto& m : prefix) append_with_reasoning(out, m, pending, last_was_tool_call);
     ASSERT_EQ(out.size(), 2u);  // reasoning 不入请求体
     EXPECT_EQ(out[0].role, "user");
     EXPECT_EQ(out[1].role, "assistant");
     EXPECT_TRUE(out[1].reasoning_content.has_value());
     EXPECT_EQ(*out[1].reasoning_content, "cot");
+}
+
+TEST(ContextUtils, ReplayableMessagesDropsOrphanTool) {
+    // 压缩切分拆散后的损坏历史：user → tool(孤儿) → assistant(tc) → tool
+    std::vector<Message> hist;
+    hist.push_back(msg("user", "q"));
+    auto orphan = msg("tool", "result without call");
+    orphan.tool_call_id = "call_x";
+    hist.push_back(orphan);
+    auto a = msg("assistant", "");
+    a.tool_call_id = "call_1";
+    hist.push_back(a);
+    auto t = msg("tool", "ok");
+    t.tool_call_id = "call_1";
+    hist.push_back(t);
+    // assistant 文本后跟 tool（同样非法）也丢
+    hist.push_back(msg("assistant", "plain reply"));
+    hist.push_back(msg("tool", "stray"));
+
+    auto out = replayable_messages(hist);
+    ASSERT_EQ(out.size(), 4u);  // user + assistant(tc) + tool + assistant文本；两个孤儿 tool 被丢
+    EXPECT_EQ(out[0].role, "user");
+    EXPECT_EQ(out[1].role, "assistant");
+    EXPECT_EQ(out[2].role, "tool");
+    EXPECT_EQ(out[2].tool_call_id, "call_1");
+    EXPECT_EQ(out[3].role, "assistant");
+}
+
+TEST(ContextUtils, SanitizeToolMarkupBaifull) {
+    std::string s = "<\uFF5Ctool_calls>\n<\uFF5Cinvoke name=\"read\">\n"
+                    "<\uFF5Cparameter name=\"filePath\">/a/b.cpp</\uFF5Cparameter>\n"
+                    "</\uFF5Cinvoke>\n</\uFF5Ctool_calls>\n剩余正文";
+    auto out = sanitize_tool_markup(s);
+    EXPECT_EQ(out, "剩余正文");
+}
+
+TEST(ContextUtils, SanitizeToolMarkupAcp) {
+    std::string s = "上下文摘要（历史压缩）:\n\n<tool_call>read\n"
+                    "<arg_key>filePath</arg_key>\n"
+                    "<arg_value>/a/b.cpp</arg_value>\n</tool_call>\n然后继续";
+    auto out = sanitize_tool_markup(s);
+    EXPECT_EQ(out, "上下文摘要（历史压缩）:\n\n然后继续");
+}
+
+TEST(ContextUtils, SanitizeToolMarkupKeepsProse) {
+    std::string s = "普通文本,包括 <b>标签</b> 与 tool_call 这个词不删\n下一行";
+    auto out = sanitize_tool_markup(s);
+    EXPECT_EQ(out, s);
+}
+
+TEST(ContextUtils, SanitizeToolMarkupStripOnlyBlockInline) {
+    std::string s = "前面<\uFF5Ctool_calls>x</\uFF5Ctool_calls>后面";
+    auto out = sanitize_tool_markup(s);
+    EXPECT_EQ(out, "前面后面");
+}
+
+TEST(ContextUtils, SanitizeToolMarkupDropsTuiFrameKeepsProse) {
+    // TUI 工具帧显示（┃ 前缀）全删，保留用户真实问题
+    std::string s = "┃ <tool_call>read\n"
+                    "┃ <arg_key>filePath</arg_key>\n"
+                    "┃ <arg_value>/a/b.cpp</arg_value>\n"
+                    "┃ </tool_call>\n"
+                    "压缩后摘要不太对";
+    auto out = sanitize_tool_markup(s);
+    EXPECT_EQ(out, "压缩后摘要不太对");
+}
+
+TEST(ContextUtils, FormatTranscriptFlattensToolRounds) {
+    std::vector<Message> hist;
+    hist.push_back(msg("user", "压缩后摘要不太对"));
+    auto a = msg("assistant", "");
+    a.tool_call_id = "call_1";
+    a.tool_name = "read";
+    hist.push_back(a);
+    hist.push_back(msg("reasoning", "让我查一下"));
+    hist.push_back(msg("tool", "1: #include <x>\n2: int main() {}"));
+    auto a2 = msg("assistant", "查到了。");
+    hist.push_back(a2);
+
+    auto out = format_transcript(hist);
+    EXPECT_EQ(out,
+              "以下是用户与编码助手之间一段已结束的会话记录：\n\n"
+              "[用户] 压缩后摘要不太对\n"
+              "[助手] 调用工具: read\n"
+              "[工具结果] 1: #include <x>\n2: int main() {}\n"
+              "[助手] 查到了。\n\n"
+              "记录到此为止，会话已经结束。");
+    EXPECT_EQ(out.find("让我查一下"), std::string::npos);  // reasoning 不入转录
+}
+
+TEST(ContextUtils, FormatTranscriptStripsMarkup) {
+    std::vector<Message> hist;
+    auto m = msg("user", "┃ <arg_key>filePath</arg_key>\n压缩后摘要不太对");
+    hist.push_back(m);
+    auto out = format_transcript(hist);
+    EXPECT_EQ(out.find("<arg_key>"), std::string::npos);
+    EXPECT_NE(out.find("压缩后摘要不太对"), std::string::npos);
+}
+
+TEST(ContextUtils, BuildCompactedHistoryDropsLeadingOrphanTool) {
+    std::vector<Message> hist;
+    hist.push_back(msg("user", "u1"));
+    auto orphan = msg("tool", "orphan");
+    orphan.tool_call_id = "call_x";
+    hist.push_back(orphan);
+    auto a = msg("assistant", "");
+    a.tool_call_id = "call_1";
+    hist.push_back(a);
+    auto t = msg("tool", "ok");
+    t.tool_call_id = "call_1";
+    hist.push_back(t);
+
+    auto split = split_history(hist, 4);
+    ASSERT_FALSE(split.has_value());  // 历史太短走不到压缩
+    // 直接构造 split 边界：prefix 含 user+orphan，tail 从 assistant 开始
+    CompactSplit s{{hist[0], hist[1]}, {hist[2], hist[3]}};
+    auto out = build_compacted_history(s, "summary");
+    ASSERT_EQ(out.size(), 4u);  // system + user + assistant(tc) + tool（孤儿已随 prefix 丢弃）
+    EXPECT_EQ(out[0].role, "system");
+    EXPECT_EQ(out[1].role, "user");
+    EXPECT_EQ(out[2].role, "assistant");
+    EXPECT_EQ(out[3].role, "tool");
+
+    // tail 开头就是孤儿 tool（其 assistant 在 prefix 里被摘要掉）：直接丢
+    CompactSplit s2{{hist[0], hist[1]}, {hist[1], hist[2], hist[3]}};
+    auto out2 = build_compacted_history(s2, "summary");
+    ASSERT_EQ(out2.size(), 4u);  // 孤儿 tool 被丢，assistant(tc)+tool 保留
+    EXPECT_EQ(out2[1].role, "user");
+    EXPECT_EQ(out2[2].role, "assistant");
+    EXPECT_EQ(out2[3].role, "tool");
 }
 
 TEST(ContextUtils, ClampKeep) {

@@ -66,6 +66,10 @@ constexpr const char* kCompactPrompt =
     "**Length**: No limit. Err on the side of too much detail rather than too little. "
     "Critical context is worth the tokens.\n"
     "\n"
+    "**Format**: Plain prose with markdown section headers only. Never output tool call "
+    "syntax, XML/JSON markup, or code fences — the summary is read back into a "
+    "conversation and must not be mistaken for tool calls.\n"
+    "\n"
     "Write the summary in the same language the user used. "
     "Output only the summary itself, no preamble or explanation.";
 
@@ -395,16 +399,19 @@ std::optional<ChatRequest> AgentLoop::run_compact(const std::string& session_id,
             "compacted " + std::to_string(n) + " msgs -> " +
             std::to_string(keep + 1) + " msgs");
 
-        // LLM 摘要：专用 system 指令 + 头部历史，无工具，限 token。
-        // 过滤 reasoning 角色（思维链）：openai 兼容端点对未知角色直接 400
-        // （run_task_inner 重放路径同样过滤，此处与其保持一致）
+        // LLM 摘要：system 指令 + 拍平成单一 user 转录文档（见 format_transcript：
+        // 直接送消息数组会让摘要模型代入助手角色继续干活、输出工具调用而非摘要）。
+        // 无 assistant 消息，不存在思维链回传要求。
         ChatRequest req;
-        req.max_tokens = 1200;
+        req.max_tokens = 8192;  // 推理模型思维链也占预算，太小会把正文截成空/半截
         req.messages.push_back({"system", kCompactPrompt});
-        std::string pending;
-        for (auto& m : prefix)
-            context_utils::append_with_reasoning(req.messages, m, pending);
+        req.messages.push_back({"user", context_utils::format_transcript(prefix)});
         std::string summary = call_llm(req);
+        summary = context_utils::sanitize_tool_markup(summary);
+        if (context_utils::is_blank(summary)) {
+            LOG_ERROR("compact summary blank (provider returned only tool markup)");
+            return hub_.finish_compact(session_id);  // 摘要失败，历史原样保留
+        }
 
         // 新历史 = 摘要(system) + 题干(首条 user) + 尾部原文
         std::vector<Message> compacted = context_utils::build_compacted_history(*split, summary);

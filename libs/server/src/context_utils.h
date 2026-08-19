@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,6 +29,78 @@ inline bool is_blank(const std::string& s) {
     return true;
 }
 
+// 剥离工具调用格式垃圾：api.b.ai 全角 <｜tool_calls>…</｜tool_calls>、ACP 的
+// <tool_call>…</tool_call> 块、围栏代码块及零散残留行。thinking 模型在纯文本模式
+// 下会把这些格式混进摘要/回复正文，旧压缩摘要里也会残留——发给模型与存回前都必须清除，
+// 否则模型照抄格式、输出变成工具调用而不是正文。全角竖线 ｜ 不会出现在正常文本中，
+// 按行过滤是安全的；ASCII 标记只在完整块被删后按行首匹配清理。
+inline std::string sanitize_tool_markup(std::string s) {
+    static const std::regex block(
+        "<\uFF5C?tool_calls?[\\s\\S]*?</\uFF5C?tool_calls?>|"
+        "```tool_calls?[\\s\\S]*?```",
+        std::regex::ECMAScript | std::regex::icase);
+    s = std::regex_replace(s, block, "");
+    std::string out;
+    std::istringstream stream(s);
+    std::string line;
+while (std::getline(stream, line)) {
+        if (line.find("\uFF5C") != std::string::npos) continue;  // 全角竖线行必是残留标记
+        size_t i = line.find_first_not_of(" \t");
+        if (i != std::string::npos) {
+            unsigned char c = static_cast<unsigned char>(line[i]);
+            // 行首盒式制表符（U+2500–U+257F，如 ┃）：TUI 工具帧显示专用，正文不会出现
+            if (c >= 0xE2 && i + 2 < line.size()) {
+                unsigned char c2 = static_cast<unsigned char>(line[i + 1]);
+                unsigned char c3 = static_cast<unsigned char>(line[i + 2]);
+                int cp = (c & 0x0F) << 12 | (c2 & 0x3F) << 6 | (c3 & 0x3F);
+                if (cp >= 0x2500 && cp <= 0x257F) continue;
+            }
+            std::string t = line.substr(i);
+            if (t.rfind("<tool_call", 0) == 0 || t.rfind("<arg_", 0) == 0 ||
+                t.rfind("<invoke", 0) == 0 || t.rfind("<parameter", 0) == 0 ||
+                t.rfind("</", 0) == 0) continue;  // 未闭合块的残留标签行
+        }
+        out += line + "\n";
+    }
+    static const std::regex blank("\n[ \t]*\n[ \t]*\n+");
+    out = std::regex_replace(out, blank, "\n\n");
+    size_t b = out.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    size_t e = out.find_last_not_of(" \t\r\n");
+    return out.substr(b, e - b + 1);
+}
+
+// 把待压缩历史拍平成单一 user 转录文档。编码会话历史里助手在调工具、用户消息读起来
+// 像新任务——直接按消息数组发给摘要模型，模型会"代入"助手角色继续干活（输出工具调用
+// 而不是摘要，api.b.ai 的 deepseek-v4-flash 尤其如此，system 指令压不住）。拍平后
+// 模型读到的是一段已结束的会话记录，只会做摘要。reasoning 思维链不入转录（没有
+// assistant 消息也就不存在严格 provider 的 reasoning 回传要求）。
+inline std::string format_transcript(const std::vector<Message>& history) {
+    std::string out = "以下是用户与编码助手之间一段已结束的会话记录：\n\n";
+    for (auto& m : history) {
+        if (m.role == "reasoning") continue;
+        if (m.role == "assistant" && is_blank(m.content) && m.tool_name) {
+            out += "[助手] 调用工具: " + *m.tool_name + "\n";
+            continue;
+        }
+        if (m.role == "tool") {
+            out += "[工具结果] " + sanitize_tool_markup(m.content).substr(0, 2000) + "\n";
+            continue;
+        }
+        std::string label = m.role == "user" ? "用户"
+                          : m.role == "assistant" ? "助手"
+                          : m.role == "system" ? "系统"
+                          : m.role;
+        std::string content = sanitize_tool_markup(m.content);
+        if (m.role == "system" && content.size() > 300) content = content.substr(0, 300);
+        for (char& ch : content)
+            if (ch == '\n' || ch == '\r') ch = ' ';
+        out += "[" + label + "] " + content + "\n";
+    }
+    out += "\n记录到此为止，会话已经结束。";
+    return out;
+}
+
 // 历史重放谓词：system（压缩摘要，仅 compact 后出现）+ user + tool +
 // 完整工具往返的 assistant（中转带 tool_call_id 或纯文本回复）。
 inline bool is_replayable(const Message& m) {
@@ -34,26 +108,37 @@ inline bool is_replayable(const Message& m) {
            (m.role == "assistant" && (m.tool_call_id || !is_blank(m.content)));
 }
 
-// 思维链挂账：reasoning 角色不入上下文（openai 兼容端点对未知角色直接 400），
-// 但严格 thinking provider（如 deepseek 系）要求历史中每条 assistant 消息
-// 原样回传 reasoning_content，否则 400。因此把 reasoning 内容挂到同轮（直到
+// 思维链挂账 + 孤儿 tool 防护：reasoning 角色不入上下文（openai 兼容端点对未知角色
+// 直接 400），但严格 thinking provider（如 deepseek 系）要求历史中每条 assistant
+// 消息原样回传 reasoning_content，否则 400。因此把 reasoning 内容挂到同轮（直到
 // 下一条 reasoning 或新一轮 user 之前）的每条 assistant 消息上。
+// tool 消息必须紧跟带 tool_calls 的 assistant，否则（压缩切分拆散等历史损坏）丢弃，
+// 避免严格 provider 报 "tool must follow tool_calls"。
 inline void append_with_reasoning(std::vector<Message>& out, const Message& m,
-                                  std::string& pending) {
+                                  std::string& pending, bool& last_was_tool_call) {
     if (m.role == "reasoning") { pending = m.content; return; }
-    if (m.role == "user") pending.clear();  // 新一轮任务，上一轮思维链作废
+    if (m.role == "user") { pending.clear(); last_was_tool_call = false; }  // 新一轮任务
+    if (m.role == "tool") {
+        if (!last_was_tool_call) return;  // 孤儿 tool：丢弃
+        out.push_back(m);
+        return;
+    }
     out.push_back(m);
+    out.back().content = sanitize_tool_markup(m.content);
     if (m.role == "assistant" && !pending.empty())
-        out.back().reasoning_content = pending;
+        out.back().reasoning_content = sanitize_tool_markup(pending);
+    if (m.role == "assistant")
+        last_was_tool_call = m.tool_call_id.has_value();
 }
 
-// 历史重放：过滤 + 思维链挂账的完整版本（task 循环与 REST /chat 共用）
+// 历史重放：过滤 + 思维链挂账 + 孤儿 tool 丢弃的完整版本（task 循环与 REST /chat 共用）
 inline std::vector<Message> replayable_messages(const std::vector<Message>& history) {
     std::vector<Message> out;
     std::string pending;
+    bool last_was_tool_call = false;
     for (auto& m : history)
         if (is_replayable(m) || m.role == "reasoning")
-            append_with_reasoning(out, m, pending);
+            append_with_reasoning(out, m, pending, last_was_tool_call);
     return out;
 }
 
@@ -85,13 +170,21 @@ inline std::optional<CompactSplit> split_history(const std::vector<Message>& his
 }
 
 // 新历史 = 摘要(system) + 题干(prefix 首条 user) + 尾部原文
+// 切分按条数进行，可能拆散 assistant(tool_calls)→tool 对：tail 开头紧跟
+// 非 assistant 的孤儿 tool 直接丢弃（其调用已随 prefix 进摘要）。
 inline std::vector<Message> build_compacted_history(const CompactSplit& split,
                                                     const std::string& summary) {
     std::vector<Message> compacted;
     compacted.push_back({"system", "上下文摘要（历史压缩）:\n" + summary});
     for (auto& m : split.prefix)
         if (m.role == "user") { compacted.push_back(m); break; }
-    for (auto& m : split.tail) compacted.push_back(m);
+    bool last_was_tool_call = false;
+    for (auto& m : split.tail) {
+        if (m.role == "tool" && !last_was_tool_call) continue;  // 孤儿 tool：丢弃
+        compacted.push_back(m);
+        if (m.role == "assistant")
+            last_was_tool_call = m.tool_call_id.has_value();
+    }
     return compacted;
 }
 
