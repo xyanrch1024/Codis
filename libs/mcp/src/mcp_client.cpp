@@ -128,6 +128,15 @@ bool McpClient::start() {
         client->set_connection_timeout(opts_.timeout_seconds, 0);
         client->set_read_timeout(opts_.timeout_seconds, 0);
         client->set_write_timeout(opts_.timeout_seconds, 0);
+        if (!opts_.proxy.empty()) {
+            auto colon = opts_.proxy.find(':');
+            if (colon != std::string::npos) {
+                client->set_proxy(opts_.proxy.substr(0, colon), std::stoi(opts_.proxy.substr(colon + 1)));
+                LOG_DEBUG("mcp[{}]: using http proxy {}", opts_.name, opts_.proxy);
+            } else {
+                LOG_WARN("mcp[{}]: invalid proxy '{}' (expect host:port), ignored", opts_.name, opts_.proxy);
+            }
+        }
         http_ = std::move(client);
     } else if (opts_.transport == "stdio") {
         if (opts_.command.empty()) {

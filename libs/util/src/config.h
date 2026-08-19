@@ -87,6 +87,7 @@ struct AppConfig {
     std::vector<ProviderConfig> providers;
     LLMConfig llm;
     std::string default_provider;
+    std::string proxy;  // 全局 HTTP 代理 "host:port"（可选），所有出站 HTTP 默认走它；provider/websearch 可单独覆盖
     int timeout_seconds = 60;
     PermissionConfig permissions;
     WebSearchConfig websearch;
@@ -101,6 +102,11 @@ struct AppConfig {
             if (p.name == name) return &p;
         }
         return nullptr;
+    }
+
+    // provider 代理优先，未配置则回退全局代理
+    std::string effective_proxy(const ProviderConfig& pc) const {
+        return pc.proxy.empty() ? proxy : pc.proxy;
     }
 };
 

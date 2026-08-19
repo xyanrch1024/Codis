@@ -659,6 +659,16 @@ ToolResult WebSearchTool::execute(const ToolCall& call) {
     client.set_connection_timeout(opts_.timeout_seconds, 0);
     client.set_read_timeout(opts_.timeout_seconds, 0);
 
+    if (!opts_.proxy.empty()) {
+        auto colon = opts_.proxy.find(':');
+        if (colon != std::string::npos) {
+            client.set_proxy(opts_.proxy.substr(0, colon), std::stoi(opts_.proxy.substr(colon + 1)));
+            LOG_DEBUG("websearch using http proxy {}", opts_.proxy);
+        } else {
+            LOG_WARN("invalid proxy '{}' (expect host:port), ignored", opts_.proxy);
+        }
+    }
+
     if (backend == "bing") {
         httplib::Headers headers = {
             {"User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "

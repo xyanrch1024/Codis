@@ -12,12 +12,12 @@ namespace codis {
 
 class OpenAICompatibleProvider : public LLMProvider {
 public:
-    OpenAICompatibleProvider(const ProviderConfig& cfg)
+    OpenAICompatibleProvider(const ProviderConfig& cfg, const std::string& proxy_fallback = "")
         : name_(cfg.name)
         , api_key_(cfg.api_key)
         , model_(cfg.model)
         , base_url_(cfg.base_url)
-        , proxy_(cfg.proxy)
+        , proxy_(cfg.proxy.empty() ? proxy_fallback : cfg.proxy)
     {
         LOG_INFO("provider '{}' registered: model={}, url={}, proxy={}", name_, model_, base_url_, proxy_.empty() ? "none" : proxy_);
     }

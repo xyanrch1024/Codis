@@ -54,6 +54,7 @@ struct WebSearchOptions {
     std::string api_key;
     int max_results = 5;
     int timeout_seconds = 15;
+    std::string proxy;              // HTTP 代理 "host:port"（可选），空则直连
 };
 
 class WebSearchTool : public Tool {

@@ -14,7 +14,7 @@ namespace codis {
 
 class ProviderRegistry {
 public:
-    void register_provider(const ProviderConfig& cfg);
+    void register_provider(const ProviderConfig& cfg, const std::string& global_proxy = "");
     // 注入自定义 provider 实例（测试用；首个注册者成为默认）
     void register_custom(const std::string& name, std::shared_ptr<LLMProvider> provider);
     std::optional<std::shared_ptr<LLMProvider>> get(const std::string& name);
@@ -36,9 +36,9 @@ inline void ProviderRegistry::register_custom(const std::string& name,
     if (default_.empty()) default_ = name;
 }
 
-inline void ProviderRegistry::register_provider(const ProviderConfig& cfg) {
+inline void ProviderRegistry::register_provider(const ProviderConfig& cfg, const std::string& global_proxy) {
     std::unique_lock lock(mutex_);
-    auto p = std::make_shared<OpenAICompatibleProvider>(cfg);
+    auto p = std::make_shared<OpenAICompatibleProvider>(cfg, global_proxy);
     providers_[cfg.name] = p;
     if (default_.empty()) default_ = cfg.name;
 }

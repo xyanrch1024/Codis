@@ -52,7 +52,7 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
 
     for (auto& pc : config_.providers) {
         pc.resolve_api_key();
-        if (!pc.api_key.empty()) provider_registry_.register_provider(pc);
+        if (!pc.api_key.empty()) provider_registry_.register_provider(pc, config_.proxy);
     }
     if (!config_.default_provider.empty())
         provider_registry_.set_default(config_.default_provider);
@@ -61,12 +61,12 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
         const char* key = std::getenv("OPENAI_API_KEY");
         if (key) {
             ProviderConfig pc{"openai", key, "", "gpt-4o", "https://api.openai.com/v1"};
-            provider_registry_.register_provider(pc);
+            provider_registry_.register_provider(pc, config_.proxy);
         }
         key = std::getenv("DEEPSEEK_API_KEY");
         if (key) {
             ProviderConfig pc{"deepseek", key, "", "deepseek-chat", "https://api.deepseek.com/v1"};
-            provider_registry_.register_provider(pc);
+            provider_registry_.register_provider(pc, config_.proxy);
         }
     }
 
@@ -79,7 +79,7 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
     tool_registry_.register_tool(std::make_unique<tools::GrepTool>());
     tool_registry_.register_tool(std::make_unique<tools::WebSearchTool>(tools::WebSearchOptions{
         config_.websearch.backend, config_.websearch.api_key,
-        config_.websearch.max_results, config_.websearch.timeout_seconds}));
+        config_.websearch.max_results, config_.websearch.timeout_seconds, config_.proxy}));
     auto skill_tool = std::make_unique<tools::SkillTool>(config_.skills.dirs);
     skill_tool_ = skill_tool.get();
     tool_registry_.register_tool(std::move(skill_tool));
@@ -121,6 +121,7 @@ CodisServer::CodisServer(int port, std::optional<std::string> config_path)
             o.url = s.url;
             o.bearer_token = s.bearer_token;
             o.timeout_seconds = s.timeout_seconds;
+            o.proxy = config_.proxy;
             opts.push_back(std::move(o));
         }
         mcp_manager_ = std::make_unique<mcp::McpManager>(std::move(opts), &tool_registry_);

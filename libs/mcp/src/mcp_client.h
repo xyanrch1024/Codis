@@ -41,6 +41,7 @@ struct McpServerOptions {
     std::vector<std::string> env;     // stdio: 附加环境变量 "KEY=VALUE"
     std::string url;                  // http: https://host[:port]/path
     std::string bearer_token;         // http: Authorization: Bearer <token>（可空）
+    std::string proxy;                // http: HTTP 代理 "host:port"（可选），空则直连
     int timeout_seconds = 30;
 };
 

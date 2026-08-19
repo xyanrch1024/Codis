@@ -35,6 +35,7 @@ AppConfig AppConfig::load(const std::filesystem::path& path) {
 
         cfg.default_provider = tbl["default_provider"].value<std::string>().value_or("");
         cfg.timeout_seconds  = tbl["timeout_seconds"].value<int>().value_or(60);
+        cfg.proxy            = tbl["proxy"].value<std::string>().value_or("");
 
         if (auto perm = tbl["permissions"].as_table()) {
             if (auto a = (*perm)["allow"].as_array())
