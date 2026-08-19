@@ -115,7 +115,8 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
 
     connected_ = true;
     thread_done_ = false;
-    sse_thread_ = std::thread([this, session_id]() {
+    current_session_ = session_id;
+    sse_thread_ = std::thread([this]() {
         int retry_delay = 1;
         int retry_count = 0;
 
@@ -127,9 +128,16 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
                 break;
             }
 
+            // 重连 URL 用 current_session_（可能已 switch_session），
+            // 否则新会话上的任务广播会因 conn 被迁走而收不到
+            std::string sid;
+            {
+                std::lock_guard lock(ws_mutex_);
+                sid = current_session_;
+            }
             auto ws = std::make_unique<httplib::ws::WebSocketClient>(
                 "ws://" + host_ + ":" + std::to_string(port_) +
-                "/api/v1/acp/ws/" + session_id +
+                "/api/v1/acp/ws/" + sid +
                 (conn_id_.empty() ? "" : "?reconnect=" + conn_id_));
             ws->set_connection_timeout(5, 0);
             // read_timeout 不设 — keepalive WS 永不超时（心跳由 httplib 处理）
@@ -156,7 +164,7 @@ bool AcpClient::connect(const std::string& session_id, Callbacks callbacks) {
             if (!ws_online_.exchange(true) && callbacks_.on_connection)
                 callbacks_.on_connection(true);
 
-            LOG_DEBUG("WS connected, session={}", session_id.substr(0, 8));
+            LOG_DEBUG("WS connected, session={}", sid.substr(0, 8));
 
             std::string msg;
             while (connected_) {
@@ -430,6 +438,11 @@ std::optional<ServerInfo> AcpClient::get_server_info() {
 }
 
 bool AcpClient::switch_session(const std::string& session_id) {
+    // 立即更新当前会话：即使 WS 断开，重连循环也用新会话拼 URL
+    {
+        std::lock_guard lock(ws_mutex_);
+        current_session_ = session_id;
+    }
     auto frame = acp::switch_frame(session_id);
 
     {

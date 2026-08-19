@@ -136,6 +136,10 @@ private:
     std::unique_ptr<httplib::ws::WebSocketClient> ws_;
     Callbacks callbacks_;
     std::string conn_id_;
+    // 当前会话：connect 时初始化，switch_session 时更新。
+    // 重连循环必须用它（而非 connect 时的初始值）拼 URL——
+    // 否则切换会话后断线重连会把 conn 从新会话迁回旧会话，任务广播全部 drop。
+    std::string current_session_;
     std::mutex pending_mutex_;
     std::deque<std::string> pending_outbound_;
 };
