@@ -82,6 +82,8 @@ TuiClient::TuiClient(int server_port, std::string model, std::string provider,
     }
     state_->model = controller_.model();
     state_->server_port = server_port_;
+    // 恢复上次的 /yolo 状态（与 last_provider 同理：审批策略跨重启保持）
+    if (load_yolo()) controller_.yolo() = true;
 }
 
 int TuiClient::run() {

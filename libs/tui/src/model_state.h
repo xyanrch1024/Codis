@@ -43,4 +43,28 @@ inline void save_last_provider(const std::string& provider) {
     f << provider << "\n";
 }
 
+// /yolo 模式持久化：~/.config/codis/yolo，内容 "1"/"0"。
+// 与 last_provider 同理：重启后保持用户上次的审批策略，避免每次手动重开。
+inline std::filesystem::path yolo_state_path() {
+    return last_provider_path().parent_path() / "yolo";
+}
+
+inline bool load_yolo() {
+    std::ifstream f(yolo_state_path());
+    if (!f) return false;
+    std::string s;
+    std::getline(f, s);
+    return s.find('1') != std::string::npos;
+}
+
+inline void save_yolo(bool on) {
+    auto path = yolo_state_path();
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) return;
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    f << (on ? "1\n" : "0\n");
+}
+
 } // namespace codis

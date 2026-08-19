@@ -90,6 +90,7 @@ void ChatController::send_message(const std::string& text) {
         if (arg == " on")       yolo_ = true;
         else if (arg == " off") yolo_ = false;
         else                    yolo_ = !yolo_;
+        save_yolo(yolo_);  // 持久化审批策略，重启后保持
         if (cb_.notice) cb_.notice(yolo_ ? "[YOLO mode ON — Ask 工具自动批准]"
                                          : "[YOLO mode OFF]");
         return;
