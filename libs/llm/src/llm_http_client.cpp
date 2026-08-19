@@ -90,7 +90,8 @@ void LLMHttpClient::stream_post(const std::string& url,
             return;
         }
         if (res->status != 200) {
-            LOG_WARN("HTTP POST {} returned status {}", path, res->status);
+            LOG_WARN("HTTP POST {} returned status {}{}", path, res->status,
+                     res->body.empty() ? "" : ", body: " + res->body.substr(0, 500));
             if (on_done) on_done("", false,
                 res->status == 429 ? LlmErrorCode::RateLimited : LlmErrorCode::HttpStatus,
                 res->status == 429
@@ -168,7 +169,8 @@ void LLMHttpClient::stream_post(const std::string& url,
     if (!res || res->status != 200) {
         bool ok = stream_done || (abort_flag && abort_flag->load());
         if (res && res->status != 200 && !ok) {
-            LOG_WARN("HTTP POST {} returned status {}", path, res->status);
+            LOG_WARN("HTTP POST {} returned status {}{}", path, res->status,
+                     res->body.empty() ? "" : ", body: " + res->body.substr(0, 500));
             if (on_done) on_done("", false,
                 res->status == 429 ? LlmErrorCode::RateLimited : LlmErrorCode::HttpStatus,
                 res->status == 429

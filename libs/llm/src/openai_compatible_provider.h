@@ -96,8 +96,9 @@ private:
         body["model"] = model_;
         body["messages"] = json::array();
         for (auto& m : req.messages) {
-            json msg{{"role", m.role}, {"content", m.content}};
-            if (m.tool_call_id) {
+json msg{{"role", m.role}, {"content", m.content}};
+        if (m.reasoning_content) msg["reasoning_content"] = *m.reasoning_content;
+        if (m.tool_call_id) {
                 msg["tool_call_id"] = *m.tool_call_id;
                 if (m.tool_name) {
                     std::string args_str = "{}";
