@@ -17,16 +17,48 @@ A high-performance AI Coding Agent framework written in modern C++20. Designed w
 
 ## Build
 
-Requirements: CMake 3.20+, vcpkg, a C++20 compiler.
+Requirements: CMake 3.20+, vcpkg, a C++20 compiler (GCC 12+ / Clang 15+), Ninja.
+
+Dependencies are managed by vcpkg in manifest mode — everything in `vcpkg.json` is installed automatically during the configure step.
+
+### Linux
 
 ```bash
-# 1. Install dependencies (skip if vcpkg is already set up)
-#    vcpkg install cpp-httplib nlohmann-json cli11 tomlplusplus openssl sqlite3 ftxui asio
+# 1. Install the base toolchain (Debian/Ubuntu)
+sudo apt-get update -y
+sudo apt-get install -y cmake ninja-build g++ gcc make pkg-config git curl zip unzip tar ca-certificates
 
-# 2. Configure and build
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+# 2. Install and bootstrap vcpkg (clone into a local directory)
+git clone https://github.com/microsoft/vcpkg.git ./vcpkg
+./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+# 3. Configure (installs all third-party deps via vcpkg manifest, ~4 min first time)
+export VCPKG_ROOT=$(pwd)/vcpkg
+cmake -B build -S . -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=ON
+
+# 4. Build
 cmake --build build -j$(nproc)
 ```
+
+Binaries are output to `build/bin/` (`codis`, `codis-server`).
+
+### Run tests (optional)
+
+```bash
+cd build && ctest --output-on-failure
+```
+
+### Install (optional)
+
+```bash
+cmake --build build --target install
+```
+
+Install rules: `bin/` (executables), `etc/codis/config.toml` (config), `lib/codis/plugins/*.so` (plugins).
+
 
 ## Run
 

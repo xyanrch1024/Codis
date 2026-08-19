@@ -660,10 +660,12 @@ ToolResult WebSearchTool::execute(const ToolCall& call) {
     client.set_read_timeout(opts_.timeout_seconds, 0);
 
     if (backend == "bing") {
+        httplib::Headers headers = {
+            {"User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"}};
         auto res = client.Get((std::string("/search?format=rss&q=") + url_encode(query) +
                                "&mkt=zh-CN").c_str(),
-                              {{"User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                                               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"}});
+                              headers);
         if (res && res->status == 200) { body = res->body; ok = true; }
         else LOG_WARN("websearch bing failed: {}", res ? std::to_string(res->status) : "no response");
     } else if (backend == "serpapi") {
@@ -673,9 +675,10 @@ ToolResult WebSearchTool::execute(const ToolCall& call) {
         if (res && res->status == 200) { body = res->body; ok = true; }
         else LOG_WARN("websearch serpapi failed: {}", res ? std::to_string(res->status) : "no response");
     } else if (backend == "brave") {
+        httplib::Headers headers = {{"X-Subscription-Token", opts_.api_key}};
         auto res = client.Get(("/web/search?q=" + url_encode(query) +
                                "&count=" + std::to_string(max)).c_str(),
-                              {{"X-Subscription-Token", opts_.api_key}});
+                              headers);
         if (res && res->status == 200) { body = res->body; ok = true; }
         else LOG_WARN("websearch brave failed: {}", res ? std::to_string(res->status) : "no response");
     } else if (backend == "tavily") {

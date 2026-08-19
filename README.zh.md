@@ -17,16 +17,48 @@
 
 ## 编译
 
-依赖：CMake 3.20+、vcpkg、C++20 编译器。
+依赖：CMake 3.20+、vcpkg、C++20 编译器（GCC 12+ / Clang 15+）、Ninja。
+
+第三方依赖由 vcpkg manifest 模式管理，`vcpkg.json` 中的全部依赖会在配置阶段自动安装。
+
+### Linux
 
 ```bash
-# 1. 安装依赖（vcpkg 已在系统上时跳过）
-#    vcpkg install cpp-httplib nlohmann-json cli11 tomlplusplus openssl sqlite3 ftxui asio
+# 1. 安装基础工具链（Debian/Ubuntu）
+sudo apt-get update -y
+sudo apt-get install -y cmake ninja-build g++ gcc make pkg-config git curl zip unzip tar ca-certificates
 
-# 2. 配置 + 编译
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+# 2. 安装并 bootstrap vcpkg（克隆到本地目录）
+git clone https://github.com/microsoft/vcpkg.git ./vcpkg
+./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+# 3. 配置（自动通过 vcpkg manifest 安装全部第三方依赖，首次约 4 分钟）
+export VCPKG_ROOT=$(pwd)/vcpkg
+cmake -B build -S . -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=ON
+
+# 4. 编译
 cmake --build build -j$(nproc)
 ```
+
+编译产物输出到 `build/bin/`（`codis`、`codis-server`）。
+
+### 运行测试（可选）
+
+```bash
+cd build && ctest --output-on-failure
+```
+
+### 安装（可选）
+
+```bash
+cmake --build build --target install
+```
+
+安装规则：`bin/`（可执行文件）、`etc/codis/config.toml`（配置）、`lib/codis/plugins/*.so`（插件）。
+
 
 ## 运行
 
