@@ -14,6 +14,7 @@ A high-performance AI Coding Agent framework written in modern C++20. Designed w
 - **Tool calls** — bash / read / write / edit / glob / grep, plus C-ABI plugins for custom tools
 - **Session persistence** — SQLite-backed history with restore / switch / delete / search
 - **Terminal TUI** — FTXUI: color-coded messages, mouse-wheel scrolling, double-ESC cancels the running task
+- **HTTP proxy support** — global proxy in `config.toml` for all outbound HTTP (LLM / websearch / MCP), per-provider override supported
 
 ## Build
 
@@ -79,26 +80,21 @@ export GLM_API_KEY="your-api-key"
 
 No need to start the server manually — the CLI auto-starts it if it isn't running.
 
-### TUI shortcuts
-
-| Key | Action |
-|------|------|
-| `↑` `↓` / mouse wheel | Scroll the conversation |
-| Double `ESC` | Cancel the running task |
-| `Ctrl+S` | Open the session list |
-| `Ctrl+C` | Quit |
-
 ### Commands
 
 | Command | Description |
 |------|------|
+| `/help` | Show the command list |
+| `/exit` | Quit |
+| `/clear` | Clear the current context |
 | `/sessions` | List all sessions (or `Ctrl+S` for the session list overlay) |
 | `/newsession` | Create a new session |
-| `/clear` | Clear the current context |
-| `/clearsessions` | Delete all sessions |
 | `/balance [provider]` | Query provider balance |
 | `/model [provider]` | Open model dropdown picker (Tab/↑↓ to select, Enter to apply); `/model <provider>` switches directly |
-| `/exit` | Quit |
+| `/clearsessions` | Delete all sessions |
+| `/yolo [on\|off]` | Toggle YOLO mode — auto-approve all Ask tools (no confirmation prompts) |
+| `/compact` | Compress the context (LLM summary of the history) |
+| `/info` | Show skills & MCP servers |
 
 ### Logging
 
@@ -112,6 +108,11 @@ No need to start the server manually — the CLI auto-starts it if it isn't runn
 ```toml
 default_provider = "glm"
 
+# Optional global HTTP proxy "host:port". All outbound HTTP (LLM provider /
+# websearch / MCP http) uses it by default; a per-provider `proxy` overrides
+# it. Leave empty for direct connection.
+proxy = "127.0.0.1:7890"
+
 [llm]
 max_tokens = 4096
 temperature = 0.7
@@ -121,6 +122,7 @@ name = "glm"
 api_key_env = "GLM_API_KEY"
 model = "glm-4.5-flash"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
+# proxy = "127.0.0.1:7890"   # optional: override the global proxy for this provider
 ```
 
 API keys are set via environment variables — never in the config file.

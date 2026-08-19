@@ -14,6 +14,7 @@
 - **工具调用** — bash / read / write / edit / glob / grep，支持 C ABI 插件动态扩展
 - **会话持久化** — SQLite 存储，支持恢复历史、切换、删除、搜索
 - **终端 TUI** — FTXUI 界面：颜色区分消息、滚轮滚动、双击 ESC 取消当前任务
+- **HTTP 代理支持** — `config.toml` 顶层 proxy 统一走代理（LLM / websearch / MCP），provider 可单独覆盖
 
 ## 编译
 
@@ -79,26 +80,21 @@ export GLM_API_KEY="你的-api-key"
 
 也可以不用手动启动服务端：CLI 检测到服务端未运行时会自动拉起。
 
-### 常用快捷键（TUI）
-
-| 按键 | 功能 |
-|------|------|
-| `↑` `↓` / 鼠标滚轮 | 滚动对话区 |
-| 双击 `ESC` | 取消当前正在执行的任务 |
-| `Ctrl+S` | 打开会话列表 |
-| `Ctrl+C` | 退出 |
-
 ### 常用命令
 
 | 命令 | 功能 |
 |------|------|
+| `/help` | 显示命令帮助 |
+| `/exit` | 退出 |
+| `/clear` | 清空当前上下文 |
 | `/sessions` | 列出所有会话（或 `Ctrl+S` 打开会话列表弹窗） |
 | `/newsession` | 新建会话 |
-| `/clear` | 清空当前上下文 |
-| `/clearsessions` | 删除所有会话 |
 | `/balance [provider]` | 查询 provider 余额 |
 | `/model [provider]` | 弹出模型下拉选择面板（Tab/↑↓ 选择，Enter 应用）；`/model <provider>` 直接切换 |
-| `/exit` | 退出 |
+| `/clearsessions` | 删除所有会话 |
+| `/yolo [on\|off]` | 切换 YOLO 模式 — 所有 Ask 工具自动批准（不再弹确认） |
+| `/compact` | 压缩上下文（LLM 摘要） |
+| `/info` | 查看技能（skills）与 MCP 服务器 |
 
 ### 日志
 
@@ -112,6 +108,10 @@ export GLM_API_KEY="你的-api-key"
 ```toml
 default_provider = "glm"
 
+# 可选：全局 HTTP 代理 "host:port"。所有出站 HTTP（LLM provider / websearch /
+# MCP http）默认走该代理；[[providers]] 内可单独写 proxy 覆盖，留空则直连。
+proxy = "127.0.0.1:7890"
+
 [llm]
 max_tokens = 4096
 temperature = 0.7
@@ -121,6 +121,7 @@ name = "glm"
 api_key_env = "GLM_API_KEY"
 model = "glm-4.5-flash"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
+# proxy = "127.0.0.1:7890"   # 可选：为当前 provider 单独覆盖全局代理
 ```
 
 API Key 通过环境变量设置，不要在配置文件中写明文。
