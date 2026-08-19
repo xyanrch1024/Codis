@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
     if (!std::getenv("CODIS_LOG_FILE"))
         codis::log::Logger::instance().set_file("/tmp/codis-tui.log");
 
-    CLI::App app{"Codis C++ Client — ACP + SSE (v0.3.0)"};
+    CLI::App app{"Codis C++ Client — ACP + SSE (v0.5.0)"};
 
     std::string model;
     std::string provider;

@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
 
     CLI11_PARSE(app, argc, argv);
 
-    LOG_INFO("Codis Server v0.3.1 starting (port {}, host {})", port, host);
+    LOG_INFO("Codis Server v0.5.0 starting (port {}, host {})", port, host);
     if (!config_path.empty()) LOG_INFO("config file: {}", config_path);
 
     std::optional<std::string> cfg;
