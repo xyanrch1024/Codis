@@ -58,7 +58,7 @@ ConversationLayout render_conversation(const TuiState& st, int tw, int hover_row
                 for (auto& r : mrows)
                     card_row(Color::Green,
                              std::move(r.el) |
-                                 (item.streaming ? color(Color::GreenLight)
+                                 (item.streaming ? color(Color::GreenLight) | bold
                                                  : color(Color::Green)),
                              std::move(r.sig), oi);
                 break;

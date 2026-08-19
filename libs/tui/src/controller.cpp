@@ -2,6 +2,7 @@
 
 #include "log.h"
 #include "tool_format.h"
+#include "model_state.h"
 
 #include <algorithm>
 #include <cctype>
@@ -293,6 +294,7 @@ void ChatController::switch_provider(const std::string& name) {
     }
     state_->add_item(ItemKind::Status, "[Model switched to " + name +
                       (mit != info->provider_models.end() ? " (" + mit->second + ")" : "") + "]");
+    save_last_provider(name);  // 持久化选择，重启后 TUI 仍用该 provider
     if (cb_.notice) cb_.notice("model: " + name);
     if (cb_.notify) cb_.notify();
 }

@@ -2,6 +2,7 @@
 #include "tui_tool_render.h"
 #include "clipboard.h"
 #include "log.h"
+#include "model_state.h"
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
@@ -59,14 +60,24 @@ TuiClient::TuiClient(int server_port, std::string model, std::string provider,
     , state_(std::make_shared<TuiState>())
     , controller_(acp_, state_, std::move(model), std::move(provider), auto_approve, server_port)
 {
-    // 未显式指定 -m/-p 时，从 server 拉默认 provider 与模型（与配置一致）
+    // 未显式指定 -m 时，从 server 拉默认 provider 与模型（与配置一致）。
+    // 若本机上次 /model 切换过 provider（last_provider），优先于 server 默认值生效，
+    // 保证重启后仍沿用上次选择的模型。
     if (controller_.model().empty()) {
         auto info = acp_.get_server_info();
-        if (info && !info->default_provider.empty()) {
-            std::string default_model;
-            auto it = info->provider_models.find(info->default_provider);
-            if (it != info->provider_models.end()) default_model = it->second;
-            controller_.set_model_provider(std::move(default_model), info->default_provider);
+        if (info) {
+            std::string chosen = info->default_provider;
+            auto saved = load_last_provider();
+            if (!saved.empty() &&
+                std::find(info->providers.begin(), info->providers.end(), saved) != info->providers.end()) {
+                chosen = saved;  // 本地记住的上次选择优先（校验 server 仍支持该 provider）
+            }
+            if (!chosen.empty()) {
+                std::string default_model;
+                auto it = info->provider_models.find(chosen);
+                if (it != info->provider_models.end()) default_model = it->second;
+                controller_.set_model_provider(std::move(default_model), chosen);
+            }
         }
     }
     state_->model = controller_.model();
