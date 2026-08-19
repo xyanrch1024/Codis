@@ -66,13 +66,16 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          tar -C build/bin -czf "${{ matrix.asset }}" codis codis-server
+          mkdir -p build/bin
+          cp config/config.toml build/bin/config.toml
+          tar -C build/bin -czf "${{ matrix.asset }}" codis codis-server config.toml
 
       - name: Package (zip)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          powershell -Command "Compress-Archive -Path build/bin/codis.exe, build/bin/codis-server.exe -DestinationPath ${{ matrix.asset }}"
+          Copy-Item config/config.toml build/bin/config.toml
+          powershell -Command "Compress-Archive -Path build/bin/codis.exe, build/bin/codis-server.exe, build/bin/config.toml -DestinationPath ${{ matrix.asset }}"
 
       - name: Upload to Release
         shell: bash
