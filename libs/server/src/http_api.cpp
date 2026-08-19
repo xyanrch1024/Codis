@@ -35,7 +35,7 @@ void HttpApi::handle_health(const httplib::Request&, httplib::Response& res) {
     set_cors(res);
     json j;
     j["status"] = "ok";
-    j["version"] = "0.4.0";
+    j["version"] = "0.5.0";
     j["protocol"] = "acp";
     j["port"] = deps_.port;
     j["default_provider"] = deps_.providers.default_name();
