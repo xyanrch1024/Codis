@@ -87,9 +87,11 @@ struct Message {
     std::optional<std::string> tool_call_id;
     std::optional<std::string> tool_name;
     std::optional<json> tool_arguments;
+    std::optional<std::string> reasoning_content;  // 思维链（严格 thinking provider 要求回传）
 
     json to_json() const {
         json j{{"role", role}, {"content", content}};
+        if (reasoning_content) j["reasoning_content"] = *reasoning_content;
         if (role == "assistant" && tool_call_id && tool_name) {
             // 工具调用消息 → OpenAI 标准 tool_calls 数组。平铺的 name/arguments
             // 会被部分 provider（GLM 等）忽略，模型看不到自己已调用过该工具，
@@ -123,6 +125,8 @@ struct Message {
         if (j.contains("tool_call_id")) m.tool_call_id = j["tool_call_id"].get<std::string>();
         if (j.contains("name")) m.tool_name = j["name"].get<std::string>();
         if (j.contains("arguments")) m.tool_arguments = j["arguments"];
+        if (j.contains("reasoning_content") && j["reasoning_content"].is_string())
+            m.reasoning_content = j["reasoning_content"].get<std::string>();
         return m;
     }
 };

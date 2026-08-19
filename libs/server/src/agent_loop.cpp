@@ -129,14 +129,14 @@ void AgentLoop::run_task_inner(const std::string& session_id, const std::string&
     // store 历史已含调用方刚 append 的当前 user 消息，整体重放：
     // 顺序 = system baseline + 历史正序。重放条件见 context_utils::is_replayable：
     // system（压缩摘要）+ user + tool + 有效 assistant（带 tool_call_id 的中转
-    // 消息或无空白正文）；reasoning 思维链不入上下文。跨轮重放悬浮 tool_call
-    // 会导致 OpenAI 格式断链（严格 provider 报错/模型困惑），故过滤同轮往返。
+    // 消息或无空白正文）。reasoning 思维链本身不入上下文，但会挂回同轮 assistant
+    // 消息（严格 thinking provider 要求回传 reasoning_content）。跨轮重放悬浮
+    // tool_call 会导致 OpenAI 格式断链（严格 provider 报错/模型困惑），故过滤同轮往返。
     auto history = store_.load_messages(session_id);
     std::vector<Message> msgs;
     msgs.push_back({"system", baseline});
-    for (auto& m : history) {
-        if (context_utils::is_replayable(m)) msgs.push_back(m);
-    }
+    auto replay = context_utils::replayable_messages(history);
+    for (auto& m : replay) msgs.push_back(m);
     req.messages = std::move(msgs);
 
     std::string assistant_content;
@@ -294,6 +294,8 @@ void AgentLoop::run_task_inner(const std::string& session_id, const std::string&
             Message asst_msg; asst_msg.role = "assistant";
             asst_msg.tool_call_id = call.id; asst_msg.tool_name = call.name;
             asst_msg.tool_arguments = call.arguments;
+            if (!llm_result.reasoning_content.empty())
+                asst_msg.reasoning_content = llm_result.reasoning_content;
             req.messages.push_back(asst_msg);
             store_.append_message(session_id, asst_msg);
 
@@ -399,9 +401,9 @@ std::optional<ChatRequest> AgentLoop::run_compact(const std::string& session_id,
         ChatRequest req;
         req.max_tokens = 1200;
         req.messages.push_back({"system", kCompactPrompt});
+        std::string pending;
         for (auto& m : prefix)
-            if (m.role != "reasoning")
-                req.messages.push_back(m);
+            context_utils::append_with_reasoning(req.messages, m, pending);
         std::string summary = call_llm(req);
 
         // 新历史 = 摘要(system) + 题干(首条 user) + 尾部原文

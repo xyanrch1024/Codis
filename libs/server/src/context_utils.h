@@ -29,10 +29,32 @@ inline bool is_blank(const std::string& s) {
 
 // 历史重放谓词：system（压缩摘要，仅 compact 后出现）+ user + tool +
 // 完整工具往返的 assistant（中转带 tool_call_id 或纯文本回复）。
-// reasoning（思维链）不入模型上下文（openai 兼容端点对未知角色直接 400）。
 inline bool is_replayable(const Message& m) {
     return m.role == "system" || m.role == "user" || m.role == "tool" ||
            (m.role == "assistant" && (m.tool_call_id || !is_blank(m.content)));
+}
+
+// 思维链挂账：reasoning 角色不入上下文（openai 兼容端点对未知角色直接 400），
+// 但严格 thinking provider（如 deepseek 系）要求历史中每条 assistant 消息
+// 原样回传 reasoning_content，否则 400。因此把 reasoning 内容挂到同轮（直到
+// 下一条 reasoning 或新一轮 user 之前）的每条 assistant 消息上。
+inline void append_with_reasoning(std::vector<Message>& out, const Message& m,
+                                  std::string& pending) {
+    if (m.role == "reasoning") { pending = m.content; return; }
+    if (m.role == "user") pending.clear();  // 新一轮任务，上一轮思维链作废
+    out.push_back(m);
+    if (m.role == "assistant" && !pending.empty())
+        out.back().reasoning_content = pending;
+}
+
+// 历史重放：过滤 + 思维链挂账的完整版本（task 循环与 REST /chat 共用）
+inline std::vector<Message> replayable_messages(const std::vector<Message>& history) {
+    std::vector<Message> out;
+    std::string pending;
+    for (auto& m : history)
+        if (is_replayable(m) || m.role == "reasoning")
+            append_with_reasoning(out, m, pending);
+    return out;
 }
 
 // =============================================================================

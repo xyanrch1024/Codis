@@ -82,9 +82,9 @@ void HttpApi::handle_chat(const httplib::Request& req, httplib::Response& res) {
             std::vector<Message> msgs;
             msgs.push_back({"system", baseline});
             auto history = deps_.store.load_messages(chat_req.session_id);
-            for (auto& m : history)
-                if (context_utils::is_replayable(m))
-                    msgs.push_back(m);
+            auto replay = context_utils::replayable_messages(history);
+            for (auto& m : replay)
+                msgs.push_back(m);
             for (auto it = chat_req.messages.rbegin(); it != chat_req.messages.rend(); ++it)
                 if (it->role == "user" && !it->content.empty()) {
                     msgs.push_back(*it);

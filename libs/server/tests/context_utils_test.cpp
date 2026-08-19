@@ -43,6 +43,71 @@ TEST(ContextUtils, IsReplayable) {
     EXPECT_FALSE(is_replayable(msg("unknown", "x")));
 }
 
+TEST(ContextUtils, ReplayableMessagesAttachesReasoning) {
+    // 一轮带思维链的往返：reasoning → assistant(文本) → assistant(工具中转) → tool
+    std::vector<Message> hist;
+    hist.push_back(msg("user", "question"));
+    hist.push_back(msg("reasoning", "thinking..."));
+    auto a1 = msg("assistant", "calling tool now");
+    auto a2 = msg("assistant", "");
+    a2.tool_call_id = "call_1";
+    a2.tool_name = "read";
+    a2.tool_arguments = json::object();
+    hist.push_back(a1);
+    hist.push_back(a2);
+    hist.push_back(msg("tool", "result"));
+    // 下一轮无思维链（非思考响应）
+    hist.push_back(msg("reasoning", ""));
+    auto a3 = msg("assistant", "done");
+    hist.push_back(a3);
+    // 又一轮带思维链
+    hist.push_back(msg("reasoning", "thinking2"));
+    hist.push_back(msg("assistant", "again"));
+
+    auto out = replayable_messages(hist);
+    ASSERT_EQ(out.size(), 6u);  // user + a1 + a2 + tool + a3 + a4（reasoning 被吸收）
+
+    auto check = [&](size_t idx, const std::string& expect) {
+        ASSERT_TRUE(out[idx].reasoning_content.has_value());
+        EXPECT_EQ(*out[idx].reasoning_content, expect);
+    };
+    check(1, "thinking...");  // 文本 assistant
+    check(2, "thinking...");  // 同轮工具中转 assistant 同样挂账
+    EXPECT_FALSE(out[3].reasoning_content.has_value());  // tool 无
+    EXPECT_FALSE(out[4].reasoning_content.has_value());  // 非思考轮 assistant 无挂账
+    check(5, "thinking2");
+}
+
+TEST(ContextUtils, ReplayableMessagesClearsOnUser) {
+    std::vector<Message> hist;
+    hist.push_back(msg("reasoning", "old thinking"));
+    hist.push_back(msg("assistant", "a"));
+    hist.push_back(msg("user", "new question"));   // 新一轮：上一轮思维链作废
+    hist.push_back(msg("assistant", "b"));
+
+    auto out = replayable_messages(hist);
+    ASSERT_EQ(out.size(), 3u);
+    EXPECT_TRUE(out[0].reasoning_content.has_value());
+    EXPECT_FALSE(out[1].reasoning_content.has_value());  // user
+    EXPECT_FALSE(out[2].reasoning_content.has_value());  // 新轮 assistant
+}
+
+TEST(ContextUtils, AppendWithReasoningCompactPath) {
+    std::vector<Message> prefix;
+    prefix.push_back(msg("user", "q"));
+    prefix.push_back(msg("reasoning", "cot"));
+    prefix.push_back(msg("assistant", "text"));
+
+    std::vector<Message> out;
+    std::string pending;
+    for (auto& m : prefix) append_with_reasoning(out, m, pending);
+    ASSERT_EQ(out.size(), 2u);  // reasoning 不入请求体
+    EXPECT_EQ(out[0].role, "user");
+    EXPECT_EQ(out[1].role, "assistant");
+    EXPECT_TRUE(out[1].reasoning_content.has_value());
+    EXPECT_EQ(*out[1].reasoning_content, "cot");
+}
+
 TEST(ContextUtils, ClampKeep) {
     EXPECT_EQ(clamp_keep(0), kCompactMinKeep);
     EXPECT_EQ(clamp_keep(1), kCompactMinKeep);
