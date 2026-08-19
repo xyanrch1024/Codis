@@ -65,6 +65,11 @@ bool ensure_server_running(int port, const std::string& server_binary, const std
 } // anonymous namespace
 
 int main(int argc, char** argv) {
+    // TUI 全屏模式（备用屏幕缓冲）下 stderr 日志会直接打在光标处、被下一帧重绘盖掉（"一闪"）。
+    // 未显式指定 CODIS_LOG_FILE 时默认落盘，保持屏幕干净；排查问题仍可看 /tmp/codis-tui.log
+    if (!std::getenv("CODIS_LOG_FILE"))
+        codis::log::Logger::instance().set_file("/tmp/codis-tui.log");
+
     CLI::App app{"Codis C++ Client — ACP + SSE (v0.3.0)"};
 
     std::string model;
